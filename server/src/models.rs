@@ -12,6 +12,10 @@ pub struct ProjectWorkspace {
     pub last_active_at: Option<String>,
     #[serde(default)]
     pub git_sync_status: Option<GitSyncStatus>,
+    #[serde(default)]
+    pub custom_agents: Vec<CustomAgentSpec>,
+    #[serde(default)]
+    pub available_agents: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -143,6 +147,12 @@ pub struct ConversationSession {
     pub is_interrupted: bool,
     #[serde(default)]
     pub interrupted_reason: Option<String>,
+    #[serde(default)]
+    pub custom_agents: Vec<CustomAgentSpec>,
+    #[serde(default)]
+    pub available_agents: Vec<String>,
+    #[serde(default)]
+    pub has_parallel_flow: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -340,6 +350,20 @@ pub struct GitPushResponse {
     #[serde(default)]
     pub output: String,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectAgentsResponse {
+    pub ok: bool,
+    pub project_path: String,
+    pub project_name: String,
+    pub available_agents: Vec<String>,
+    pub custom_agents: Vec<CustomAgentSpec>,
+    pub skills: Vec<CustomAgentSpec>,
+    pub rules: Vec<CustomAgentSpec>,
+    #[serde(default)]
     pub error: Option<String>,
 }
 

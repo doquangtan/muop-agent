@@ -2425,7 +2425,11 @@ class _ChatCanvasViewState extends State<ChatCanvasView> {
                       ],
 
                       const SizedBox(height: 20),
-                      if (widget.onOpenParallelFlow != null)
+                      if (widget.onOpenParallelFlow != null &&
+                          (widget.session?.hasParallelFlow == true ||
+                              ((widget.session?.projectName == 'muop-erp-server' ||
+                                      widget.session?.projectName == 'muop-erp-app') &&
+                                  (widget.session?.subagentLanes.length ?? 0) > 1)))
                         OutlinedButton.icon(
                           onPressed: () {
                             Navigator.of(ctx).pop();
@@ -2730,6 +2734,12 @@ class _ChatCanvasViewState extends State<ChatCanvasView> {
     final int activeTaskCount =
         (isCoordinatorRunning ? 1 : 0) + runningSubagents.length;
 
+    final bool canShowParallelFlow = session?.hasParallelFlow == true ||
+        ((session?.projectName == 'muop-erp-server' ||
+                session?.projectName == 'muop-erp-app') &&
+            session != null &&
+            session.subagentLanes.length > 1);
+
     // Khi không có tác vụ nào đang chạy và không có file changed:
     // Ẩn hoàn toàn panel tasks running
     if (activeTaskCount == 0 &&
@@ -2813,7 +2823,7 @@ class _ChatCanvasViewState extends State<ChatCanvasView> {
               ),
             ),
             const SizedBox(width: 8),
-            if (widget.onOpenParallelFlow != null) ...[
+            if (widget.onOpenParallelFlow != null && canShowParallelFlow) ...[
               InkWell(
                 borderRadius: BorderRadius.circular(6),
                 onTap: widget.onOpenParallelFlow,
@@ -3014,7 +3024,7 @@ class _ChatCanvasViewState extends State<ChatCanvasView> {
                     const SizedBox(width: 6),
                   ],
                   // Nút chuyển nhanh sang màn hình trực quan Luồng chạy Parallel Agent
-                  if (widget.onOpenParallelFlow != null) ...[
+                  if (widget.onOpenParallelFlow != null && canShowParallelFlow) ...[
                     InkWell(
                       borderRadius: BorderRadius.circular(6),
                       onTap: widget.onOpenParallelFlow,
@@ -3412,7 +3422,7 @@ class _ChatCanvasViewState extends State<ChatCanvasView> {
                       ),
                     ),
 
-                  if (widget.onOpenParallelFlow != null) ...[
+                  if (widget.onOpenParallelFlow != null && canShowParallelFlow) ...[
                     const SizedBox(height: 8),
                     InkWell(
                       borderRadius: BorderRadius.circular(8),
@@ -3925,7 +3935,7 @@ class _ChatCanvasViewState extends State<ChatCanvasView> {
                     child: Row(
                       children: [
                         PopupMenuButton<String>(
-                          tooltip: 'Slash Workflows',
+                          tooltip: 'Slash Workflows & /skill',
                           onSelected: (cmd) {
                             _promptController.text =
                                 '$cmd${_promptController.text}';
@@ -3937,26 +3947,74 @@ class _ChatCanvasViewState extends State<ChatCanvasView> {
                             );
                             _inputFocusNode.requestFocus();
                           },
-                          itemBuilder: (ctx) => const [
-                            PopupMenuItem(
-                              value: '/erp-parallel-sync ',
-                              child: Text(
-                                '/erp-parallel-sync — Đồng bộ Server ↔ App',
+                          itemBuilder: (ctx) {
+                            final projectSkills = (widget.session?.customAgents ??
+                                    widget.selectedProject?.customAgents ??
+                                    [])
+                                .where((s) => s.kind == 'skill')
+                                .toList();
+
+                            return [
+                              for (final s in projectSkills)
+                                PopupMenuItem<String>(
+                                  value: '/${s.name} ',
+                                  child: Row(
+                                    children: [
+                                      const Icon(
+                                        Icons.auto_awesome_rounded,
+                                        size: 15,
+                                        color: Colors.deepPurpleAccent,
+                                      ),
+                                      const SizedBox(width: 8),
+                                      Expanded(
+                                        child: Column(
+                                          crossAxisAlignment:
+                                              CrossAxisAlignment.start,
+                                          mainAxisSize: MainAxisSize.min,
+                                          children: [
+                                            Text(
+                                              '/${s.name}',
+                                              style: const TextStyle(
+                                                fontWeight: FontWeight.w700,
+                                                color: Colors.deepPurpleAccent,
+                                              ),
+                                            ),
+                                            if (s.description.isNotEmpty)
+                                              Text(
+                                                s.description,
+                                                maxLines: 1,
+                                                overflow: TextOverflow.ellipsis,
+                                                style: TextStyle(
+                                                  fontSize: 10.5,
+                                                  color: colorScheme.onSurfaceVariant,
+                                                ),
+                                              ),
+                                          ],
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              if (projectSkills.isNotEmpty)
+                                const PopupMenuDivider(),
+                              const PopupMenuItem(
+                                value: '/plan ',
+                                child: Text('/plan — Lập kế hoạch chi tiết'),
                               ),
-                            ),
-                            PopupMenuItem(
-                              value: '/plan ',
-                              child: Text('/plan — Lập kế hoạch chi tiết'),
-                            ),
-                            PopupMenuItem(
-                              value: '/boost ',
-                              child: Text('/boost — Phân tích chuyên sâu'),
-                            ),
-                            PopupMenuItem(
-                              value: '/goal ',
-                              child: Text('/goal — Tự chủ hoàn thành mục tiêu'),
-                            ),
-                          ],
+                              const PopupMenuItem(
+                                value: '/boost ',
+                                child: Text('/boost — Phân tích chuyên sâu'),
+                              ),
+                              const PopupMenuItem(
+                                value: '/goal ',
+                                child: Text('/goal — Tự chủ hoàn thành mục tiêu'),
+                              ),
+                              const PopupMenuItem(
+                                value: '/compact ',
+                                child: Text('/compact — Thu gọn ngữ cảnh trò chuyện'),
+                              ),
+                            ];
+                          },
                           child: _ComposerPill(
                             icon: Icons.terminal_rounded,
                             label: '/',
@@ -4036,20 +4094,29 @@ class _ChatCanvasViewState extends State<ChatCanvasView> {
                         PopupMenuButton<String>(
                           tooltip: 'Chọn Agent',
                           onSelected: widget.onSelectAgent,
-                          itemBuilder: (ctx) => [
-                            for (final a in widget.availableAgents)
-                              PopupMenuItem<String>(
-                                value: a,
-                                child: Text(
-                                  a,
-                                  style: TextStyle(
-                                    fontWeight: a == widget.selectedAgent
-                                        ? FontWeight.w700
-                                        : FontWeight.w500,
+                          itemBuilder: (ctx) {
+                            final effectiveAgents = (widget.session != null &&
+                                    widget.session!.availableAgents.isNotEmpty)
+                                ? widget.session!.availableAgents
+                                : (widget.selectedProject != null &&
+                                        widget.selectedProject!.availableAgents.isNotEmpty)
+                                    ? widget.selectedProject!.availableAgents
+                                    : widget.availableAgents;
+                            return [
+                              for (final a in effectiveAgents)
+                                PopupMenuItem<String>(
+                                  value: a,
+                                  child: Text(
+                                    a,
+                                    style: TextStyle(
+                                      fontWeight: a == widget.selectedAgent
+                                          ? FontWeight.w700
+                                          : FontWeight.w500,
+                                    ),
                                   ),
                                 ),
-                              ),
-                          ],
+                            ];
+                          },
                           child: _ComposerPill(
                             icon: Icons.smart_toy_outlined,
                             label: widget.selectedAgent,

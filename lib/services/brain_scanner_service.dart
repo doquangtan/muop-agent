@@ -591,6 +591,41 @@ class BrainScannerService {
     }
   }
 
+  /// Lấy thông tin agents và skills của dự án (`/api/project/agents`)
+  Future<ProjectAgentsResponse?> fetchProjectAgents({
+    required String address,
+    String? projectPath,
+    String? projectName,
+  }) async {
+    final baseUrl = normalizeBaseUrl(address);
+    final client = HttpClient()
+      ..connectionTimeout = const Duration(seconds: 4);
+    try {
+      final queryParams = <String, String>{};
+      if (projectPath != null && projectPath.trim().isNotEmpty) {
+        queryParams['path'] = projectPath.trim();
+      }
+      if (projectName != null && projectName.trim().isNotEmpty) {
+        queryParams['name'] = projectName.trim();
+      }
+      final uri = Uri.parse('$baseUrl/api/project/agents').replace(
+        queryParameters: queryParams.isNotEmpty ? queryParams : null,
+      );
+      final req = await client.getUrl(uri);
+      final resp = await req.close().timeout(const Duration(seconds: 6));
+      if (resp.statusCode == HttpStatus.ok) {
+        final body = await resp.transform(utf8.decoder).join();
+        final map = jsonDecode(body) as Map<String, dynamic>;
+        return ProjectAgentsResponse.fromJson(map);
+      }
+      return null;
+    } catch (_) {
+      return null;
+    } finally {
+      client.close(force: true);
+    }
+  }
+
   /// Lấy danh sách kế hoạch đang chờ duyệt (`/api/plan/pending`)
   Future<List<PlanArtifactInfo>> fetchPendingPlans({
     required String address,

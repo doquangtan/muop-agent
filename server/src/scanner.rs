@@ -22,6 +22,7 @@ pub const BRAIN_DIR_PATH: &str = "/home/john/.gemini/antigravity/brain";
 pub const DAEMON_DIR_PATH: &str = "/home/john/.gemini/antigravity/daemon";
 pub const SUMMARY_DB_PATH: &str = "/home/john/.gemini/antigravity/conversation_summaries.db";
 pub const ECOSYSTEM_DIR_PATH: &str = "/home/john/Documents/muop-ecosystem";
+#[allow(dead_code)]
 pub const AGENTS_CONFIG_DIR_PATH: &str =
     "/home/john/Documents/muop-ecosystem/muop-erp-server/.agents";
 
@@ -37,12 +38,7 @@ pub fn default_models() -> Vec<String> {
 }
 
 pub fn default_agents() -> Vec<String> {
-    vec![
-        "Coordinator".to_string(),
-        "erp-server-agent".to_string(),
-        "erp-app-agent".to_string(),
-        "erp-contract-verifier".to_string(),
-    ]
+    vec!["Coordinator".to_string()]
 }
 
 #[derive(Debug, Clone)]
@@ -647,6 +643,8 @@ pub fn discover_projects(sessions: &[ConversationSession]) -> Vec<ProjectWorkspa
         .into_iter()
         .map(|(name, (path, count, running, last_active))| {
             let git_sync_status = check_git_sync_status(&path);
+            let (custom_agents, available_agents) =
+                scan_project_agents_and_skills(Path::new(&path));
             ProjectWorkspace {
                 id: name.clone(),
                 name,
@@ -655,6 +653,8 @@ pub fn discover_projects(sessions: &[ConversationSession]) -> Vec<ProjectWorkspa
                 running_count: running,
                 last_active_at: last_active,
                 git_sync_status,
+                custom_agents,
+                available_agents,
             }
         })
         .collect();
@@ -756,6 +756,7 @@ pub fn create_new_project(
         }
     }
 
+    let (custom_agents, available_agents) = scan_project_agents_and_skills(&target_path);
     Ok(ProjectWorkspace {
         id: trimmed_name.to_string(),
         name: trimmed_name.to_string(),
@@ -764,19 +765,62 @@ pub fn create_new_project(
         running_count: 0,
         last_active_at: Some(Utc::now().to_rfc3339()),
         git_sync_status: None,
+        custom_agents,
+        available_agents,
     })
 }
 
-pub fn load_custom_agent_specs() -> Vec<CustomAgentSpec> {
+/// Quét toàn bộ agents, skills, rules từ thư mục `.agents/` của project (hoặc tệp `.agents`)
+pub fn scan_project_agents_and_skills(project_path: &Path) -> (Vec<CustomAgentSpec>, Vec<String>) {
     let mut specs = Vec::new();
-    let root = Path::new(AGENTS_CONFIG_DIR_PATH);
-    if !root.exists() {
-        return specs;
+    let mut available_agents = vec!["Coordinator".to_string()];
+
+    // 1. Quét từ thư mục .agents hoặc file .agents trong project
+    let agents_dir = project_path.join(".agents");
+    if agents_dir.exists() {
+        if agents_dir.is_dir() {
+            scan_agent_subdir(&agents_dir.join("agents"), "agent", &mut specs);
+            scan_agent_subdir(&agents_dir.join("skills"), "skill", &mut specs);
+            scan_agent_subdir(&agents_dir.join("rules"), "rule", &mut specs);
+        } else if agents_dir.is_file() {
+            if let Ok(raw) = fs::read_to_string(&agents_dir) {
+                let stem = agents_dir
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("agent");
+                let (name, desc, body) = parse_markdown_frontmatter(&raw, stem, "agent");
+                specs.push(CustomAgentSpec {
+                    name,
+                    description: desc,
+                    kind: "agent".to_string(),
+                    file_path: agents_dir.to_string_lossy().to_string(),
+                    body_content: body,
+                });
+            }
+        }
     }
 
-    scan_agent_subdir(&root.join("agents"), "agent", &mut specs);
-    scan_agent_subdir(&root.join("skills"), "skill", &mut specs);
-    scan_agent_subdir(&root.join("rules"), "rule", &mut specs);
+    // 2. Thêm built-in skills từ ~/.gemini/antigravity/builtin/skills nếu chưa có
+    let builtin_skills_dir = Path::new("/home/john/.gemini/antigravity/builtin/skills");
+    if builtin_skills_dir.exists() {
+        scan_agent_subdir(builtin_skills_dir, "skill", &mut specs);
+    }
+
+    // Lọc danh sách available_agents: Coordinator + các agent có kind == "agent"
+    for s in &specs {
+        if s.kind == "agent" && !available_agents.contains(&s.name) {
+            available_agents.push(s.name.clone());
+        }
+    }
+
+    (specs, available_agents)
+}
+
+pub fn load_custom_agent_specs() -> Vec<CustomAgentSpec> {
+    let (specs, _) = scan_project_agents_and_skills(Path::new(&format!(
+        "{}/muop-erp-server",
+        ECOSYSTEM_DIR_PATH
+    )));
     specs
 }
 
@@ -796,14 +840,24 @@ fn scan_agent_subdir(dir: &Path, kind: &str, specs: &mut Vec<CustomAgentSpec>) {
                         .and_then(|s| s.to_str())
                         .unwrap_or("custom")
                         .to_string();
-                    let (name, desc, body) = parse_markdown_frontmatter(&raw, &file_stem, kind);
-                    specs.push(CustomAgentSpec {
-                        name,
-                        description: desc,
-                        kind: kind.to_string(),
-                        file_path: path.to_string_lossy().to_string(),
-                        body_content: body,
-                    });
+                    let default_name = if file_stem == "SKILL" || file_stem == "skill" {
+                        path.parent()
+                            .and_then(|p| p.file_name())
+                            .and_then(|n| n.to_str())
+                            .unwrap_or(&file_stem)
+                    } else {
+                        &file_stem
+                    };
+                    let (name, desc, body) = parse_markdown_frontmatter(&raw, default_name, kind);
+                    if !specs.iter().any(|s| s.name == name && s.kind == kind) {
+                        specs.push(CustomAgentSpec {
+                            name,
+                            description: desc,
+                            kind: kind.to_string(),
+                            file_path: path.to_string_lossy().to_string(),
+                            body_content: body,
+                        });
+                    }
                 }
             }
         }
@@ -942,6 +996,7 @@ pub fn scan_all_sessions(
 
     let live_agy_cids = scan_running_agy_conversations();
     let mut git_sync_cache: HashMap<String, Option<GitSyncStatus>> = HashMap::new();
+    let mut project_agents_cache: HashMap<String, (Vec<CustomAgentSpec>, Vec<String>)> = HashMap::new();
     let mut sessions = Vec::new();
     for (idx, (id, _)) in selected.iter().enumerate() {
         if let Some(m) = db_meta_map.get(id) {
@@ -1033,6 +1088,16 @@ pub fn scan_all_sessions(
             }
         }
 
+        let (p_custom_agents, p_available_agents) = project_agents_cache
+            .entry(parsed.project_path.clone())
+            .or_insert_with(|| scan_project_agents_and_skills(Path::new(&parsed.project_path)))
+            .clone();
+
+        let is_erp_proj = parsed.project_name == "muop-erp-server"
+            || parsed.project_name == "muop-erp-app"
+            || Path::new(&parsed.project_path).join(".agents/rules/parallel-erp-sync.md").exists();
+        let has_parallel_flow = is_erp_proj || !parsed.spawned_subagents.is_empty() || lanes.len() > 1;
+
         sessions.push(ConversationSession {
             id: parsed.id.clone(),
             title: parsed.title.clone(),
@@ -1061,6 +1126,9 @@ pub fn scan_all_sessions(
                 .clone(),
             is_interrupted,
             interrupted_reason,
+            custom_agents: p_custom_agents,
+            available_agents: p_available_agents,
+            has_parallel_flow,
         });
     }
 
@@ -1201,6 +1269,13 @@ pub fn get_single_session_full(session_id: &str) -> Option<ConversationSession> 
         }
     }
 
+    let (custom_agents, available_agents) =
+        scan_project_agents_and_skills(Path::new(&parsed.project_path));
+    let is_erp_proj = parsed.project_name == "muop-erp-server"
+        || parsed.project_name == "muop-erp-app"
+        || Path::new(&parsed.project_path).join(".agents/rules/parallel-erp-sync.md").exists();
+    let has_parallel_flow = is_erp_proj || !parsed.spawned_subagents.is_empty() || lanes.len() > 1;
+
     Some(ConversationSession {
         id: parsed.id.clone(),
         title: parsed.title.clone(),
@@ -1226,6 +1301,9 @@ pub fn get_single_session_full(session_id: &str) -> Option<ConversationSession> 
         pending_plans: scan_pending_plans(&parsed.id),
         is_interrupted,
         interrupted_reason,
+        custom_agents,
+        available_agents,
+        has_parallel_flow,
     })
 }
 
@@ -1486,146 +1564,202 @@ fn build_subagent_lanes(
         added_names.insert(spawned.name.clone());
     }
 
-    // 2. Standard Dual-Repo Parallel Agents
-    let standard_agents = [
-        (
-            "erp-server-agent",
-            "ERP Server Backend Specialist (Go / Fiber v3 / MongoDB)",
-            "muop-erp-server",
-            "Phụ trách Clean Architecture api/v1/internal/, Isolated Collections, RBAC, Socket.IO, docs/ và go build -v .",
-        ),
-        (
-            "erp-app-agent",
-            "ERP App Flutter Specialist (Riverpod / M3 / i18n)",
-            "muop-erp-app",
-            "Phụ trách đồng bộ Model, executeRequest, Riverpod Provider, Socket.IO, Material 3, vi/en.json và flutter analyze.",
-        ),
-        (
-            "erp-contract-verifier",
-            "Cross-Repo Contract & QA Verifier",
-            "muop-erp-server ↔ muop-erp-app",
-            "Đối soát chéo Canonical Endpoint, JSON DTO, RBAC Permission, Socket.IO event và nghiệm thu kép.",
-        ),
-    ];
+    // 2. Dual-Repo Parallel Agents (Chỉ nạp nếu là dự án ERP)
+    let is_erp_project = parent.project_name == "muop-erp-server"
+        || parent.project_name == "muop-erp-app"
+        || Path::new(&parent.project_path).join(".agents/rules/parallel-erp-sync.md").exists()
+        || Path::new(&parent.project_path).join(".agents/agents/erp-server-agent.md").exists();
 
-    for (name, role, repo, desc) in standard_agents {
-        if !added_names.contains(name) {
-            let mut related_files = Vec::new();
-            for f in &parent.files_touched {
-                if ((repo == "muop-erp-server" && f.repo == "muop-erp-server")
-                    || (repo == "muop-erp-app" && f.repo == "muop-erp-app"))
-                    && !related_files.contains(&f.path)
-                {
-                    related_files.push(f.path.clone());
+    if is_erp_project {
+        let standard_agents = [
+            (
+                "erp-server-agent",
+                "ERP Server Backend Specialist (Go / Fiber v3 / MongoDB)",
+                "muop-erp-server",
+                "Phụ trách Clean Architecture api/v1/internal/, Isolated Collections, RBAC, Socket.IO, docs/ và go build -v .",
+            ),
+            (
+                "erp-app-agent",
+                "ERP App Flutter Specialist (Riverpod / M3 / i18n)",
+                "muop-erp-app",
+                "Phụ trách đồng bộ Model, executeRequest, Riverpod Provider, Socket.IO, Material 3, vi/en.json và flutter analyze.",
+            ),
+            (
+                "erp-contract-verifier",
+                "Cross-Repo Contract & QA Verifier",
+                "muop-erp-server ↔ muop-erp-app",
+                "Đối soát chéo Canonical Endpoint, JSON DTO, RBAC Permission, Socket.IO event và nghiệm thu kép.",
+            ),
+        ];
+
+        for (name, role, repo, desc) in standard_agents {
+            if !added_names.contains(name) {
+                let mut related_files = Vec::new();
+                for f in &parent.files_touched {
+                    if ((repo == "muop-erp-server" && f.repo == "muop-erp-server")
+                        || (repo == "muop-erp-app" && f.repo == "muop-erp-app"))
+                        && !related_files.contains(&f.path)
+                    {
+                        related_files.push(f.path.clone());
+                    }
+                }
+
+                // Lọc các steps thuộc về agent này
+                let agent_steps: Vec<AgentStep> = parent
+                    .steps
+                    .iter()
+                    .filter(|s| {
+                        if s.agent_name == name {
+                            return true;
+                        }
+                        if name == "erp-server-agent" {
+                            return s.tool_calls.iter().any(|tc| {
+                                tc.target_path
+                                    .as_deref()
+                                    .map(|p| p.contains("muop-erp-server"))
+                                    .unwrap_or(false)
+                            });
+                        }
+                        if name == "erp-app-agent" {
+                            return s.tool_calls.iter().any(|tc| {
+                                tc.target_path
+                                    .as_deref()
+                                    .map(|p| p.contains("muop-erp-app"))
+                                    .unwrap_or(false)
+                            });
+                        }
+                        if name == "erp-contract-verifier" {
+                            return s.phase == "crossVerification"
+                                || s.tool_calls.iter().any(|tc| {
+                                    tc.name == "run_command"
+                                        && tc
+                                            .args
+                                            .get("CommandLine")
+                                            .and_then(|v| v.as_str())
+                                            .map(|c| {
+                                                c.contains("go build") || c.contains("flutter analyze")
+                                            })
+                                            .unwrap_or(false)
+                                });
+                        }
+                        false
+                    })
+                    .cloned()
+                    .collect();
+
+                let last_step = agent_steps.last();
+                let is_this_agent_active = is_session_running
+                    && last_parent_step
+                        .map(|s| s.agent_name == name)
+                        .unwrap_or(false);
+
+                let lane_status = if is_this_agent_active {
+                    "running".to_string()
+                } else if !agent_steps.is_empty() || !related_files.is_empty() {
+                    "completed".to_string()
+                } else {
+                    "idle".to_string()
+                };
+
+                let current_action = if is_this_agent_active {
+                    last_parent_step
+                        .map(|s| s.vietnamese_title.clone())
+                        .unwrap_or_else(|| format!("Đang thực thi tác vụ trên {}", repo))
+                } else if !related_files.is_empty() {
+                    format!("Đã cập nhật {} tệp trong {}", related_files.len(), repo)
+                } else {
+                    format!("Đã đăng ký trong .agents — Sẵn sàng nhận lệnh thực thi trên {}", repo)
+                };
+
+                let current_tool = if is_this_agent_active {
+                    last_parent_step
+                        .and_then(|s| s.tool_calls.first().map(|t| t.name.clone()))
+                        .unwrap_or_else(|| "running".to_string())
+                } else if !agent_steps.is_empty() {
+                    "completed".to_string()
+                } else {
+                    "standby".to_string()
+                };
+
+                let progress = if lane_status == "running" {
+                    0.7
+                } else if lane_status == "completed" {
+                    1.0
+                } else {
+                    0.0
+                };
+
+                lanes.push(SubagentLane {
+                    id: name.to_string(),
+                    name: name.to_string(),
+                    role: role.to_string(),
+                    target_repo: repo.to_string(),
+                    status: lane_status,
+                    current_phase: last_step
+                        .map(|s| s.phase.clone())
+                        .unwrap_or_else(|| parent.current_phase.clone()),
+                    current_step_index: last_step
+                        .map(|s| s.step_index)
+                        .unwrap_or_else(|| last_parent_step.map(|s| s.step_index).unwrap_or(0)),
+                    current_action_text: current_action,
+                    current_tool_name: current_tool,
+                    prompt_brief: desc.to_string(),
+                    steps: agent_steps,
+                    progress,
+                    files_modified: related_files,
+                    last_updated: Some(parent.updated_at.to_rfc3339()),
+                });
+                added_names.insert(name.to_string());
+            }
+        }
+    } else {
+        // Dự án độc lập (như muop-agent): Quét xem có custom agent trong .agents/agents/*.md không
+        let p_agents = Path::new(&parent.project_path).join(".agents/agents");
+        if p_agents.is_dir() {
+            if let Ok(entries) = fs::read_dir(p_agents) {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if path.extension().and_then(|e| e.to_str()) == Some("md") {
+                        if let Ok(raw) = fs::read_to_string(&path) {
+                            let stem = path
+                                .file_stem()
+                                .and_then(|s| s.to_str())
+                                .unwrap_or("agent");
+                            let (name, desc, _) = parse_markdown_frontmatter(&raw, stem, "agent");
+                            if !added_names.contains(&name) {
+                                let agent_steps: Vec<AgentStep> = parent
+                                    .steps
+                                    .iter()
+                                    .filter(|s| s.agent_name == name)
+                                    .cloned()
+                                    .collect();
+                                let lane_status = if agent_steps.is_empty() {
+                                    "idle".to_string()
+                                } else {
+                                    "completed".to_string()
+                                };
+                                lanes.push(SubagentLane {
+                                    id: name.clone(),
+                                    name: name.clone(),
+                                    role: desc.clone(),
+                                    target_repo: parent.project_name.clone(),
+                                    status: lane_status,
+                                    current_phase: parent.current_phase.clone(),
+                                    current_step_index: 0,
+                                    current_action_text: format!("Custom Agent trong .agents ({})", name),
+                                    current_tool_name: "standby".to_string(),
+                                    prompt_brief: desc,
+                                    steps: agent_steps,
+                                    progress: 0.0,
+                                    files_modified: Vec::new(),
+                                    last_updated: Some(parent.updated_at.to_rfc3339()),
+                                });
+                                added_names.insert(name);
+                            }
+                        }
+                    }
                 }
             }
-
-            // Lọc các steps thuộc về agent này
-            let agent_steps: Vec<AgentStep> = parent
-                .steps
-                .iter()
-                .filter(|s| {
-                    if s.agent_name == name {
-                        return true;
-                    }
-                    if name == "erp-server-agent" {
-                        return s.tool_calls.iter().any(|tc| {
-                            tc.target_path
-                                .as_deref()
-                                .map(|p| p.contains("muop-erp-server"))
-                                .unwrap_or(false)
-                        });
-                    }
-                    if name == "erp-app-agent" {
-                        return s.tool_calls.iter().any(|tc| {
-                            tc.target_path
-                                .as_deref()
-                                .map(|p| p.contains("muop-erp-app"))
-                                .unwrap_or(false)
-                        });
-                    }
-                    if name == "erp-contract-verifier" {
-                        return s.phase == "crossVerification"
-                            || s.tool_calls.iter().any(|tc| {
-                                tc.name == "run_command"
-                                    && tc
-                                        .args
-                                        .get("CommandLine")
-                                        .and_then(|v| v.as_str())
-                                        .map(|c| {
-                                            c.contains("go build") || c.contains("flutter analyze")
-                                        })
-                                        .unwrap_or(false)
-                            });
-                    }
-                    false
-                })
-                .cloned()
-                .collect();
-
-            let last_step = agent_steps.last();
-            let is_this_agent_active = is_session_running
-                && last_parent_step
-                    .map(|s| s.agent_name == name)
-                    .unwrap_or(false);
-
-            let lane_status = if is_this_agent_active {
-                "running".to_string()
-            } else if !agent_steps.is_empty() || !related_files.is_empty() {
-                "completed".to_string()
-            } else {
-                "idle".to_string()
-            };
-
-            let current_action = if is_this_agent_active {
-                last_parent_step
-                    .map(|s| s.vietnamese_title.clone())
-                    .unwrap_or_else(|| format!("Đang thực thi tác vụ trên {}", repo))
-            } else if !related_files.is_empty() {
-                format!("Đã cập nhật {} tệp trong {}", related_files.len(), repo)
-            } else {
-                format!("Đã đăng ký trong .agents — Sẵn sàng nhận lệnh thực thi trên {}", repo)
-            };
-
-            let current_tool = if is_this_agent_active {
-                last_parent_step
-                    .and_then(|s| s.tool_calls.first().map(|t| t.name.clone()))
-                    .unwrap_or_else(|| "running".to_string())
-            } else if !agent_steps.is_empty() {
-                "completed".to_string()
-            } else {
-                "standby".to_string()
-            };
-
-            let progress = if lane_status == "running" {
-                0.7
-            } else if lane_status == "completed" {
-                1.0
-            } else {
-                0.0
-            };
-
-            lanes.push(SubagentLane {
-                id: name.to_string(),
-                name: name.to_string(),
-                role: role.to_string(),
-                target_repo: repo.to_string(),
-                status: lane_status,
-                current_phase: last_step
-                    .map(|s| s.phase.clone())
-                    .unwrap_or_else(|| parent.current_phase.clone()),
-                current_step_index: last_step
-                    .map(|s| s.step_index)
-                    .unwrap_or_else(|| last_parent_step.map(|s| s.step_index).unwrap_or(0)),
-                current_action_text: current_action,
-                current_tool_name: current_tool,
-                prompt_brief: desc.to_string(),
-                steps: agent_steps,
-                progress,
-                files_modified: related_files,
-                last_updated: Some(parent.updated_at.to_rfc3339()),
-            });
-            added_names.insert(name.to_string());
         }
     }
 

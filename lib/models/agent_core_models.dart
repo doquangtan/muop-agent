@@ -140,6 +140,8 @@ class ProjectWorkspace {
     required this.runningCount,
     this.lastActiveAt,
     this.gitSyncStatus,
+    this.customAgents = const [],
+    this.availableAgents = const ['Coordinator'],
   });
 
   final String id;
@@ -149,6 +151,8 @@ class ProjectWorkspace {
   final int runningCount;
   final DateTime? lastActiveAt;
   final GitSyncStatus? gitSyncStatus;
+  final List<CustomAgentSpec> customAgents;
+  final List<String> availableAgents;
 
   Map<String, dynamic> toJson() => {
         'id': id,
@@ -158,9 +162,27 @@ class ProjectWorkspace {
         'runningCount': runningCount,
         'lastActiveAt': lastActiveAt?.toIso8601String(),
         'gitSyncStatus': gitSyncStatus?.toJson(),
+        'customAgents': customAgents.map((e) => e.toJson()).toList(),
+        'availableAgents': availableAgents,
       };
 
   factory ProjectWorkspace.fromJson(Map<String, dynamic> json) {
+    final customList = <CustomAgentSpec>[];
+    if (json['customAgents'] is List) {
+      for (final item in json['customAgents'] as List) {
+        if (item is Map) {
+          customList.add(
+            CustomAgentSpec.fromJson(Map<String, dynamic>.from(item)),
+          );
+        }
+      }
+    }
+    final availList = <String>[];
+    if (json['availableAgents'] is List) {
+      for (final a in json['availableAgents'] as List) {
+        availList.add('$a');
+      }
+    }
     return ProjectWorkspace(
       id: '${json['id'] ?? ''}',
       name: '${json['name'] ?? ''}',
@@ -175,6 +197,8 @@ class ProjectWorkspace {
               Map<String, dynamic>.from(json['gitSyncStatus'] as Map),
             )
           : null,
+      customAgents: customList,
+      availableAgents: availList.isNotEmpty ? availList : const ['Coordinator'],
     );
   }
 }
@@ -620,6 +644,9 @@ class ConversationSession {
     this.gitSyncStatus,
     this.isInterrupted = false,
     this.interruptedReason,
+    this.customAgents = const [],
+    this.availableAgents = const ['Coordinator'],
+    this.hasParallelFlow = false,
   });
 
   final String id;
@@ -642,6 +669,9 @@ class ConversationSession {
   final GitSyncStatus? gitSyncStatus;
   final bool isInterrupted;
   final String? interruptedReason;
+  final List<CustomAgentSpec> customAgents;
+  final List<String> availableAgents;
+  final bool hasParallelFlow;
 
   int get subagentCount => subagentLanes.length;
 
@@ -666,6 +696,9 @@ class ConversationSession {
     GitSyncStatus? gitSyncStatus,
     bool? isInterrupted,
     String? interruptedReason,
+    List<CustomAgentSpec>? customAgents,
+    List<String>? availableAgents,
+    bool? hasParallelFlow,
   }) {
     return ConversationSession(
       id: id ?? this.id,
@@ -688,6 +721,9 @@ class ConversationSession {
       gitSyncStatus: gitSyncStatus ?? this.gitSyncStatus,
       isInterrupted: isInterrupted ?? this.isInterrupted,
       interruptedReason: interruptedReason ?? this.interruptedReason,
+      customAgents: customAgents ?? this.customAgents,
+      availableAgents: availableAgents ?? this.availableAgents,
+      hasParallelFlow: hasParallelFlow ?? this.hasParallelFlow,
     );
   }
 
@@ -712,6 +748,9 @@ class ConversationSession {
         'gitSyncStatus': gitSyncStatus?.toJson(),
         'isInterrupted': isInterrupted,
         'interruptedReason': interruptedReason,
+        'customAgents': customAgents.map((e) => e.toJson()).toList(),
+        'availableAgents': availableAgents,
+        'hasParallelFlow': hasParallelFlow,
       };
 
   factory ConversationSession.fromJson(Map<String, dynamic> json) {
@@ -753,6 +792,23 @@ class ConversationSession {
       }
     }
 
+    final customList = <CustomAgentSpec>[];
+    if (json['customAgents'] is List) {
+      for (final item in json['customAgents'] as List) {
+        if (item is Map) {
+          customList.add(
+            CustomAgentSpec.fromJson(Map<String, dynamic>.from(item)),
+          );
+        }
+      }
+    }
+    final availList = <String>[];
+    if (json['availableAgents'] is List) {
+      for (final a in json['availableAgents'] as List) {
+        availList.add('$a');
+      }
+    }
+
     return ConversationSession(
       id: '${json['id'] ?? ''}',
       title: '${json['title'] ?? ''}',
@@ -787,6 +843,9 @@ class ConversationSession {
           : null,
       isInterrupted: json['isInterrupted'] == true,
       interruptedReason: json['interruptedReason']?.toString(),
+      customAgents: customList,
+      availableAgents: availList.isNotEmpty ? availList : const ['Coordinator'],
+      hasParallelFlow: json['hasParallelFlow'] == true,
     );
   }
 }
@@ -1106,6 +1165,60 @@ class CreateProjectResult {
               Map<String, dynamic>.from(json['project'] as Map),
             )
           : null,
+      error: json['error']?.toString(),
+    );
+  }
+}
+
+class ProjectAgentsResponse {
+  const ProjectAgentsResponse({
+    required this.ok,
+    required this.projectPath,
+    required this.projectName,
+    required this.availableAgents,
+    required this.customAgents,
+    required this.skills,
+    required this.rules,
+    this.error,
+  });
+
+  final bool ok;
+  final String projectPath;
+  final String projectName;
+  final List<String> availableAgents;
+  final List<CustomAgentSpec> customAgents;
+  final List<CustomAgentSpec> skills;
+  final List<CustomAgentSpec> rules;
+  final String? error;
+
+  factory ProjectAgentsResponse.fromJson(Map<String, dynamic> json) {
+    final available = <String>[];
+    if (json['availableAgents'] is List) {
+      for (final a in json['availableAgents'] as List) {
+        available.add('$a');
+      }
+    }
+
+    List<CustomAgentSpec> parseList(dynamic raw) {
+      final list = <CustomAgentSpec>[];
+      if (raw is List) {
+        for (final item in raw) {
+          if (item is Map) {
+            list.add(CustomAgentSpec.fromJson(Map<String, dynamic>.from(item)));
+          }
+        }
+      }
+      return list;
+    }
+
+    return ProjectAgentsResponse(
+      ok: json['ok'] == true,
+      projectPath: '${json['projectPath'] ?? ''}',
+      projectName: '${json['projectName'] ?? ''}',
+      availableAgents: available,
+      customAgents: parseList(json['customAgents']),
+      skills: parseList(json['skills']),
+      rules: parseList(json['rules']),
       error: json['error']?.toString(),
     );
   }
