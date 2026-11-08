@@ -3041,18 +3041,29 @@ class _ChatCanvasViewState extends State<ChatCanvasView> {
       gitCommitDetail = lastStep.vietnameseDetail;
     }
 
+    final int? currentStepIndex = lastStep?.stepIndex;
+    final String stepBadgeLabel = currentStepIndex != null ? 'Bước #$currentStepIndex' : '';
+
     // Xác định trạng thái tác vụ cụ thể của Coordinator
     String coordinatorToolBadge = '';
     Color coordinatorBadgeColor = colorScheme.primary;
-    IconData coordinatorActionIcon = Icons.psychology_rounded;
-    String coordinatorActionTitle = 'Đang suy nghĩ & phân tích';
-    String coordinatorActionDetail = '';
+    IconData coordinatorActionIcon = Icons.smart_toy_rounded;
+    String coordinatorActionTitle = currentStepIndex != null
+        ? 'Bước #$currentStepIndex: Robot đang suy nghĩ & phân tích'
+        : 'Robot đang suy nghĩ & phân tích';
+    String coordinatorActionDetail = _extractSpecificThinkingDetail(
+      stream?.streamingText ?? '',
+      stream?.userPrompt ?? '',
+      lastStep,
+    );
 
     if (isGitCommitTask) {
       coordinatorToolBadge = 'git commit';
       coordinatorBadgeColor = Colors.teal;
       coordinatorActionIcon = Icons.commit_rounded;
-      coordinatorActionTitle = 'Đang tạo Git Commit';
+      coordinatorActionTitle = currentStepIndex != null
+          ? 'Bước #$currentStepIndex: Đang tạo Git Commit'
+          : 'Đang tạo Git Commit';
       coordinatorActionDetail = gitCommitDetail.isNotEmpty
           ? gitCommitDetail
           : 'Tạo git commit cho các thay đổi trong phiên làm việc';
@@ -3066,80 +3077,78 @@ class _ChatCanvasViewState extends State<ChatCanvasView> {
           coordinatorActionIcon = Icons.terminal_rounded;
           final summary = lastTool.args['toolSummary']?.toString() ?? '';
           final cmd = lastTool.args['CommandLine']?.toString() ?? '';
-          coordinatorActionTitle = summary.isNotEmpty
-              ? summary
-              : (lastStep.vietnameseTitle.isNotEmpty
-                  ? lastStep.vietnameseTitle
-                  : 'Thực thi lệnh terminal');
+          coordinatorActionTitle = 'Bước #$currentStepIndex: ${summary.isNotEmpty ? summary : (lastStep.vietnameseTitle.isNotEmpty ? lastStep.vietnameseTitle : 'Thực thi lệnh terminal')}';
           coordinatorActionDetail = cmd.isNotEmpty ? cmd : lastStep.vietnameseDetail;
           break;
         case 'edit_file':
           coordinatorBadgeColor = Colors.orange;
           coordinatorActionIcon = Icons.edit_note_rounded;
           final path = lastTool.args['Path']?.toString() ?? '';
-          coordinatorActionTitle = lastStep.vietnameseTitle.isNotEmpty
-              ? lastStep.vietnameseTitle
-              : 'Chỉnh sửa tệp nguồn';
+          coordinatorActionTitle = 'Bước #$currentStepIndex: ${lastStep.vietnameseTitle.isNotEmpty ? lastStep.vietnameseTitle : 'Chỉnh sửa tệp nguồn'}';
           coordinatorActionDetail = path.isNotEmpty ? path.split('/').last : lastStep.vietnameseDetail;
           break;
         case 'write_file':
           coordinatorBadgeColor = Colors.teal;
           coordinatorActionIcon = Icons.note_add_rounded;
           final path = lastTool.args['Path']?.toString() ?? '';
-          coordinatorActionTitle = lastStep.vietnameseTitle.isNotEmpty
-              ? lastStep.vietnameseTitle
-              : 'Tạo mới tệp tin';
+          coordinatorActionTitle = 'Bước #$currentStepIndex: ${lastStep.vietnameseTitle.isNotEmpty ? lastStep.vietnameseTitle : 'Tạo mới tệp tin'}';
           coordinatorActionDetail = path.isNotEmpty ? path.split('/').last : lastStep.vietnameseDetail;
           break;
         case 'read_file':
           coordinatorBadgeColor = Colors.amber.shade700;
           coordinatorActionIcon = Icons.search_rounded;
           final path = lastTool.args['Path']?.toString() ?? '';
-          coordinatorActionTitle = lastStep.vietnameseTitle.isNotEmpty
-              ? lastStep.vietnameseTitle
-              : 'Đọc nội dung tệp tin';
+          coordinatorActionTitle = 'Bước #$currentStepIndex: ${lastStep.vietnameseTitle.isNotEmpty ? lastStep.vietnameseTitle : 'Đọc nội dung tệp tin'}';
           coordinatorActionDetail = path.isNotEmpty ? path.split('/').last : lastStep.vietnameseDetail;
           break;
         case 'invoke_subagent':
           coordinatorBadgeColor = Colors.purpleAccent;
           coordinatorActionIcon = Icons.alt_route_rounded;
           final role = lastTool.args['Role']?.toString() ?? '';
-          coordinatorActionTitle = role.isNotEmpty
-              ? 'Phân quyền: $role'
-              : 'Điều phối Subagent song song';
+          coordinatorActionTitle = 'Bước #$currentStepIndex: ${role.isNotEmpty ? 'Phân quyền: $role' : 'Điều phối Subagent song song'}';
           coordinatorActionDetail = lastTool.args['Prompt']?.toString() ?? lastStep.vietnameseDetail;
           break;
         default:
           coordinatorBadgeColor = Colors.deepPurpleAccent;
           coordinatorActionIcon = Icons.build_circle_outlined;
-          coordinatorActionTitle = lastStep.vietnameseTitle.isNotEmpty
-              ? lastStep.vietnameseTitle
-              : 'Công cụ: $toolName';
+          coordinatorActionTitle = 'Bước #$currentStepIndex: ${lastStep.vietnameseTitle.isNotEmpty ? lastStep.vietnameseTitle : 'Công cụ: $toolName'}';
           coordinatorActionDetail = lastStep.vietnameseDetail;
       }
     } else if (stream != null && stream.streamingText.isNotEmpty) {
       coordinatorToolBadge = 'Thinking';
       coordinatorBadgeColor = Colors.purpleAccent;
-      coordinatorActionIcon = Icons.psychology_rounded;
-      coordinatorActionTitle = 'Đang suy nghĩ & phân tích giải pháp';
-      final cleanText = stream.streamingText.replaceAll('\n', ' ').trim();
-      coordinatorActionDetail = cleanText.length > 80
-          ? '${cleanText.substring(0, 80)}...'
-          : cleanText;
+      coordinatorActionIcon = Icons.smart_toy_rounded;
+      coordinatorActionTitle = currentStepIndex != null
+          ? 'Bước #$currentStepIndex: Robot đang suy nghĩ & xử lý'
+          : 'Robot đang suy nghĩ & xử lý';
+      coordinatorActionDetail = _extractSpecificThinkingDetail(
+        stream.streamingText,
+        stream.userPrompt,
+        lastStep,
+      );
     } else if (lastStep != null) {
-      coordinatorToolBadge = lastStep.type == 'PLANNER_RESPONSE' ? 'Thinking' : lastStep.type;
-      coordinatorBadgeColor = colorScheme.primary;
-      coordinatorActionIcon = Icons.psychology_rounded;
-      coordinatorActionTitle = lastStep.vietnameseTitle.isNotEmpty
-          ? lastStep.vietnameseTitle
-          : 'Đang xử lý yêu cầu';
-      coordinatorActionDetail = lastStep.vietnameseDetail;
+      final isPlanner = lastStep.type == 'PLANNER_RESPONSE';
+      coordinatorToolBadge = isPlanner ? 'Thinking' : lastStep.type;
+      coordinatorBadgeColor = isPlanner ? Colors.purpleAccent : colorScheme.primary;
+      coordinatorActionIcon = isPlanner ? Icons.smart_toy_rounded : Icons.psychology_rounded;
+      coordinatorActionTitle = currentStepIndex != null
+          ? 'Bước #$currentStepIndex: ${isPlanner ? 'Robot đang suy nghĩ & phân tích' : (lastStep.vietnameseTitle.isNotEmpty ? lastStep.vietnameseTitle : 'Đang xử lý bước #$currentStepIndex')}'
+          : (lastStep.vietnameseTitle.isNotEmpty ? lastStep.vietnameseTitle : 'Đang xử lý yêu cầu');
+      coordinatorActionDetail = _extractSpecificThinkingDetail(
+        stream?.streamingText ?? '',
+        stream?.userPrompt ?? '',
+        lastStep,
+      );
     } else {
-      coordinatorToolBadge = 'Running';
-      coordinatorBadgeColor = colorScheme.primary;
-      coordinatorActionIcon = Icons.bolt_rounded;
-      coordinatorActionTitle = 'Đang thực thi nhiệm vụ';
-      coordinatorActionDetail = stream?.userPrompt ?? '';
+      coordinatorToolBadge = 'Thinking';
+      coordinatorBadgeColor = Colors.purpleAccent;
+      coordinatorActionIcon = Icons.smart_toy_rounded;
+      coordinatorActionTitle = 'Robot đang suy nghĩ & phân tích';
+      coordinatorActionDetail = _extractSpecificThinkingDetail(
+        stream?.streamingText ?? '',
+        stream?.userPrompt ?? '',
+        null,
+      );
     }
 
     final taskPath = (stream != null && stream.projectPath.isNotEmpty)
@@ -3340,19 +3349,25 @@ class _ChatCanvasViewState extends State<ChatCanvasView> {
               borderRadius: BorderRadius.circular(8),
               onTap: () => _showRunningCoordinatorDetailModal(context),
               child: Padding(
-                padding: const EdgeInsets.fromLTRB(14, 4, 14, 7),
+                padding: const EdgeInsets.fromLTRB(14, 5, 14, 8),
                 child: Row(
                   children: [
-                    SizedBox(
-                      width: 14,
-                      height: 14,
-                      child: CircularProgressIndicator(
-                        strokeWidth: 1.8,
-                        valueColor: AlwaysStoppedAnimation<Color>(
-                          colorScheme.onSurfaceVariant.withAlpha(200),
+                    if (coordinatorToolBadge == 'Thinking')
+                      const _AnimatedThinkingRobotIcon(
+                        size: 16,
+                        color: Colors.purpleAccent,
+                      )
+                    else
+                      SizedBox(
+                        width: 15,
+                        height: 15,
+                        child: CircularProgressIndicator(
+                          strokeWidth: 2,
+                          valueColor: AlwaysStoppedAnimation<Color>(
+                            coordinatorBadgeColor,
+                          ),
                         ),
                       ),
-                    ),
                     const SizedBox(width: 10),
                     Expanded(
                       child: Column(
@@ -3368,6 +3383,32 @@ class _ChatCanvasViewState extends State<ChatCanvasView> {
                                   color: colorScheme.primary,
                                 ),
                               ),
+                              if (stepBadgeLabel.isNotEmpty) ...[
+                                const SizedBox(width: 6),
+                                Container(
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: 5,
+                                    vertical: 1,
+                                  ),
+                                  decoration: BoxDecoration(
+                                    color: colorScheme.primaryContainer.withAlpha(140),
+                                    borderRadius: BorderRadius.circular(4),
+                                    border: Border.all(
+                                      color: colorScheme.primary.withAlpha(140),
+                                      width: 0.8,
+                                    ),
+                                  ),
+                                  child: Text(
+                                    stepBadgeLabel,
+                                    style: TextStyle(
+                                      fontFamily: 'monospace',
+                                      fontSize: 9.5,
+                                      fontWeight: FontWeight.w800,
+                                      color: colorScheme.onPrimaryContainer,
+                                    ),
+                                  ),
+                                ),
+                              ],
                               if (coordinatorToolBadge.isNotEmpty) ...[
                                 const SizedBox(width: 6),
                                 Container(
@@ -3428,14 +3469,20 @@ class _ChatCanvasViewState extends State<ChatCanvasView> {
                               ),
                             ],
                           ),
-                          const SizedBox(height: 2),
+                          const SizedBox(height: 3),
                           Row(
                             children: [
-                              Icon(
-                                coordinatorActionIcon,
-                                size: 12,
-                                color: coordinatorBadgeColor,
-                              ),
+                              if (coordinatorToolBadge == 'Thinking')
+                                const _AnimatedThinkingRobotIcon(
+                                  size: 12,
+                                  color: Colors.purpleAccent,
+                                )
+                              else
+                                Icon(
+                                  coordinatorActionIcon,
+                                  size: 12,
+                                  color: coordinatorBadgeColor,
+                                ),
                               const SizedBox(width: 5),
                               Expanded(
                                 child: Text(
@@ -3446,7 +3493,7 @@ class _ChatCanvasViewState extends State<ChatCanvasView> {
                                   overflow: TextOverflow.ellipsis,
                                   style: TextStyle(
                                     fontSize: 11,
-                                    fontWeight: FontWeight.w500,
+                                    fontWeight: FontWeight.w600,
                                     color: coordinatorBadgeColor,
                                   ),
                                 ),
@@ -4993,6 +5040,9 @@ class _ChatCanvasViewState extends State<ChatCanvasView> {
   ) {
     final colorScheme = Theme.of(context).colorScheme;
     final textTheme = Theme.of(context).textTheme;
+    final lastStep = widget.session?.steps.isNotEmpty == true
+        ? widget.session!.steps.last
+        : null;
 
     return Padding(
       padding: const EdgeInsets.only(bottom: 20),
@@ -5023,53 +5073,49 @@ class _ChatCanvasViewState extends State<ChatCanvasView> {
               ),
             ),
           const SizedBox(height: 10),
-          Row(
-            children: [
-              if (stream.isRunning)
-                SizedBox(
-                  width: 14,
-                  height: 14,
-                  child: CircularProgressIndicator(
-                    strokeWidth: 2,
-                    color: colorScheme.primary,
-                  ),
-                )
-              else
+          if (stream.isRunning)
+            _AnimatedThinkingRobotCard(
+              stream: stream,
+              lastStep: lastStep,
+              collapsedTailLines: _collapsedTailLines,
+            )
+          else ...[
+            Row(
+              children: [
                 const Icon(
                   Icons.check_circle_outline_rounded,
                   size: 16,
                   color: Colors.teal,
                 ),
-              const SizedBox(width: 8),
-              Expanded(
-                child: Text(
-                  stream.isRunning
-                      ? 'Thinking & executing (${stream.activeStepType})...'
-                      : 'Completed',
-                  style: textTheme.labelMedium?.copyWith(
-                    color: colorScheme.onSurfaceVariant,
-                    fontWeight: FontWeight.w600,
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    'Hoàn tất xử lý',
+                    style: textTheme.labelMedium?.copyWith(
+                      color: Colors.teal,
+                      fontWeight: FontWeight.w700,
+                    ),
                   ),
+                ),
+              ],
+            ),
+            if (stream.streamingText.trim().isNotEmpty) ...[
+              const SizedBox(height: 8),
+              SelectableText(
+                stream.streamingText
+                    .trimRight()
+                    .split('\n')
+                    .reversed
+                    .take(_collapsedTailLines)
+                    .toList()
+                    .reversed
+                    .join('\n'),
+                style: textTheme.bodyMedium?.copyWith(
+                  height: 1.5,
+                  color: colorScheme.onSurface,
                 ),
               ),
             ],
-          ),
-          if (stream.streamingText.trim().isNotEmpty) ...[
-            const SizedBox(height: 8),
-            SelectableText(
-              stream.streamingText
-                  .trimRight()
-                  .split('\n')
-                  .reversed
-                  .take(_collapsedTailLines)
-                  .toList()
-                  .reversed
-                  .join('\n'),
-              style: textTheme.bodyMedium?.copyWith(
-                height: 1.5,
-                color: colorScheme.onSurface,
-              ),
-            ),
           ],
           if (stream.error.isNotEmpty) ...[
             const SizedBox(height: 8),
@@ -6294,6 +6340,462 @@ class _ComposerPill extends StatelessWidget {
           ],
         ],
       ),
+    );
+  }
+}
+
+String _extractSpecificThinkingDetail(
+  String rawStreamText,
+  String userPrompt,
+  AgentStep? step,
+) {
+  // 1. Nếu có streaming text từ agent, lấy dòng suy nghĩ có nghĩa gần nhất
+  if (rawStreamText.isNotEmpty) {
+    final lines = rawStreamText
+        .split('\n')
+        .map((l) => l.trim())
+        .where((l) =>
+            l.isNotEmpty &&
+            !l.startsWith('```') &&
+            !l.startsWith('#') &&
+            !l.startsWith('<thought>') &&
+            !l.startsWith('</thought>'))
+        .toList();
+    if (lines.isNotEmpty) {
+      for (int i = lines.length - 1; i >= 0; i--) {
+        final line = lines[i];
+        final clean = line.replaceAll(RegExp(r'^[\*\-\d\.\s\>\:]+'), '').trim();
+        if (clean.length >= 8 && !clean.toLowerCase().startsWith('ok')) {
+          return clean.length > 95 ? '${clean.substring(0, 95)}...' : clean;
+        }
+      }
+    }
+  }
+
+  // 2. Nếu có step.thinking
+  if (step != null && step.thinking.isNotEmpty) {
+    final lines = step.thinking
+        .split('\n')
+        .map((l) => l.trim())
+        .where((l) =>
+            l.isNotEmpty &&
+            !l.startsWith('```') &&
+            !l.startsWith('#') &&
+            !l.startsWith('<thought>') &&
+            !l.startsWith('</thought>'))
+        .toList();
+    if (lines.isNotEmpty) {
+      for (int i = lines.length - 1; i >= 0; i--) {
+        final line = lines[i];
+        final clean = line.replaceAll(RegExp(r'^[\*\-\d\.\s\>\:]+'), '').trim();
+        if (clean.length >= 8) {
+          return clean.length > 95 ? '${clean.substring(0, 95)}...' : clean;
+        }
+      }
+    }
+  }
+
+  // 3. Nếu có step.toolCalls
+  if (step != null && step.toolCalls.isNotEmpty) {
+    final t = step.toolCalls.last;
+    final summary = t.args['toolSummary']?.toString() ?? '';
+    if (summary.isNotEmpty) return summary;
+    final path = t.args['Path']?.toString() ?? '';
+    if (path.isNotEmpty) return '${t.name}: ${path.split('/').last}';
+    final cmd = t.args['CommandLine']?.toString() ?? '';
+    if (cmd.isNotEmpty) return '${t.name}: $cmd';
+  }
+
+  // 4. Nếu có step.vietnameseDetail hoặc vietnameseTitle
+  if (step != null && step.vietnameseDetail.isNotEmpty) {
+    return step.vietnameseDetail;
+  }
+  if (step != null && step.vietnameseTitle.isNotEmpty) {
+    return step.vietnameseTitle;
+  }
+
+  // 5. Fallback vào userPrompt
+  if (userPrompt.trim().isNotEmpty) {
+    final cleanPrompt = userPrompt.replaceAll('\n', ' ').trim();
+    return 'Đang phân tích yêu cầu: ${cleanPrompt.length > 70 ? '${cleanPrompt.substring(0, 70)}...' : cleanPrompt}';
+  }
+
+  return 'Đang suy nghĩ và lập kế hoạch thực hiện...';
+}
+
+/// Icon con robot với animation đang xử lý (pulsing scale, breathing glow & radar effect)
+class _AnimatedThinkingRobotIcon extends StatefulWidget {
+  const _AnimatedThinkingRobotIcon({
+    this.size = 18,
+    this.color,
+  });
+
+  final double size;
+  final Color? color;
+
+  @override
+  State<_AnimatedThinkingRobotIcon> createState() =>
+      _AnimatedThinkingRobotIconState();
+}
+
+class _AnimatedThinkingRobotIconState extends State<_AnimatedThinkingRobotIcon>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _controller;
+  late final Animation<double> _scaleAnimation;
+  late final Animation<double> _glowAnimation;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 1400),
+    )..repeat(reverse: true);
+
+    _scaleAnimation = Tween<double>(begin: 0.88, end: 1.12).animate(
+      CurvedAnimation(parent: _controller, curve: Curves.easeInOut),
+    );
+
+    _glowAnimation = Tween<double>(begin: 0.25, end: 0.85).animate(
+      CurvedAnimation(parent: _controller, curve: Curves.easeInOut),
+    );
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final effectiveColor =
+        widget.color ?? Theme.of(context).colorScheme.primary;
+
+    return AnimatedBuilder(
+      animation: _controller,
+      builder: (context, child) {
+        return Transform.scale(
+          scale: _scaleAnimation.value,
+          child: Container(
+            width: widget.size + 8,
+            height: widget.size + 8,
+            decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              color: effectiveColor.withAlpha((35 * _glowAnimation.value).round()),
+              boxShadow: [
+                BoxShadow(
+                  color: effectiveColor.withAlpha((80 * _glowAnimation.value).round()),
+                  blurRadius: 8 * _glowAnimation.value,
+                  spreadRadius: 1.2 * _glowAnimation.value,
+                ),
+              ],
+            ),
+            child: Center(
+              child: Icon(
+                Icons.smart_toy_rounded,
+                size: widget.size,
+                color: effectiveColor,
+              ),
+            ),
+          ),
+        );
+      },
+    );
+  }
+}
+
+/// Card trực quan hiển thị Robot Coordinator đang suy nghĩ & phân tích với animation
+class _AnimatedThinkingRobotCard extends StatefulWidget {
+  const _AnimatedThinkingRobotCard({
+    required this.stream,
+    this.lastStep,
+    this.collapsedTailLines = 10,
+  });
+
+  final ChatTurnStreamState stream;
+  final AgentStep? lastStep;
+  final int collapsedTailLines;
+
+  @override
+  State<_AnimatedThinkingRobotCard> createState() =>
+      _AnimatedThinkingRobotCardState();
+}
+
+class _AnimatedThinkingRobotCardState extends State<_AnimatedThinkingRobotCard>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _pulseController;
+  late final Animation<double> _borderGlowAnimation;
+  bool _isTraceExpanded = true;
+
+  @override
+  void initState() {
+    super.initState();
+    _pulseController = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 1600),
+    )..repeat(reverse: true);
+
+    _borderGlowAnimation = Tween<double>(begin: 0.35, end: 0.95).animate(
+      CurvedAnimation(parent: _pulseController, curve: Curves.easeInOut),
+    );
+  }
+
+  @override
+  void dispose() {
+    _pulseController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+    final textTheme = Theme.of(context).textTheme;
+    final stream = widget.stream;
+    final lastStep = widget.lastStep;
+
+    final stepIndex = lastStep?.stepIndex;
+    final specificAction = _extractSpecificThinkingDetail(
+      stream.streamingText,
+      stream.userPrompt,
+      lastStep,
+    );
+
+    return AnimatedBuilder(
+      animation: _pulseController,
+      builder: (context, child) {
+        return Container(
+          margin: const EdgeInsets.only(top: 6, bottom: 8),
+          decoration: BoxDecoration(
+            color: colorScheme.surfaceContainerHigh.withAlpha(240),
+            borderRadius: BorderRadius.circular(14),
+            border: Border.all(
+              color: Colors.deepPurpleAccent
+                  .withAlpha((180 * _borderGlowAnimation.value).round()),
+              width: 1.2,
+            ),
+            boxShadow: [
+              BoxShadow(
+                color: Colors.deepPurpleAccent
+                    .withAlpha((40 * _borderGlowAnimation.value).round()),
+                blurRadius: 10 * _borderGlowAnimation.value,
+                spreadRadius: 1,
+              ),
+            ],
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              // Header Card
+              Padding(
+                padding: const EdgeInsets.fromLTRB(12, 10, 12, 8),
+                child: Row(
+                  children: [
+                    const _AnimatedThinkingRobotIcon(
+                      size: 20,
+                      color: Colors.deepPurpleAccent,
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Row(
+                            children: [
+                              Text(
+                                'Robot Coordinator',
+                                style: textTheme.labelMedium?.copyWith(
+                                  fontWeight: FontWeight.w800,
+                                  color: Colors.deepPurpleAccent,
+                                ),
+                              ),
+                              if (stepIndex != null) ...[
+                                const SizedBox(width: 6),
+                                Container(
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: 5,
+                                    vertical: 1,
+                                  ),
+                                  decoration: BoxDecoration(
+                                    color: colorScheme.primaryContainer.withAlpha(150),
+                                    borderRadius: BorderRadius.circular(4),
+                                    border: Border.all(
+                                      color: colorScheme.primary.withAlpha(120),
+                                      width: 0.8,
+                                    ),
+                                  ),
+                                  child: Text(
+                                    'Bước #$stepIndex',
+                                    style: TextStyle(
+                                      fontFamily: 'monospace',
+                                      fontSize: 9.5,
+                                      fontWeight: FontWeight.w800,
+                                      color: colorScheme.onPrimaryContainer,
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ],
+                          ),
+                          const SizedBox(height: 2),
+                          Row(
+                            children: [
+                              Container(
+                                width: 6,
+                                height: 6,
+                                decoration: BoxDecoration(
+                                  shape: BoxShape.circle,
+                                  color: Colors.tealAccent.shade700,
+                                ),
+                              ),
+                              const SizedBox(width: 4),
+                              Text(
+                                'AI Thinking • ${stream.activeStepType.isNotEmpty ? stream.activeStepType : 'processing'}',
+                                style: textTheme.labelSmall?.copyWith(
+                                  fontSize: 10,
+                                  color: colorScheme.onSurfaceVariant,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ],
+                      ),
+                    ),
+                    // Nút thu gọn / mở rộng chi tiết suy nghĩ
+                    if (stream.streamingText.trim().isNotEmpty)
+                      InkWell(
+                        borderRadius: BorderRadius.circular(6),
+                        onTap: () => setState(() => _isTraceExpanded = !_isTraceExpanded),
+                        child: Padding(
+                          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 3),
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Text(
+                                _isTraceExpanded ? 'Thu gọn' : 'Chi tiết',
+                                style: TextStyle(
+                                  fontSize: 10.5,
+                                  color: colorScheme.onSurfaceVariant,
+                                ),
+                              ),
+                              const SizedBox(width: 2),
+                              Icon(
+                                _isTraceExpanded
+                                    ? Icons.keyboard_arrow_up_rounded
+                                    : Icons.keyboard_arrow_down_rounded,
+                                size: 14,
+                                color: colorScheme.onSurfaceVariant,
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                  ],
+                ),
+              ),
+
+              // Banner: Đang làm cụ thể những gì
+              Container(
+                margin: const EdgeInsets.symmetric(horizontal: 10, vertical: 2),
+                padding: const EdgeInsets.all(9),
+                decoration: BoxDecoration(
+                  color: Colors.deepPurpleAccent.withAlpha(25),
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(
+                    color: Colors.deepPurpleAccent.withAlpha(70),
+                  ),
+                ),
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Padding(
+                      padding: EdgeInsets.only(top: 2),
+                      child: Icon(
+                        Icons.bolt_rounded,
+                        size: 14,
+                        color: Colors.deepPurpleAccent,
+                      ),
+                    ),
+                    const SizedBox(width: 7),
+                    Expanded(
+                      child: RichText(
+                        text: TextSpan(
+                          children: [
+                            const TextSpan(
+                              text: 'Đang làm: ',
+                              style: TextStyle(
+                                fontSize: 11.5,
+                                fontWeight: FontWeight.w800,
+                                color: Colors.deepPurpleAccent,
+                              ),
+                            ),
+                            TextSpan(
+                              text: specificAction,
+                              style: TextStyle(
+                                fontSize: 11.5,
+                                fontWeight: FontWeight.w600,
+                                color: colorScheme.onSurface,
+                                height: 1.35,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+
+              // Nội dung chi tiết suy nghĩ nếu có và đang mở
+              if (_isTraceExpanded && stream.streamingText.trim().isNotEmpty) ...[
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(10, 6, 10, 10),
+                  child: Container(
+                    padding: const EdgeInsets.all(10),
+                    decoration: BoxDecoration(
+                      color: colorScheme.surfaceContainerLowest,
+                      borderRadius: BorderRadius.circular(8),
+                      border: Border.all(
+                        color: colorScheme.outlineVariant.withAlpha(60),
+                      ),
+                    ),
+                    child: SelectableText(
+                      stream.streamingText
+                          .trimRight()
+                          .split('\n')
+                          .reversed
+                          .take(widget.collapsedTailLines)
+                          .toList()
+                          .reversed
+                          .join('\n'),
+                      style: textTheme.bodySmall?.copyWith(
+                        fontFamily: 'monospace',
+                        fontSize: 11,
+                        height: 1.45,
+                        color: colorScheme.onSurfaceVariant,
+                      ),
+                    ),
+                  ),
+                ),
+              ] else
+                const SizedBox(height: 6),
+
+              if (stream.error.isNotEmpty) ...[
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(10, 0, 10, 8),
+                  child: Text(
+                    stream.error,
+                    style: textTheme.bodySmall?.copyWith(
+                      color: Colors.redAccent,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ),
+              ],
+            ],
+          ),
+        );
+      },
     );
   }
 }
