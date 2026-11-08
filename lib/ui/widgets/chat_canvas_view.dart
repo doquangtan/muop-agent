@@ -5049,30 +5049,6 @@ class _ChatCanvasViewState extends State<ChatCanvasView> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          if (stream.userPrompt.isNotEmpty)
-            Align(
-              alignment: Alignment.centerRight,
-              child: Container(
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 14,
-                  vertical: 10,
-                ),
-                decoration: BoxDecoration(
-                  color: colorScheme.surfaceContainerHighest,
-                  borderRadius: BorderRadius.circular(16),
-                  border: Border.all(
-                    color: colorScheme.outlineVariant.withAlpha(140),
-                  ),
-                ),
-                child: Text(
-                  stream.userPrompt,
-                  style: textTheme.bodyMedium?.copyWith(
-                    color: colorScheme.onSurface,
-                  ),
-                ),
-              ),
-            ),
-          const SizedBox(height: 10),
           if (stream.isRunning)
             _AnimatedThinkingRobotCard(
               stream: stream,
@@ -6523,10 +6499,19 @@ class _AnimatedThinkingRobotCard extends StatefulWidget {
 }
 
 class _AnimatedThinkingRobotCardState extends State<_AnimatedThinkingRobotCard>
-    with SingleTickerProviderStateMixin {
+    with TickerProviderStateMixin {
   late final AnimationController _pulseController;
   late final Animation<double> _borderGlowAnimation;
+
+  late final AnimationController _rolloutController;
+  late final Animation<double> _rolloutAnimation;
+  late final Animation<Offset> _rolloutSlide;
+  late final Animation<double> _rolloutFade;
+
   bool _isTraceExpanded = true;
+  DateTime? _lastRolloutTrigger;
+  int _lastLineCount = 0;
+  String _lastAction = '';
 
   @override
   void initState() {
@@ -6539,11 +6524,102 @@ class _AnimatedThinkingRobotCardState extends State<_AnimatedThinkingRobotCard>
     _borderGlowAnimation = Tween<double>(begin: 0.35, end: 0.95).animate(
       CurvedAnimation(parent: _pulseController, curve: Curves.easeInOut),
     );
+
+    _rolloutController = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 380),
+    );
+
+    _rolloutAnimation = CurvedAnimation(
+      parent: _rolloutController,
+      curve: Curves.easeOutCubic,
+    );
+
+    _rolloutSlide = Tween<Offset>(
+      begin: const Offset(0, 0.08),
+      end: Offset.zero,
+    ).animate(_rolloutAnimation);
+
+    _rolloutFade = Tween<double>(
+      begin: 0.15,
+      end: 1.0,
+    ).animate(_rolloutAnimation);
+
+    final text = widget.stream.streamingText;
+    final action = _extractSpecificThinkingDetail(
+      text,
+      widget.stream.userPrompt,
+      widget.lastStep,
+    );
+    _lastAction = action;
+    final lines = text.trimRight().split('\n');
+    _lastLineCount = text.trim().isEmpty ? 0 : lines.length;
+
+    if (text.trim().isNotEmpty) {
+      // Hiện title trước, sau đó animation chạy ra nội dung 10 dòng gần nhất
+      Future.delayed(const Duration(milliseconds: 150), () {
+        if (mounted) {
+          _rolloutController.forward(from: 0.0);
+        }
+      });
+    } else {
+      _rolloutController.value = 0.0;
+    }
+  }
+
+  @override
+  void didUpdateWidget(_AnimatedThinkingRobotCard oldWidget) {
+    super.didUpdateWidget(oldWidget);
+
+    final oldText = oldWidget.stream.streamingText;
+    final newText = widget.stream.streamingText;
+
+    final newAction = _extractSpecificThinkingDetail(
+      newText,
+      widget.stream.userPrompt,
+      widget.lastStep,
+    );
+
+    final newLines = newText.trimRight().split('\n');
+    final newLineCount = newText.trim().isEmpty ? 0 : newLines.length;
+
+    bool shouldAnimate = false;
+
+    if (oldText.trim().isEmpty && newText.trim().isNotEmpty) {
+      // Lần đầu có content sau khi title đã hiển thị
+      shouldAnimate = true;
+    } else if (newAction != _lastAction) {
+      // Đổi bước / action cụ thể
+      _lastAction = newAction;
+      shouldAnimate = true;
+    } else if (newLineCount != _lastLineCount) {
+      // Có dòng mới được sinh ra
+      _lastLineCount = newLineCount;
+      shouldAnimate = true;
+    } else if (newText != oldText) {
+      // Content mới đang stream
+      final now = DateTime.now();
+      if (_lastRolloutTrigger == null ||
+          now.difference(_lastRolloutTrigger!).inMilliseconds > 220) {
+        shouldAnimate = true;
+      }
+    }
+
+    if (shouldAnimate) {
+      _triggerRollout();
+    }
+  }
+
+  void _triggerRollout() {
+    if (!mounted) return;
+    _lastRolloutTrigger = DateTime.now();
+    _rolloutController.forward(from: 0.0);
   }
 
   @override
   void dispose() {
     _pulseController.dispose();
+    _rolloutController.dispose();
     super.dispose();
   }
 
@@ -6560,6 +6636,12 @@ class _AnimatedThinkingRobotCardState extends State<_AnimatedThinkingRobotCard>
       stream.userPrompt,
       lastStep,
     );
+
+    final rawLines = stream.streamingText.trimRight().split('\n');
+    final int maxTail = widget.collapsedTailLines > 0 ? widget.collapsedTailLines : 10;
+    final recentLines = rawLines.length > maxTail
+        ? rawLines.sublist(rawLines.length - maxTail)
+        : rawLines;
 
     return AnimatedBuilder(
       animation: _pulseController,
@@ -6746,34 +6828,104 @@ class _AnimatedThinkingRobotCardState extends State<_AnimatedThinkingRobotCard>
                 ),
               ),
 
-              // Nội dung chi tiết suy nghĩ nếu có và đang mở
+              // Nội dung chi tiết suy nghĩ (khoảng 10 dòng content mới nhất với animation chạy ra)
               if (_isTraceExpanded && stream.streamingText.trim().isNotEmpty) ...[
                 Padding(
                   padding: const EdgeInsets.fromLTRB(10, 6, 10, 10),
-                  child: Container(
-                    padding: const EdgeInsets.all(10),
-                    decoration: BoxDecoration(
-                      color: colorScheme.surfaceContainerLowest,
-                      borderRadius: BorderRadius.circular(8),
-                      border: Border.all(
-                        color: colorScheme.outlineVariant.withAlpha(60),
-                      ),
-                    ),
-                    child: SelectableText(
-                      stream.streamingText
-                          .trimRight()
-                          .split('\n')
-                          .reversed
-                          .take(widget.collapsedTailLines)
-                          .toList()
-                          .reversed
-                          .join('\n'),
-                      style: textTheme.bodySmall?.copyWith(
-                        fontFamily: 'monospace',
-                        fontSize: 11,
-                        height: 1.45,
-                        color: colorScheme.onSurfaceVariant,
-                      ),
+                  child: AnimatedSize(
+                    duration: const Duration(milliseconds: 220),
+                    curve: Curves.easeOutCubic,
+                    child: AnimatedBuilder(
+                      animation: _rolloutController,
+                      builder: (context, _) {
+                        return SlideTransition(
+                          position: _rolloutSlide,
+                          child: FadeTransition(
+                            opacity: _rolloutFade,
+                            child: Container(
+                              padding: const EdgeInsets.all(10),
+                              decoration: BoxDecoration(
+                                color: colorScheme.surfaceContainerLowest,
+                                borderRadius: BorderRadius.circular(8),
+                                border: Border.all(
+                                  color: Color.lerp(
+                                    colorScheme.outlineVariant.withAlpha(70),
+                                    Colors.deepPurpleAccent.withAlpha(200),
+                                    (1.0 - _rolloutAnimation.value).clamp(0.0, 1.0),
+                                  )!,
+                                  width: 1.0,
+                                ),
+                              ),
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.stretch,
+                                children: [
+                                  Row(
+                                    children: [
+                                      Container(
+                                        width: 6,
+                                        height: 6,
+                                        decoration: BoxDecoration(
+                                          shape: BoxShape.circle,
+                                          color: Colors.tealAccent.shade400,
+                                        ),
+                                      ),
+                                      const SizedBox(width: 6),
+                                      Text(
+                                        'Console (${recentLines.length} dòng mới nhất)',
+                                        style: TextStyle(
+                                          fontFamily: 'monospace',
+                                          fontSize: 10,
+                                          fontWeight: FontWeight.w700,
+                                          color: colorScheme.onSurfaceVariant,
+                                        ),
+                                      ),
+                                      const Spacer(),
+                                      if (stream.isRunning) ...[
+                                        Text(
+                                          'LIVE STREAM',
+                                          style: TextStyle(
+                                            fontFamily: 'monospace',
+                                            fontSize: 9,
+                                            fontWeight: FontWeight.w800,
+                                            color: Colors.deepPurpleAccent,
+                                            letterSpacing: 0.5,
+                                          ),
+                                        ),
+                                      ],
+                                    ],
+                                  ),
+                                  const SizedBox(height: 6),
+                                  SelectableText.rich(
+                                    TextSpan(
+                                      children: [
+                                        TextSpan(
+                                          text: recentLines.join('\n'),
+                                          style: textTheme.bodySmall?.copyWith(
+                                            fontFamily: 'monospace',
+                                            fontSize: 11,
+                                            height: 1.45,
+                                            color: colorScheme.onSurfaceVariant,
+                                          ),
+                                        ),
+                                        if (stream.isRunning)
+                                          TextSpan(
+                                            text: ' █',
+                                            style: TextStyle(
+                                              fontFamily: 'monospace',
+                                              fontSize: 11,
+                                              color: Colors.deepPurpleAccent
+                                                  .withAlpha((255 * _borderGlowAnimation.value).round()),
+                                            ),
+                                          ),
+                                      ],
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ),
+                        );
+                      },
                     ),
                   ),
                 ),
