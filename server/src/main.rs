@@ -1162,23 +1162,25 @@ async fn main() {
 
     setup_socket_handlers(&io, app_state.clone());
 
-    // Watcher ngầm theo dõi các session độc lập: Chỉ emit session:update cho đúng conversation có thay đổi
+    // Watcher ngầm theo dõi các session độc lập: mỗi loại thay đổi phát một event riêng
+    //  - session:update  : đúng conversation có thay đổi
+    //  - projects:update : metadata project thay đổi
+    //  - snapshot:update : full resync khi có conversation bị xoá khỏi đĩa
     let watcher_state = app_state.clone();
     tokio::spawn(async move {
         let mut ticker = interval(Duration::from_millis(1500));
         let mut tracker = scanner::init_session_change_tracker();
         loop {
             ticker.tick().await;
-            let (changed_sessions, projects_changed) =
-                scanner::detect_changed_sessions(&mut tracker);
+            let changes = scanner::detect_changed_sessions(&mut tracker);
 
-            if !changed_sessions.is_empty() {
+            if !changes.changed_sessions.is_empty() {
                 let streams = watcher_state
                     .active_streams
                     .lock()
                     .map(|g| g.clone())
                     .unwrap_or_default();
-                for sid in changed_sessions {
+                for sid in changes.changed_sessions {
                     if let Some(session) = scanner::get_single_session_with_streams(&sid, &streams) {
                         if let Ok(val) = serde_json::to_value(&session) {
                             if let Some(ns) = watcher_state.io.of("/") {
@@ -1189,9 +1191,21 @@ async fn main() {
                 }
             }
 
-            if projects_changed {
+            if changes.sessions_removed {
+                watcher_state.spawn_snapshot_resync();
+            } else if changes.projects_changed {
                 watcher_state.broadcast_projects_update();
             }
+        }
+    });
+
+    // Watcher quota: định kỳ hỏi daemon, chỉ phát `quotas:update` khi số liệu thực sự thay đổi
+    let quota_state = app_state.clone();
+    tokio::spawn(async move {
+        let mut ticker = interval(Duration::from_secs(15));
+        loop {
+            ticker.tick().await;
+            quota_state.spawn_quotas_update(false, false);
         }
     });
 

@@ -17,6 +17,8 @@ pub struct AppState {
     pub io: SocketIo,
     pub active_streams: Arc<Mutex<HashMap<String, ChatTurnStreamState>>>,
     pub running_pids: Arc<Mutex<HashMap<String, u32>>>,
+    /// Bản quota đã phát gần nhất (JSON) để chỉ phát `quotas:update` khi có thay đổi
+    pub last_quotas_json: Arc<Mutex<String>>,
 }
 
 impl AppState {
@@ -25,6 +27,7 @@ impl AppState {
             io,
             active_streams: Arc::new(Mutex::new(HashMap::new())),
             running_pids: Arc::new(Mutex::new(HashMap::new())),
+            last_quotas_json: Arc::new(Mutex::new(String::new())),
         }
     }
 
@@ -68,18 +71,46 @@ impl AppState {
         }
     }
 
-    /// Phát event cập nhật quotas khi có thay đổi
-    #[allow(dead_code)]
-    pub fn broadcast_quotas_update(&self) {
+    /// Lấy quota mới nhất và chỉ phát `quotas:update` nếu nội dung thực sự thay đổi so với lần phát trước.
+    /// Hàm có I/O đồng bộ (gọi daemon qua TCP) nên phải được gọi trong `spawn_blocking`.
+    /// Trả về `true` nếu đã phát event.
+    pub fn broadcast_quotas_update(&self, force: bool) -> bool {
         let quotas = scanner::fetch_antigravity_model_quotas();
-        if let Ok(val) = serde_json::to_value(&quotas) {
-            if let Some(ns) = self.io.of("/") {
-                let _ = ns.emit("quotas:update", &val);
+        let val = match serde_json::to_value(&quotas) {
+            Ok(v) => v,
+            Err(_) => return false,
+        };
+        let serialized = val.to_string();
+        if let Ok(mut last) = self.last_quotas_json.lock() {
+            if !force && *last == serialized {
+                return false;
             }
+            *last = serialized;
         }
+        if let Some(ns) = self.io.of("/") {
+            let _ = ns.emit("quotas:update", &val);
+        }
+        true
     }
 
-    #[allow(dead_code)]
+    /// Chạy `broadcast_quotas_update` ở thread blocking (an toàn khi gọi từ async context)
+    pub fn spawn_quotas_update(&self, invalidate_cache: bool, force: bool) {
+        let st = self.clone();
+        tokio::task::spawn_blocking(move || {
+            if invalidate_cache {
+                scanner::invalidate_quota_cache();
+            }
+            st.broadcast_quotas_update(force);
+        });
+    }
+
+    /// Phát toàn bộ snapshot (full resync) — chỉ dùng cho các thay đổi mà event nhỏ không diễn tả được,
+    /// ví dụ conversation bị xoá khỏi đĩa. Quét nặng nên chạy ở thread blocking.
+    pub fn spawn_snapshot_resync(&self) {
+        let st = self.clone();
+        tokio::task::spawn_blocking(move || st.broadcast_snapshot());
+    }
+
     pub fn broadcast_snapshot(&self) {
         let streams = self
             .active_streams
@@ -392,6 +423,8 @@ pub async fn start_chat_turn(state: AppState, req: ChatSendRequest) -> ChatSendR
             }
             state_clone.broadcast_stream_state(&final_state);
             state_clone.broadcast_session_update(&tracked_id);
+            // Lượt chat vừa kết thúc -> quota đã bị tiêu hao, làm mới cache và phát nếu thay đổi
+            state_clone.spawn_quotas_update(true, false);
 
             let finish_cid = tracked_id.clone();
             tokio::spawn(async move {
@@ -464,6 +497,7 @@ pub fn stop_chat_turn(state: &AppState, conversation_id: &str) -> bool {
         if let Some(st) = updated_stream {
             state.broadcast_stream_state(&st);
             state.broadcast_session_update(cid);
+            state.spawn_quotas_update(true, false);
         }
         return true;
     }

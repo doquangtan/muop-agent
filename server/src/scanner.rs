@@ -161,40 +161,6 @@ pub fn scan_running_agy_conversations() -> std::collections::HashSet<String> {
     running_ids
 }
 
-/// Tính chữ ký thay đổi (fingerprint) nhanh của thư mục brain và DB để phát hiện thay đổi realtime
-#[allow(dead_code)]
-pub fn compute_filesystem_fingerprint() -> u64 {
-    let mut hash: u64 = 14695981039346656037;
-    let mut mix = |val: u64| {
-        hash ^= val;
-        hash = hash.wrapping_mul(1099511628211);
-    };
-
-    if let Ok(meta) = fs::metadata(SUMMARY_DB_PATH) {
-        mix(meta.len());
-        if let Ok(m) = meta.modified() {
-            if let Ok(d) = m.duration_since(SystemTime::UNIX_EPOCH) {
-                mix(d.as_millis() as u64);
-            }
-        }
-    }
-
-    if let Ok(entries) = fs::read_dir(BRAIN_DIR_PATH) {
-        for entry in entries.flatten() {
-            let p = entry.path().join(".system_generated/logs/transcript.jsonl");
-            if let Ok(meta) = fs::metadata(&p) {
-                mix(meta.len());
-                if let Ok(m) = meta.modified() {
-                    if let Ok(d) = m.duration_since(SystemTime::UNIX_EPOCH) {
-                        mix(d.as_millis() as u64);
-                    }
-                }
-            }
-        }
-    }
-    hash
-}
-
 /// Bộ theo dõi dấu vết thay đổi từng session độc lập để phát event nhỏ gọn (Granular Events)
 #[derive(Debug, Clone, Default)]
 pub struct SessionChangeTracker {
@@ -240,16 +206,35 @@ pub fn init_session_change_tracker() -> SessionChangeTracker {
     tracker
 }
 
+/// Kết quả phát hiện thay đổi của watcher: mỗi loại thay đổi map vào một event riêng
+#[derive(Debug, Clone, Default)]
+pub struct DetectedChanges {
+    /// Các conversation top-level có thay đổi -> `session:update` cho từng conversation
+    pub changed_sessions: Vec<String>,
+    /// Có conversation bị xoá khỏi đĩa -> cần `snapshot:update` để client đồng bộ lại toàn bộ
+    pub sessions_removed: bool,
+    /// Metadata project thay đổi -> `projects:update`
+    pub projects_changed: bool,
+}
+
+/// Xoá cache quota để lần fetch kế tiếp lấy dữ liệu mới nhất từ daemon
+pub fn invalidate_quota_cache() {
+    if let Some(cache) = QUOTA_CACHE.get() {
+        if let Ok(mut guard) = cache.lock() {
+            guard.0 = Instant::now() - Duration::from_secs(3600);
+        }
+    }
+}
+
 /// Phát hiện danh sách các conversation có thay đổi thực tế (chỉ scan và gửi event mỗi conversation đó)
-pub fn detect_changed_sessions(
-    tracker: &mut SessionChangeTracker,
-) -> (Vec<String>, bool) {
+pub fn detect_changed_sessions(tracker: &mut SessionChangeTracker) -> DetectedChanges {
     let mut changed_top_ids = HashSet::new();
     let mut projects_changed = false;
+    let mut seen_ids: HashSet<String> = HashSet::new();
 
     let brain_dir = Path::new(BRAIN_DIR_PATH);
     if !brain_dir.exists() {
-        return (Vec::new(), false);
+        return DetectedChanges::default();
     }
 
     let db_meta_map = load_conversation_summary_meta();
@@ -286,6 +271,7 @@ pub fn detect_changed_sessions(
 
             let transcript_path = path.join(".system_generated/logs/transcript.jsonl");
             if let Ok(meta) = fs::metadata(&transcript_path) {
+                seen_ids.insert(id.clone());
                 let mtime = meta
                     .modified()
                     .unwrap_or(SystemTime::UNIX_EPOCH)
@@ -313,6 +299,13 @@ pub fn detect_changed_sessions(
         }
     }
 
+    // 1b. Phát hiện conversation đã bị xoá khỏi đĩa
+    let before = tracker.transcript_fingerprints.len();
+    tracker
+        .transcript_fingerprints
+        .retain(|id, _| seen_ids.contains(id));
+    let sessions_removed = tracker.transcript_fingerprints.len() != before;
+
     // 2. Kiểm tra SQLite db mtime
     let db_path = Path::new(SUMMARY_DB_PATH);
     if let Ok(meta) = fs::metadata(db_path) {
@@ -337,7 +330,11 @@ pub fn detect_changed_sessions(
         }
     }
 
-    (changed_top_ids.into_iter().collect(), projects_changed)
+    DetectedChanges {
+        changed_sessions: changed_top_ids.into_iter().collect(),
+        sessions_removed,
+        projects_changed,
+    }
 }
 
 pub fn build_full_snapshot(

@@ -272,10 +272,15 @@ class _DashboardScreenState extends State<DashboardScreen> {
         }
       }
 
-      // Bảo toàn các session cũ đã có trong _sessions nếu snapshot không chứa (không làm mất lịch sử hội thoại)
-      for (final existing in _sessions) {
-        if (!mergedSessions.any((s) => s.id == existing.id)) {
-          mergedSessions.add(existing);
+      // Snapshot do server gửi (giới hạn 500) là danh sách đầy đủ khi chưa chạm giới hạn:
+      // khi đó session nào không còn trong snapshot nghĩa là đã bị xoá trên server (full resync).
+      // Nếu snapshot có thể bị cắt giới hạn thì giữ lại các session cũ để không mất lịch sử.
+      final snapshotIsComplete = snapshot.sessions.length < 500;
+      if (!snapshotIsComplete) {
+        for (final existing in _sessions) {
+          if (!mergedSessions.any((s) => s.id == existing.id)) {
+            mergedSessions.add(existing);
+          }
         }
       }
 
