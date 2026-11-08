@@ -941,6 +941,7 @@ pub fn scan_all_sessions(
     }
 
     let live_agy_cids = scan_running_agy_conversations();
+    let mut git_sync_cache: HashMap<String, Option<GitSyncStatus>> = HashMap::new();
     let mut sessions = Vec::new();
     for (idx, (id, _)) in selected.iter().enumerate() {
         if let Some(m) = db_meta_map.get(id) {
@@ -1054,11 +1055,10 @@ pub fn scan_all_sessions(
             project_path: parsed.project_path.clone(),
             is_simulated: false,
             pending_plans: scan_pending_plans(&parsed.id),
-            git_sync_status: if is_active_session {
-                check_git_sync_status(&parsed.project_path)
-            } else {
-                None
-            },
+            git_sync_status: git_sync_cache
+                .entry(parsed.project_path.clone())
+                .or_insert_with(|| check_git_sync_status(&parsed.project_path))
+                .clone(),
             is_interrupted,
             interrupted_reason,
         });

@@ -1122,7 +1122,13 @@ class _ChatCanvasViewState extends State<ChatCanvasView> {
               // [0.5] KHUNG XÁC NHẬN PUSH LÊN SERVER SAU KHI AGENT COMMIT XONG
               () {
                 final gitSync = widget.session?.gitSyncStatus ??
-                    widget.selectedProject?.gitSyncStatus;
+                    widget.selectedProject?.gitSyncStatus ??
+                    widget.projects
+                        .where((p) =>
+                            p.name == widget.session?.projectName ||
+                            p.path == widget.session?.projectPath)
+                        .firstOrNull
+                        ?.gitSyncStatus;
                 final showGitPushPrompt = gitSync != null &&
                     gitSync.isAhead &&
                     gitSync.aheadCount > 0 &&

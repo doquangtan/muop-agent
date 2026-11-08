@@ -138,22 +138,15 @@ class _DashboardScreenState extends State<DashboardScreen> {
             existing.steps.length > s.steps.length) {
           final mergedSteps = _mergeNewerSteps(existing.steps, s.steps);
           mergedSessions.add(
-            existing.copyWith(
+            s.copyWith(
               steps: mergedSteps,
-              pendingPlans: s.pendingPlans,
-              status: s.status,
-              updatedAt: s.updatedAt,
-              currentPhase: s.currentPhase,
             ),
           );
           continue;
         } else if (s.steps.isEmpty && existing.steps.isNotEmpty) {
           mergedSessions.add(
-            existing.copyWith(
-              pendingPlans: s.pendingPlans,
-              status: s.status,
-              updatedAt: s.updatedAt,
-              currentPhase: s.currentPhase,
+            s.copyWith(
+              steps: existing.steps,
             ),
           );
           continue;
@@ -163,6 +156,12 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
       _sessions = mergedSessions;
       _projects = snapshot.projects;
+      if (_activeChatProject != null) {
+        _activeChatProject = _projects.firstWhere(
+          (p) => p.name == _activeChatProject!.name,
+          orElse: () => _activeChatProject!,
+        );
+      }
       if (snapshot.availableModels.isNotEmpty) {
         _availableModels = snapshot.availableModels;
       }
