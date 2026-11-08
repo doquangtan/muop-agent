@@ -1,0 +1,1878 @@
+import 'dart:async';
+
+import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+
+import '../models/agent_models.dart';
+import '../services/brain_scanner_service.dart';
+import 'parallel_agent_flow_screen.dart';
+import 'widgets/chat_canvas_view.dart';
+import 'widgets/server_file_browser_sheet.dart';
+
+class DashboardScreen extends StatefulWidget {
+  const DashboardScreen({
+    super.key,
+    required this.isDarkMode,
+    required this.onToggleTheme,
+  });
+
+  final bool isDarkMode;
+  final VoidCallback onToggleTheme;
+
+  @override
+  State<DashboardScreen> createState() => _DashboardScreenState();
+}
+
+class _DashboardScreenState extends State<DashboardScreen> {
+  final GlobalKey<ScaffoldState> _scaffoldKey = GlobalKey<ScaffoldState>();
+  final BrainScannerService _scanner = BrainScannerService();
+  final TextEditingController _searchController = TextEditingController();
+
+  List<String> _hostLanIps = const ['192.168.31.96', '100.121.158.198'];
+  String _serverAddress = BrainScannerService.defaultHostAddress;
+  bool _isRemoteConnected = false;
+  bool _isSocketLive = false;
+  String _remoteHostName = '';
+
+  List<ConversationSession> _sessions = [];
+  List<ProjectWorkspace> _projects = [];
+  List<String> _availableModels = BrainScannerService.defaultModels;
+  List<String> _availableAgents = BrainScannerService.defaultAgents;
+  List<ModelQuotaGroup> _modelQuotas = [];
+  Map<String, ChatTurnStreamState> _activeStreams = {};
+
+  ProjectWorkspace? _activeChatProject;
+  String _selectedAgent = 'Coordinator';
+  String _selectedModel = 'gemini-3.8-flash-high';
+  bool _isNewConversationMode = false;
+  bool _isSendingPrompt = false;
+  bool _showDesktopSidebar = true;
+  String? _lastDownloadedFilePath;
+
+  String? _selectedSessionId;
+  bool _isLoading = true;
+  String _searchQuery = '';
+
+  Timer? _fallbackTimer;
+  StreamSubscription<AgentMonitorSnapshot>? _snapshotSub;
+  StreamSubscription<ChatTurnStreamState>? _chatStreamSub;
+  StreamSubscription<bool>? _socketStatusSub;
+
+  @override
+  void initState() {
+    super.initState();
+    _bindRealtimeSocketStreams();
+    _initEnvironmentAndLoad();
+    _fallbackTimer = Timer.periodic(const Duration(seconds: 6), (_) {
+      if (!_isSocketLive) {
+        _refreshSessions(silent: true);
+      }
+    });
+  }
+
+  @override
+  void dispose() {
+    _fallbackTimer?.cancel();
+    _snapshotSub?.cancel();
+    _chatStreamSub?.cancel();
+    _socketStatusSub?.cancel();
+    _scanner.dispose();
+    _searchController.dispose();
+    super.dispose();
+  }
+
+  void _bindRealtimeSocketStreams() {
+    _socketStatusSub = _scanner.socketConnectionStream.listen((connected) {
+      if (!mounted) return;
+      setState(() {
+        _isSocketLive = connected;
+        if (connected) {
+          _isRemoteConnected = true;
+        }
+      });
+    });
+
+    _snapshotSub = _scanner.snapshotStream.listen((snapshot) {
+      if (!mounted) return;
+      _applySnapshot(snapshot);
+    });
+
+    _chatStreamSub = _scanner.chatStream.listen((streamState) {
+      if (!mounted) return;
+      setState(() {
+        _activeStreams = {
+          ..._activeStreams,
+          streamState.conversationId: streamState,
+        };
+        // Chỉ chuyển khỏi new conversation mode nếu stream này thực sự xuất phát
+        // từ yêu cầu prompt mới mà người dùng vừa gửi đi (pending_optimistic)
+        if (_isNewConversationMode &&
+            _activeStreams.containsKey('pending_optimistic') &&
+            streamState.conversationId.isNotEmpty &&
+            streamState.isRunning) {
+          _isNewConversationMode = false;
+          _selectedSessionId = streamState.conversationId;
+        }
+      });
+    });
+  }
+
+  void _applySnapshot(AgentMonitorSnapshot snapshot) {
+    setState(() {
+      _isRemoteConnected = true;
+      _remoteHostName = snapshot.hostname;
+      if (snapshot.lanIps.isNotEmpty) {
+        _hostLanIps = snapshot.lanIps;
+      }
+
+      // Hợp nhất steps nếu session cũ đã tải chi tiết trước đó
+      final mergedSessions = <ConversationSession>[];
+      for (final s in snapshot.sessions) {
+        final existing = _sessions.firstWhere(
+          (old) => old.id == s.id && old.steps.isNotEmpty,
+          orElse: () => s,
+        );
+        if (existing.steps.isNotEmpty &&
+            existing.steps.length > s.steps.length) {
+          final mergedSteps = _mergeNewerSteps(existing.steps, s.steps);
+          mergedSessions.add(
+            existing.copyWith(
+              steps: mergedSteps,
+              pendingPlans: s.pendingPlans,
+              status: s.status,
+              updatedAt: s.updatedAt,
+              currentPhase: s.currentPhase,
+            ),
+          );
+          continue;
+        } else if (s.steps.isEmpty && existing.steps.isNotEmpty) {
+          mergedSessions.add(
+            existing.copyWith(
+              pendingPlans: s.pendingPlans,
+              status: s.status,
+              updatedAt: s.updatedAt,
+              currentPhase: s.currentPhase,
+            ),
+          );
+          continue;
+        }
+        mergedSessions.add(s);
+      }
+
+      _sessions = mergedSessions;
+      _projects = snapshot.projects;
+      if (snapshot.availableModels.isNotEmpty) {
+        _availableModels = snapshot.availableModels;
+      }
+      if (snapshot.availableAgents.isNotEmpty) {
+        _availableAgents = snapshot.availableAgents;
+      }
+      if (snapshot.modelQuotas.isNotEmpty) {
+        _modelQuotas = snapshot.modelQuotas;
+      }
+      _activeStreams = snapshot.activeStreams;
+      _syncDefaultSelections();
+      _isLoading = false;
+    });
+  }
+
+  Future<void> _loadFullSessionDetail(String sessionId) async {
+    final detailed = await _scanner.fetchSessionDetail(
+      address: _serverAddress,
+      sessionId: sessionId,
+    );
+    if (!mounted || detailed == null) return;
+    setState(() {
+      final idx = _sessions.indexWhere((s) => s.id == sessionId);
+      if (idx >= 0) {
+        _sessions[idx] = detailed;
+      }
+    });
+  }
+
+  Future<void> _initEnvironmentAndLoad() async {
+    setState(() => _isLoading = true);
+    final savedAddress = await _scanner.loadSavedServerAddress();
+    if (!mounted) return;
+    setState(() {
+      _serverAddress = savedAddress;
+    });
+
+    _scanner.connectSocket(_serverAddress);
+    await _refreshSessions(silent: false);
+  }
+
+  Future<void> _refreshSessions({bool silent = false}) async {
+    if (!silent && mounted) {
+      setState(() => _isLoading = true);
+    }
+
+    if (_isSocketLive) {
+      _scanner.requestRealtimeSnapshot();
+    }
+
+    final snapshot = await _scanner.fetchRemoteSnapshot(_serverAddress);
+    if (!mounted) return;
+    if (snapshot != null) {
+      _applySnapshot(snapshot);
+    } else if (!_isSocketLive) {
+      setState(() {
+        _isRemoteConnected = false;
+        _isLoading = false;
+      });
+    }
+  }
+
+  void _syncDefaultSelections() {
+    if (_selectedSessionId == null &&
+        !_isNewConversationMode &&
+        _sessions.isNotEmpty) {
+      _selectedSessionId = _sessions.first.id;
+    }
+    if (_selectedModel == 'default' || !_availableModels.contains(_selectedModel)) {
+      if (_availableModels.isNotEmpty) {
+        _selectedModel = _availableModels.first;
+      } else {
+        _selectedModel = 'gemini-3.8-flash-high';
+      }
+    }
+    if (_activeChatProject == null && _projects.isNotEmpty) {
+      final currentSess = _activeSession;
+      if (currentSess != null) {
+        _activeChatProject = _projects.firstWhere(
+          (p) => p.name == currentSess.projectName,
+          orElse: () => _projects.first,
+        );
+      } else {
+        _activeChatProject = _projects.first;
+      }
+    }
+  }
+
+  Future<void> _handleSendPrompt(String promptText) async {
+    final targetProjectPath = _activeChatProject?.path ??
+        _activeSession?.projectPath ??
+        '/home/john/Documents/muop-ecosystem/muop-erp-server';
+    final targetConvId =
+        _isNewConversationMode ? '' : (_selectedSessionId ?? '');
+
+    final optKey = targetConvId.isNotEmpty ? targetConvId : 'pending_optimistic';
+    final optState = ChatTurnStreamState(
+      conversationId: optKey,
+      projectPath: targetProjectPath,
+      userPrompt: promptText,
+      streamingText: '',
+      isRunning: true,
+      activeStepType: 'starting',
+      startedAt: DateTime.now(),
+      error: '',
+    );
+
+    setState(() {
+      _isSendingPrompt = true;
+      _activeStreams = {
+        ..._activeStreams,
+        optKey: optState,
+      };
+    });
+
+    final effectiveModel = (_selectedModel.isEmpty || _selectedModel == 'default')
+        ? 'gemini-3.8-flash-high'
+        : _selectedModel;
+
+    final result = await _scanner.sendRemoteChatPrompt(
+      address: _serverAddress,
+      prompt: promptText,
+      projectPath: targetProjectPath,
+      conversationId: targetConvId,
+      agentName: _selectedAgent,
+      model: effectiveModel,
+    );
+
+    if (!mounted) return;
+    setState(() => _isSendingPrompt = false);
+
+    if (result.ok) {
+      setState(() {
+        _isNewConversationMode = false;
+        if (result.conversationId.isNotEmpty) {
+          _selectedSessionId = result.conversationId;
+          if (optKey != result.conversationId && _activeStreams.containsKey(optKey)) {
+            final old = _activeStreams[optKey];
+            final nextStreams = Map<String, ChatTurnStreamState>.from(_activeStreams);
+            nextStreams.remove(optKey);
+            if (old != null && !nextStreams.containsKey(result.conversationId)) {
+              nextStreams[result.conversationId] =
+                  old.copyWith(conversationId: result.conversationId);
+            }
+            _activeStreams = nextStreams;
+          }
+        }
+      });
+      _scanner.requestRealtimeSnapshot();
+    } else {
+      setState(() {
+        final currentOpt = _activeStreams[optKey] ?? optState;
+        _activeStreams = {
+          ..._activeStreams,
+          optKey: currentOpt.copyWith(
+            isRunning: false,
+            activeStepType: 'error',
+            error: result.error,
+          ),
+        };
+      });
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Không thể gửi tin nhắn tới Agent: ${result.error}'),
+          backgroundColor: Colors.redAccent,
+        ),
+      );
+    }
+  }
+
+  Future<void> _handleStopTurn() async {
+    final cid = _selectedSessionId ?? '';
+    if (cid.isEmpty) return;
+    await _scanner.stopRemoteChatTurn(
+      address: _serverAddress,
+      conversationId: cid,
+    );
+    _scanner.requestRealtimeSnapshot();
+  }
+
+  Future<void> _handleApprovePlan(PlanArtifactInfo plan) async {
+    final active = _activeSession;
+    if (active == null) return;
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Row(
+          children: [
+            const SizedBox(
+              width: 14,
+              height: 14,
+              child: CircularProgressIndicator(
+                strokeWidth: 2,
+                color: Colors.white,
+              ),
+            ),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Text(
+                'Đang phê duyệt kế hoạch [${plan.fileName}] và khởi chạy...',
+                style: const TextStyle(fontSize: 12.5),
+              ),
+            ),
+          ],
+        ),
+        duration: const Duration(seconds: 2),
+      ),
+    );
+
+    final res = await _scanner.submitPlanAction(
+      address: _serverAddress,
+      conversationId: active.id,
+      fileName: plan.fileName,
+      action: 'approve',
+      model: _selectedModel,
+    );
+
+    if (!mounted) return;
+
+    if (res.ok) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            '✅ Kế hoạch [${plan.fileName}] đã được duyệt thành công! Các Agent đang thực thi.',
+          ),
+          backgroundColor: Colors.green.shade800,
+          duration: const Duration(seconds: 3),
+        ),
+      );
+      await _loadFullSessionDetail(active.id);
+    } else {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('❌ Không thể duyệt kế hoạch: ${res.message}'),
+          backgroundColor: Colors.red.shade800,
+          duration: const Duration(seconds: 4),
+        ),
+      );
+    }
+  }
+
+  Future<void> _handleRejectPlan(
+    PlanArtifactInfo plan,
+    String feedback,
+  ) async {
+    final active = _activeSession;
+    if (active == null) return;
+
+    final res = await _scanner.submitPlanAction(
+      address: _serverAddress,
+      conversationId: active.id,
+      fileName: plan.fileName,
+      action: 'reject',
+      feedback: feedback,
+      model: _selectedModel,
+    );
+
+    if (!mounted) return;
+
+    if (res.ok) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            '📝 Đã gửi yêu cầu chỉnh sửa cho kế hoạch [${plan.fileName}]. AI sẽ cập nhật lại.',
+          ),
+          duration: const Duration(seconds: 3),
+        ),
+      );
+      await _loadFullSessionDetail(active.id);
+    } else {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('❌ Gửi phản hồi thất bại: ${res.message}'),
+          backgroundColor: Colors.red.shade800,
+          duration: const Duration(seconds: 4),
+        ),
+      );
+    }
+  }
+
+  Future<bool> _handleLoadOlderHistory() async {
+    final active = _activeSession;
+    if (active == null) return false;
+
+    // Tìm stepIndex nhỏ nhất hiện có trong phiên để nạp trang 30 bước phía trước
+    int earliestStep = 999999999;
+    for (final s in active.steps) {
+      if (s.stepIndex < earliestStep) {
+        earliestStep = s.stepIndex;
+      }
+    }
+    if (earliestStep == 999999999) earliestStep = 0;
+
+    final page = await _scanner.fetchSessionStepsPage(
+      address: _serverAddress,
+      sessionId: active.id,
+      beforeStepIndex: earliestStep > 0 ? earliestStep : null,
+      limit: 30,
+    );
+
+    if (!mounted || page == null) return false;
+
+    if (page.steps.isNotEmpty) {
+      final existingIds = active.steps.map((s) => s.stepIndex).toSet();
+      final olderSteps =
+          page.steps.where((s) => !existingIds.contains(s.stepIndex)).toList();
+      if (olderSteps.isNotEmpty) {
+        final merged = [...olderSteps, ...active.steps];
+        merged.sort((a, b) => a.stepIndex.compareTo(b.stepIndex));
+        setState(() {
+          final idx = _sessions.indexWhere((s) => s.id == active.id);
+          if (idx >= 0) {
+            _sessions[idx] = active.copyWith(steps: merged);
+          }
+        });
+      }
+    }
+    return page.hasMore;
+  }
+
+  void _openParallelAgentFlowScreen() {
+    final active = _activeSession;
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => ParallelAgentFlowScreen(
+          session: active,
+          activeStream: _activeStreams[active?.id ?? ''],
+          serverAddress: _serverAddress,
+          onStopTurn: () {
+            if (active != null) _handleStopTurn();
+          },
+          onInspectFile: (path, gf) => _inspectFileChange(path, gf),
+        ),
+      ),
+    );
+  }
+
+  List<AgentStep> _mergeNewerSteps(
+    List<AgentStep> existing,
+    List<AgentStep> incoming,
+  ) {
+    if (incoming.isEmpty) return existing;
+    if (existing.isEmpty) return incoming;
+
+    final existingIndices = existing.map((e) => e.stepIndex).toSet();
+    final result = List<AgentStep>.from(existing);
+
+    for (final step in incoming) {
+      if (!existingIndices.contains(step.stepIndex)) {
+        result.add(step);
+      } else {
+        final idx = result.indexWhere((e) => e.stepIndex == step.stepIndex);
+        if (idx >= 0 && idx == result.length - 1) {
+          result[idx] = step;
+        }
+      }
+    }
+    result.sort((a, b) => a.stepIndex.compareTo(b.stepIndex));
+    return result;
+  }
+
+  void _startNewConversationInProject(ProjectWorkspace? project) {
+    setState(() {
+      _isNewConversationMode = true;
+      _selectedSessionId = null;
+      if (project != null) {
+        _activeChatProject = project;
+      }
+    });
+  }
+
+  void _openServerFileBrowser({int initialTab = 0}) {
+    final activeSession = _activeSession;
+    final initialDir = _activeChatProject?.path ??
+        activeSession?.projectPath ??
+        '/home/john/Documents/muop-ecosystem';
+
+    ServerFileBrowserSheet.show(
+      context,
+      scanner: _scanner,
+      serverAddress: _serverAddress,
+      initialPath: initialDir,
+      projects: _projects,
+      sessionFiles: activeSession?.filesTouched ?? const [],
+      initialTab: initialTab,
+    );
+  }
+
+  void _inspectFileChange(String filePath, GroupedFileChange? change) {
+    ServerFileBrowserSheet.showFilePreviewAndDiff(
+      context,
+      scanner: _scanner,
+      serverAddress: _serverAddress,
+      filePath: filePath,
+      groupedChange: change,
+      onDownloadFile: _downloadFileDirectly,
+    );
+  }
+
+  Future<void> _downloadFileDirectly(String remotePath) async {
+    final filename = remotePath.split('/').last;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text('Đang tải file "$filename" từ Rust Server...'),
+        duration: const Duration(seconds: 2),
+      ),
+    );
+
+    final res = await _scanner.downloadFileFromServer(
+      address: _serverAddress,
+      remotePath: remotePath,
+    );
+
+    if (!mounted) return;
+    if (res.ok) {
+      setState(() {
+        _lastDownloadedFilePath = res.savedPath;
+      });
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Đã tải xong: ${res.savedPath}'),
+          duration: const Duration(seconds: 5),
+          action: SnackBarAction(
+            label: 'Mở tệp',
+            onPressed: () {
+              _scanner.openDownloadedFile(res.savedPath);
+            },
+          ),
+        ),
+      );
+    } else {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Không thể tải file: ${res.error}'),
+          backgroundColor: Colors.redAccent,
+        ),
+      );
+    }
+  }
+
+  Future<void> _showCreateProjectDialog(BuildContext context) async {
+    final nameController = TextEditingController();
+    final descController = TextEditingController();
+    String selectedTemplate = 'standard';
+    bool isCreating = false;
+    String? validationError;
+
+    await showDialog<void>(
+      context: context,
+      builder: (ctx) {
+        return StatefulBuilder(
+          builder: (dialogContext, setModalState) {
+            final colorScheme = Theme.of(dialogContext).colorScheme;
+            final textTheme = Theme.of(dialogContext).textTheme;
+
+            final projectName = nameController.text.trim();
+            final targetPath = projectName.isEmpty
+                ? '/home/john/Documents/muop-ecosystem/<tên-project>'
+                : '/home/john/Documents/muop-ecosystem/$projectName';
+
+            return AlertDialog(
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(16),
+              ),
+              title: Row(
+                children: [
+                  Container(
+                    padding: const EdgeInsets.all(8),
+                    decoration: BoxDecoration(
+                      color: colorScheme.primary.withAlpha(30),
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                    child: Icon(
+                      Icons.create_new_folder_rounded,
+                      color: colorScheme.primary,
+                      size: 22,
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          'Tạo Project Mới',
+                          style: textTheme.titleMedium?.copyWith(
+                            fontWeight: FontWeight.w800,
+                          ),
+                        ),
+                        Text(
+                          'Khởi tạo Workspace trong muop-ecosystem',
+                          style: textTheme.labelSmall?.copyWith(
+                            color: colorScheme.onSurfaceVariant,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+              content: SingleChildScrollView(
+                child: ConstrainedBox(
+                  constraints: const BoxConstraints(maxWidth: 480),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      // Tên Project
+                      TextField(
+                        controller: nameController,
+                        autofocus: true,
+                        decoration: InputDecoration(
+                          labelText: 'Tên Project (Thư mục)',
+                          hintText: 'muop-service-sample',
+                          prefixIcon: const Icon(Icons.folder_outlined, size: 20),
+                          errorText: validationError,
+                          border: OutlineInputBorder(
+                            borderRadius: BorderRadius.circular(12),
+                          ),
+                          filled: true,
+                          isDense: true,
+                        ),
+                        onChanged: (val) {
+                          if (validationError != null) {
+                            setModalState(() => validationError = null);
+                          } else {
+                            setModalState(() {});
+                          }
+                        },
+                      ),
+                      const SizedBox(height: 10),
+
+                      // Đường dẫn xem trước
+                      Container(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 10,
+                          vertical: 7,
+                        ),
+                        decoration: BoxDecoration(
+                          color: colorScheme.surfaceContainerHighest.withAlpha(120),
+                          borderRadius: BorderRadius.circular(8),
+                          border: Border.all(
+                            color: colorScheme.outlineVariant.withAlpha(80),
+                          ),
+                        ),
+                        child: Row(
+                          children: [
+                            Icon(
+                              Icons.terminal_rounded,
+                              size: 14,
+                              color: colorScheme.primary,
+                            ),
+                            const SizedBox(width: 8),
+                            Expanded(
+                              child: Text(
+                                targetPath,
+                                style: const TextStyle(
+                                  fontFamily: 'monospace',
+                                  fontSize: 11,
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                      const SizedBox(height: 16),
+
+                      // Chọn Template
+                      Text(
+                        'Loại dự án (Template):',
+                        style: textTheme.labelMedium?.copyWith(
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                      const SizedBox(height: 8),
+                      Wrap(
+                        spacing: 8,
+                        runSpacing: 8,
+                        children: [
+                          ChoiceChip(
+                            label: const Text('📦 Tiêu chuẩn (Standard)'),
+                            selected: selectedTemplate == 'standard',
+                            onSelected: (sel) {
+                              if (sel) {
+                                setModalState(() => selectedTemplate = 'standard');
+                              }
+                            },
+                          ),
+                          ChoiceChip(
+                            label: const Text('🐹 Backend Go (Clean Arch)'),
+                            selected: selectedTemplate == 'go',
+                            onSelected: (sel) {
+                              if (sel) {
+                                setModalState(() => selectedTemplate = 'go');
+                              }
+                            },
+                          ),
+                          ChoiceChip(
+                            label: const Text('📱 Frontend Flutter (M3)'),
+                            selected: selectedTemplate == 'flutter',
+                            onSelected: (sel) {
+                              if (sel) {
+                                setModalState(() => selectedTemplate = 'flutter');
+                              }
+                            },
+                          ),
+                          ChoiceChip(
+                            label: const Text('📄 Trống (Empty)'),
+                            selected: selectedTemplate == 'empty',
+                            onSelected: (sel) {
+                              if (sel) {
+                                setModalState(() => selectedTemplate = 'empty');
+                              }
+                            },
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 16),
+
+                      // Mô tả (tùy chọn)
+                      TextField(
+                        controller: descController,
+                        maxLines: 2,
+                        decoration: InputDecoration(
+                          labelText: 'Mô tả dự án (Tùy chọn)',
+                          hintText: 'Dự án backend xử lý nghiệp vụ đơn hàng & thanh toán',
+                          alignLabelWithHint: true,
+                          border: OutlineInputBorder(
+                            borderRadius: BorderRadius.circular(12),
+                          ),
+                          filled: true,
+                          isDense: true,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+              actions: [
+                TextButton(
+                  onPressed: isCreating ? null : () => Navigator.of(ctx).pop(),
+                  child: const Text('Hủy'),
+                ),
+                FilledButton.icon(
+                  onPressed: isCreating
+                      ? null
+                      : () async {
+                          final name = nameController.text.trim();
+                          if (name.isEmpty) {
+                            setModalState(() {
+                              validationError = 'Vui lòng nhập tên project';
+                            });
+                            return;
+                          }
+
+                          setModalState(() {
+                            isCreating = true;
+                            validationError = null;
+                          });
+
+                          final res = await _scanner.createProject(
+                            address: _serverAddress,
+                            name: name,
+                            template: selectedTemplate,
+                            description: descController.text.trim(),
+                          );
+
+                          if (!mounted) return;
+
+                          if (res.ok) {
+                            if (ctx.mounted) Navigator.of(ctx).pop();
+                            final newProj = res.project ??
+                                ProjectWorkspace(
+                                  id: name,
+                                  name: name,
+                                  path: '/home/john/Documents/muop-ecosystem/$name',
+                                  sessionCount: 0,
+                                  runningCount: 0,
+                                );
+                            setState(() {
+                              if (!_projects.any((p) => p.name == newProj.name)) {
+                                _projects = [..._projects, newProj];
+                              }
+                              _activeChatProject = newProj;
+                              _startNewConversationInProject(newProj);
+                            });
+                            _scanner.requestRealtimeSnapshot();
+                            if (mounted) {
+                              ScaffoldMessenger.of(this.context).showSnackBar(
+                                SnackBar(
+                                  content: Text('🎉 ${res.message}'),
+                                  backgroundColor: Colors.teal.shade800,
+                                ),
+                              );
+                            }
+                          } else {
+                            setModalState(() {
+                              isCreating = false;
+                              validationError = res.error ?? res.message;
+                            });
+                          }
+                        },
+                  icon: isCreating
+                      ? const SizedBox(
+                          width: 14,
+                          height: 14,
+                          child: CircularProgressIndicator(
+                            strokeWidth: 2,
+                            color: Colors.white,
+                          ),
+                        )
+                      : const Icon(Icons.add_circle_outline_rounded, size: 18),
+                  label: Text(
+                    isCreating ? 'Đang tạo...' : 'Tạo Project & Mở Chat',
+                  ),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+  }
+
+  Future<void> _showServerConfigDialog() async {
+    final ipController = TextEditingController(text: _serverAddress);
+    RemotePingResult? pingResult;
+    bool isPinging = false;
+
+    await showDialog<void>(
+      context: context,
+      builder: (ctx) {
+        return StatefulBuilder(
+          builder: (context, setModalState) {
+            final colorScheme = Theme.of(context).colorScheme;
+            final textTheme = Theme.of(context).textTheme;
+
+            Future<void> testPing() async {
+              setModalState(() {
+                isPinging = true;
+                pingResult = null;
+              });
+              final res = await _scanner.pingRemoteServer(ipController.text);
+              setModalState(() {
+                isPinging = false;
+                pingResult = res;
+              });
+            }
+
+            return AlertDialog(
+              title: Row(
+                children: [
+                  Icon(Icons.bolt_rounded, color: colorScheme.primary),
+                  const SizedBox(width: 10),
+                  const Expanded(
+                    child: Text(
+                      'Kết nối Rust Server (Socket.IO)',
+                      style: TextStyle(
+                        fontSize: 16.5,
+                        fontWeight: FontWeight.w800,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+              content: SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Container(
+                      padding: const EdgeInsets.all(12),
+                      decoration: BoxDecoration(
+                        color: (_isSocketLive ? Colors.teal : Colors.orange)
+                            .withAlpha(25),
+                        borderRadius: BorderRadius.circular(10),
+                        border: Border.all(
+                          color: (_isSocketLive ? Colors.teal : Colors.orange)
+                              .withAlpha(120),
+                        ),
+                      ),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Row(
+                            children: [
+                              Icon(
+                                _isSocketLive
+                                    ? Icons.sensors_rounded
+                                    : Icons.sync_problem_rounded,
+                                size: 16,
+                                color:
+                                    _isSocketLive ? Colors.teal : Colors.orange,
+                              ),
+                              const SizedBox(width: 6),
+                              Expanded(
+                                child: Text(
+                                  _isSocketLive
+                                      ? 'Socket.IO Realtime đang kết nối!'
+                                      : 'Đang chờ kết nối Socket.IO...',
+                                  style: textTheme.labelMedium?.copyWith(
+                                    fontWeight: FontWeight.w800,
+                                    color: _isSocketLive
+                                        ? Colors.teal
+                                        : Colors.orange,
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 8),
+                          Wrap(
+                            spacing: 8,
+                            runSpacing: 6,
+                            children: [
+                              for (final ip in _hostLanIps)
+                                ActionChip(
+                                  avatar: const Icon(
+                                    Icons.copy_rounded,
+                                    size: 13,
+                                  ),
+                                  label: Text(
+                                    '$ip:${BrainScannerService.defaultBridgePort}',
+                                    style: const TextStyle(
+                                      fontFamily: 'monospace',
+                                      fontSize: 11.5,
+                                      fontWeight: FontWeight.w700,
+                                    ),
+                                  ),
+                                  onPressed: () {
+                                    final addr =
+                                        '$ip:${BrainScannerService.defaultBridgePort}';
+                                    Clipboard.setData(
+                                      ClipboardData(text: addr),
+                                    );
+                                    setModalState(() {
+                                      ipController.text = addr;
+                                    });
+                                  },
+                                ),
+                            ],
+                          ),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(height: 14),
+                    TextField(
+                      controller: ipController,
+                      keyboardType: TextInputType.url,
+                      decoration: InputDecoration(
+                        labelText: 'Địa chỉ IP & Cổng (Rust Server)',
+                        hintText: '192.168.31.96:8787',
+                        prefixIcon: const Icon(Icons.dns_rounded),
+                        suffixIcon: IconButton(
+                          icon: const Icon(Icons.clear_rounded, size: 18),
+                          onPressed: () => ipController.clear(),
+                        ),
+                        filled: true,
+                        border: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 10),
+                    Wrap(
+                      spacing: 8,
+                      runSpacing: 6,
+                      children: [
+                        ActionChip(
+                          label: const Text('192.168.31.96:8787 (LAN)'),
+                          onPressed: () {
+                            setModalState(() {
+                              ipController.text = '192.168.31.96:8787';
+                            });
+                          },
+                        ),
+                        ActionChip(
+                          label: const Text('100.121.158.198:8787 (VPN)'),
+                          onPressed: () {
+                            setModalState(() {
+                              ipController.text = '100.121.158.198:8787';
+                            });
+                          },
+                        ),
+                        ActionChip(
+                          label: const Text('127.0.0.1:8787 (Local)'),
+                          onPressed: () {
+                            setModalState(() {
+                              ipController.text = '127.0.0.1:8787';
+                            });
+                          },
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 12),
+                    SizedBox(
+                      width: double.infinity,
+                      child: OutlinedButton.icon(
+                        onPressed: isPinging ? null : testPing,
+                        icon: isPinging
+                            ? const SizedBox(
+                                width: 14,
+                                height: 14,
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 2,
+                                ),
+                              )
+                            : const Icon(Icons.network_check_rounded, size: 17),
+                        label: Text(
+                          isPinging ? 'Đang kiểm tra...' : 'Kiểm tra kết nối',
+                        ),
+                      ),
+                    ),
+                    if (pingResult != null) ...[
+                      const SizedBox(height: 10),
+                      Text(
+                        pingResult!.isOnline
+                            ? '✓ Kết nối thành công tới ${pingResult!.hostname} (${pingResult!.latencyMs}ms)'
+                            : '✕ Lỗi kết nối: ${pingResult!.errorMessage}',
+                        style: textTheme.bodySmall?.copyWith(
+                          fontWeight: FontWeight.w700,
+                          color: pingResult!.isOnline
+                              ? Colors.teal
+                              : Colors.redAccent,
+                        ),
+                      ),
+                    ],
+                  ],
+                ),
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.of(ctx).pop(),
+                  child: const Text('Hủy'),
+                ),
+                FilledButton(
+                  onPressed: () async {
+                    final newAddr = ipController.text.trim().isEmpty
+                        ? BrainScannerService.defaultHostAddress
+                        : ipController.text.trim();
+                    await _scanner.saveServerAddress(newAddr);
+                    if (!mounted) return;
+                    setState(() {
+                      _serverAddress = newAddr;
+                    });
+                    _scanner.connectSocket(newAddr);
+                    if (ctx.mounted) {
+                      Navigator.of(ctx).pop();
+                    }
+                    await _refreshSessions(silent: false);
+                  },
+                  child: const Text('Kết nối'),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+  }
+
+  List<ConversationSession> get _filteredSessions {
+    if (_searchQuery.isEmpty) return _sessions;
+    final q = _searchQuery.toLowerCase();
+    return _sessions.where((s) {
+      return s.title.toLowerCase().contains(q) ||
+          s.projectName.toLowerCase().contains(q) ||
+          s.id.toLowerCase().contains(q);
+    }).toList();
+  }
+
+  ConversationSession? get _activeSession {
+    if (_isNewConversationMode) return null;
+    if (_sessions.isEmpty) return null;
+    return _sessions.firstWhere(
+      (s) => s.id == _selectedSessionId,
+      orElse: () => _sessions.first,
+    );
+  }
+
+  ChatTurnStreamState? get _currentSessionStream {
+    if (_isNewConversationMode) {
+      return _activeStreams['pending_optimistic'];
+    }
+    final cid = _selectedSessionId;
+    if (cid == null) return null;
+    return _activeStreams[cid] ?? _activeStreams['pending_optimistic'];
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+    final isMobile = MediaQuery.sizeOf(context).width < 760;
+    final activeSession = _activeSession;
+
+    return Scaffold(
+      key: _scaffoldKey,
+      backgroundColor: colorScheme.surface,
+      drawer: isMobile
+          ? Drawer(
+              width: 300,
+              backgroundColor: colorScheme.surfaceContainerLow,
+              child: SafeArea(
+                child: _buildAntigravitySidebar(context, isMobileDrawer: true),
+              ),
+            )
+          : null,
+      body: SafeArea(
+        child: Row(
+          children: [
+            // Sidebar trái kiểu Antigravity trên Desktop
+            if (!isMobile && _showDesktopSidebar) ...[
+              Container(
+                width: 280,
+                color: colorScheme.surfaceContainerLow,
+                child: _buildAntigravitySidebar(context, isMobileDrawer: false),
+              ),
+              VerticalDivider(width: 1, color: colorScheme.outlineVariant),
+            ],
+
+            // Khung Chat chính kiểu Antigravity
+            Expanded(
+              child: Column(
+                children: [
+                  _buildMinimalTopHeader(
+                    context,
+                    activeSession,
+                    isMobile: isMobile,
+                  ),
+                  Divider(height: 1, color: colorScheme.outlineVariant),
+                  Expanded(
+                    child: _isLoading &&
+                            activeSession == null &&
+                            !_isNewConversationMode
+                        ? const Center(child: CircularProgressIndicator())
+                        : !_isRemoteConnected &&
+                                !_isSocketLive &&
+                                activeSession == null
+                            ? _buildDisconnectedView(context)
+                            : ChatCanvasView(
+                                session: activeSession,
+                                projects: _projects,
+                                selectedProject: _activeChatProject,
+                                availableAgents: _availableAgents,
+                                availableModels: _availableModels,
+                                modelQuotas: _modelQuotas,
+                                selectedAgent: _selectedAgent,
+                                selectedModel: _selectedModel,
+                                isNewConversationMode: _isNewConversationMode,
+                                isSending: _isSendingPrompt,
+                                activeStream: _currentSessionStream,
+                                lastDownloadedFilePath: _lastDownloadedFilePath,
+                                onSelectProject: (p) {
+                                  setState(() => _activeChatProject = p);
+                                },
+                                onSelectAgent: (a) {
+                                  setState(() => _selectedAgent = a);
+                                },
+                                onSelectModel: (m) {
+                                  setState(() => _selectedModel = m);
+                                },
+                                onStartNewConversation: () =>
+                                    _startNewConversationInProject(
+                                  _activeChatProject,
+                                ),
+                                onSendMessage: _handleSendPrompt,
+                                onStopTurn: _handleStopTurn,
+                                onOpenFileBrowser: () =>
+                                    _openServerFileBrowser(initialTab: 0),
+                                onOpenChangesTab: () =>
+                                    _openServerFileBrowser(initialTab: 1),
+                                onInspectFileChange: _inspectFileChange,
+                                onDownloadFile: _downloadFileDirectly,
+                                onOpenDownloadedFile: (path) =>
+                                    _scanner.openDownloadedFile(path),
+                                onApprovePlan: _handleApprovePlan,
+                                onRejectPlan: _handleRejectPlan,
+                                onLoadOlderHistory: _handleLoadOlderHistory,
+                                onOpenParallelFlow: _openParallelAgentFlowScreen,
+                                onOpenCreateProject: () =>
+                                    _showCreateProjectDialog(context),
+                              ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// Thanh Header tối giản chuẩn Antigravity
+  Widget _buildMinimalTopHeader(
+    BuildContext context,
+    ConversationSession? activeSession, {
+    required bool isMobile,
+  }) {
+    final colorScheme = Theme.of(context).colorScheme;
+    final textTheme = Theme.of(context).textTheme;
+
+    final title = _isNewConversationMode
+        ? 'New Conversation'
+        : (activeSession?.title ?? 'Antigravity');
+    final projectName = _activeChatProject?.name ??
+        activeSession?.projectName ??
+        'muop-erp-server';
+
+    return Container(
+      height: isMobile ? 46 : 50,
+      padding: EdgeInsets.symmetric(horizontal: isMobile ? 6 : 12),
+      color: colorScheme.surface,
+      child: Row(
+        children: [
+          IconButton(
+            tooltip: isMobile ? 'Mở danh sách Project' : 'Ẩn/Hiện Sidebar',
+            visualDensity: VisualDensity.compact,
+            icon: Icon(
+              isMobile ? Icons.menu_rounded : Icons.view_sidebar_outlined,
+              size: 20,
+            ),
+            onPressed: () {
+              if (isMobile) {
+                _scaffoldKey.currentState?.openDrawer();
+              } else {
+                setState(() => _showDesktopSidebar = !_showDesktopSidebar);
+              }
+            },
+          ),
+          if (!isMobile) ...[
+            const SizedBox(width: 4),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+              decoration: BoxDecoration(
+                color: colorScheme.surfaceContainerHighest,
+                borderRadius: BorderRadius.circular(6),
+              ),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(
+                    Icons.folder_outlined,
+                    size: 13,
+                    color: colorScheme.primary,
+                  ),
+                  const SizedBox(width: 5),
+                  Text(
+                    projectName,
+                    style: textTheme.labelSmall?.copyWith(
+                      fontWeight: FontWeight.w700,
+                      color: colorScheme.onSurface,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+          const SizedBox(width: 8),
+          Expanded(
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  title,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: textTheme.titleSmall?.copyWith(
+                    fontSize: isMobile ? 13 : 14,
+                    fontWeight: FontWeight.w700,
+                    color: colorScheme.onSurface,
+                  ),
+                ),
+                if (isMobile)
+                  Text(
+                    projectName,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: textTheme.labelSmall?.copyWith(
+                      fontSize: 10,
+                      color: colorScheme.primary,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+              ],
+            ),
+          ),
+          const SizedBox(width: 6),
+
+          // Trạng thái kết nối Socket.IO với Rust Server
+          InkWell(
+            borderRadius: BorderRadius.circular(8),
+            onTap: _showServerConfigDialog,
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 4),
+              decoration: BoxDecoration(
+                color: (_isSocketLive ? Colors.teal : Colors.orange)
+                    .withAlpha(25),
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(
+                  color: (_isSocketLive ? Colors.teal : Colors.orange)
+                      .withAlpha(90),
+                ),
+              ),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Container(
+                    width: 6.5,
+                    height: 6.5,
+                    decoration: BoxDecoration(
+                      color: _isSocketLive || _isRemoteConnected
+                          ? Colors.teal
+                          : Colors.orange,
+                      shape: BoxShape.circle,
+                    ),
+                  ),
+                  const SizedBox(width: 4),
+                  Text(
+                    isMobile
+                        ? (_isSocketLive ? 'Live' : 'IP')
+                        : (_isSocketLive
+                            ? 'Socket.IO • $_serverAddress'
+                            : _serverAddress),
+                    style: textTheme.labelSmall?.copyWith(
+                      fontSize: 10.5,
+                      fontWeight: FontWeight.w700,
+                      color: _isSocketLive || _isRemoteConnected
+                          ? Colors.teal
+                          : Colors.orange,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+          const SizedBox(width: 2),
+          IconButton(
+            tooltip: 'Duyệt SFTP & Tải File từ Rust Server',
+            visualDensity: VisualDensity.compact,
+            onPressed: () => _openServerFileBrowser(initialTab: 0),
+            icon: const Icon(Icons.folder_special_outlined, size: 19),
+          ),
+          IconButton(
+            tooltip: 'New Conversation',
+            visualDensity: VisualDensity.compact,
+            onPressed: () => _startNewConversationInProject(_activeChatProject),
+            icon: const Icon(Icons.add_rounded, size: 20),
+          ),
+          IconButton(
+            tooltip: 'Đổi giao diện Sáng/Tối',
+            visualDensity: VisualDensity.compact,
+            onPressed: widget.onToggleTheme,
+            icon: Icon(
+              widget.isDarkMode
+                  ? Icons.light_mode_outlined
+                  : Icons.dark_mode_outlined,
+              size: 18,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// Sidebar trái chuẩn Antigravity: phân nhóm theo Project Workspace
+  Widget _buildAntigravitySidebar(
+    BuildContext context, {
+    required bool isMobileDrawer,
+  }) {
+    final colorScheme = Theme.of(context).colorScheme;
+    final textTheme = Theme.of(context).textTheme;
+    final filtered = _filteredSessions;
+
+    final groupedByProject = <String, List<ConversationSession>>{};
+    for (final s in filtered) {
+      groupedByProject.putIfAbsent(s.projectName, () => []).add(s);
+    }
+
+    if (_searchQuery.isEmpty) {
+      for (final p in _projects) {
+        groupedByProject.putIfAbsent(p.name, () => []);
+      }
+    }
+
+    final projectNames = groupedByProject.keys.toList();
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        // 1. Header Sidebar: Antigravity + New Chat
+        Padding(
+          padding: const EdgeInsets.fromLTRB(14, 12, 10, 8),
+          child: Row(
+            children: [
+              Icon(
+                Icons.auto_awesome_rounded,
+                size: 18,
+                color: colorScheme.primary,
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  'Antigravity',
+                  style: textTheme.titleSmall?.copyWith(
+                    fontWeight: FontWeight.w800,
+                    letterSpacing: 0.2,
+                  ),
+                ),
+              ),
+              IconButton(
+                tooltip: 'Tạo Project Mới',
+                visualDensity: VisualDensity.compact,
+                icon: const Icon(Icons.create_new_folder_outlined, size: 18),
+                onPressed: () {
+                  _showCreateProjectDialog(context);
+                },
+              ),
+              IconButton(
+                tooltip: 'New Conversation',
+                visualDensity: VisualDensity.compact,
+                icon: const Icon(Icons.edit_square, size: 17),
+                onPressed: () {
+                  _startNewConversationInProject(_activeChatProject);
+                  if (isMobileDrawer && Navigator.of(context).canPop()) {
+                    Navigator.of(context).pop();
+                  }
+                },
+              ),
+            ],
+          ),
+        ),
+
+        // 2. Ô tìm kiếm gọn
+        Padding(
+          padding: const EdgeInsets.fromLTRB(12, 0, 12, 8),
+          child: TextField(
+            controller: _searchController,
+            onChanged: (v) => setState(() => _searchQuery = v.trim()),
+            style: textTheme.bodySmall,
+            decoration: InputDecoration(
+              hintText: 'Search conversations...',
+              prefixIcon: const Icon(Icons.search_rounded, size: 16),
+              isDense: true,
+              filled: true,
+              fillColor: colorScheme.surfaceContainerHighest.withAlpha(160),
+              contentPadding: const EdgeInsets.symmetric(vertical: 8),
+              border: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(8),
+                borderSide: BorderSide.none,
+              ),
+            ),
+          ),
+        ),
+
+        // Tiêu đề phân mục Workspaces & Nút Tạo Project nhanh
+        Padding(
+          padding: const EdgeInsets.fromLTRB(14, 2, 10, 4),
+          child: Row(
+            children: [
+              Text(
+                'WORKSPACES',
+                style: textTheme.labelSmall?.copyWith(
+                  fontWeight: FontWeight.w800,
+                  fontSize: 10,
+                  letterSpacing: 0.8,
+                  color: colorScheme.onSurfaceVariant.withAlpha(160),
+                ),
+              ),
+              const Spacer(),
+              InkWell(
+                borderRadius: BorderRadius.circular(4),
+                onTap: () => _showCreateProjectDialog(context),
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(Icons.add_rounded, size: 13, color: colorScheme.primary),
+                      const SizedBox(width: 2),
+                      Text(
+                        'Tạo Project',
+                        style: textTheme.labelSmall?.copyWith(
+                          fontWeight: FontWeight.w700,
+                          fontSize: 10.5,
+                          color: colorScheme.primary,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+
+        // 3. Danh sách Workspaces / Projects và các cuộc hội thoại
+        Expanded(
+          child: ListView.builder(
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+            itemCount: projectNames.length,
+            itemBuilder: (context, index) {
+              final projName = projectNames[index];
+              final projSessions = groupedByProject[projName] ?? const [];
+              final projWorkspace = _projects.firstWhere(
+                (p) => p.name == projName,
+                orElse: () => ProjectWorkspace(
+                  id: projName,
+                  name: projName,
+                  path: '/home/john/Documents/muop-ecosystem/$projName',
+                  sessionCount: projSessions.length,
+                  runningCount: 0,
+                ),
+              );
+
+              return _buildWorkspaceFolder(
+                context,
+                projWorkspace,
+                projSessions,
+                closeDrawerOnTap: isMobileDrawer,
+              );
+            },
+          ),
+        ),
+
+        // 4. Footer trạng thái Rust Server & Tải File
+        Container(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+          decoration: BoxDecoration(
+            border: Border(
+              top: BorderSide(color: colorScheme.outlineVariant),
+            ),
+          ),
+          child: Row(
+            children: [
+              Expanded(
+                child: InkWell(
+                  borderRadius: BorderRadius.circular(8),
+                  onTap: _showServerConfigDialog,
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 4),
+                    child: Row(
+                      children: [
+                        Icon(
+                          Icons.dns_outlined,
+                          size: 15,
+                          color: colorScheme.onSurfaceVariant,
+                        ),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: Text(
+                            _remoteHostName.isNotEmpty
+                                ? '$_remoteHostName ($_serverAddress)'
+                                : 'Rust Server: $_serverAddress',
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: textTheme.labelSmall?.copyWith(
+                              color: colorScheme.onSurfaceVariant,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+              IconButton(
+                tooltip: 'Tải File từ Server',
+                visualDensity: VisualDensity.compact,
+                onPressed: _openServerFileBrowser,
+                icon: Icon(
+                  Icons.cloud_download_outlined,
+                  size: 17,
+                  color: colorScheme.primary,
+                ),
+              ),
+              IconButton(
+                tooltip: 'Cấu hình IP Server',
+                visualDensity: VisualDensity.compact,
+                onPressed: _showServerConfigDialog,
+                icon: Icon(
+                  Icons.settings_outlined,
+                  size: 16,
+                  color: colorScheme.onSurfaceVariant,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildWorkspaceFolder(
+    BuildContext context,
+    ProjectWorkspace project,
+    List<ConversationSession> projectSessions, {
+    required bool closeDrawerOnTap,
+  }) {
+    final colorScheme = Theme.of(context).colorScheme;
+    final textTheme = Theme.of(context).textTheme;
+    final hasSelected =
+        projectSessions.any((s) => s.id == _selectedSessionId) ||
+            (_activeChatProject?.name == project.name);
+
+    return Theme(
+      data: Theme.of(context).copyWith(dividerColor: Colors.transparent),
+      child: ExpansionTile(
+        initiallyExpanded: projectSessions.isNotEmpty || hasSelected,
+        tilePadding: const EdgeInsets.symmetric(horizontal: 8, vertical: 0),
+        childrenPadding: const EdgeInsets.only(left: 10, right: 4, bottom: 4),
+        visualDensity: VisualDensity.compact,
+        leading: Icon(
+          Icons.folder_outlined,
+          size: 16,
+          color: hasSelected
+              ? colorScheme.primary
+              : colorScheme.onSurfaceVariant,
+        ),
+        title: Row(
+          children: [
+            Expanded(
+              child: Text(
+                project.name,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: textTheme.labelMedium?.copyWith(
+                  fontWeight: hasSelected ? FontWeight.w800 : FontWeight.w600,
+                  color: colorScheme.onSurface,
+                ),
+              ),
+            ),
+            InkWell(
+              borderRadius: BorderRadius.circular(4),
+              onTap: () {
+                _startNewConversationInProject(project);
+                if (closeDrawerOnTap && Navigator.of(context).canPop()) {
+                  Navigator.of(context).pop();
+                }
+              },
+              child: Padding(
+                padding: const EdgeInsets.all(4),
+                child: Icon(
+                  Icons.add_rounded,
+                  size: 15,
+                  color: colorScheme.onSurfaceVariant,
+                ),
+              ),
+            ),
+          ],
+        ),
+        children: [
+          if (projectSessions.isEmpty)
+            Padding(
+              padding: const EdgeInsets.symmetric(vertical: 6, horizontal: 8),
+              child: Align(
+                alignment: Alignment.centerLeft,
+                child: Text(
+                  'No conversations',
+                  style: textTheme.labelSmall?.copyWith(
+                    color: colorScheme.onSurfaceVariant.withAlpha(150),
+                  ),
+                ),
+              ),
+            )
+          else
+            for (final session in projectSessions)
+              _buildSidebarConversationItem(
+                context,
+                session,
+                !_isNewConversationMode && session.id == _selectedSessionId,
+                closeDrawerOnTap: closeDrawerOnTap,
+              ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildSidebarConversationItem(
+    BuildContext context,
+    ConversationSession session,
+    bool isSelected, {
+    required bool closeDrawerOnTap,
+  }) {
+    final colorScheme = Theme.of(context).colorScheme;
+    final textTheme = Theme.of(context).textTheme;
+    final isRunning = session.status == AgentStatus.running ||
+        (_activeStreams[session.id]?.isRunning == true);
+
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 2),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(8),
+        onTap: () {
+          final matchedProj = _projects.firstWhere(
+            (p) => p.name == session.projectName,
+            orElse: () => ProjectWorkspace(
+              id: session.projectName,
+              name: session.projectName,
+              path: session.projectPath,
+              sessionCount: 1,
+              runningCount: 0,
+            ),
+          );
+          setState(() {
+            _isNewConversationMode = false;
+            _selectedSessionId = session.id;
+            _activeChatProject = matchedProj;
+          });
+          if (session.steps.isEmpty) {
+            _loadFullSessionDetail(session.id);
+          }
+          if (closeDrawerOnTap && Navigator.of(context).canPop()) {
+            Navigator.of(context).pop();
+          }
+        },
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
+          decoration: BoxDecoration(
+            color: isSelected
+                ? colorScheme.primaryContainer.withAlpha(140)
+                : Colors.transparent,
+            borderRadius: BorderRadius.circular(8),
+          ),
+          child: Row(
+            children: [
+              if (isRunning) ...[
+                const SizedBox(
+                  width: 10,
+                  height: 10,
+                  child: CircularProgressIndicator(strokeWidth: 1.8),
+                ),
+                const SizedBox(width: 8),
+              ] else ...[
+                Icon(
+                  Icons.chat_bubble_outline_rounded,
+                  size: 13,
+                  color: isSelected
+                      ? colorScheme.primary
+                      : colorScheme.onSurfaceVariant,
+                ),
+                const SizedBox(width: 8),
+              ],
+              Expanded(
+                child: Text(
+                  session.title,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: textTheme.bodySmall?.copyWith(
+                    fontWeight: isSelected ? FontWeight.w700 : FontWeight.w500,
+                    color: isSelected
+                        ? colorScheme.onSurface
+                        : colorScheme.onSurfaceVariant,
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildDisconnectedView(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+    final textTheme = Theme.of(context).textTheme;
+
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(24),
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 420),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(
+                Icons.cloud_off_rounded,
+                size: 40,
+                color: colorScheme.onSurfaceVariant,
+              ),
+              const SizedBox(height: 12),
+              Text(
+                'Chưa kết nối tới Rust Server ($_serverAddress)',
+                textAlign: TextAlign.center,
+                style: textTheme.titleSmall?.copyWith(
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+              const SizedBox(height: 14),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  FilledButton.tonalIcon(
+                    onPressed: _showServerConfigDialog,
+                    icon: const Icon(Icons.settings_ethernet_rounded, size: 16),
+                    label: const Text('Đổi IP Server'),
+                  ),
+                  const SizedBox(width: 8),
+                  OutlinedButton.icon(
+                    onPressed: () {
+                      _scanner.connectSocket(_serverAddress);
+                      _refreshSessions(silent: false);
+                    },
+                    icon: const Icon(Icons.refresh_rounded, size: 16),
+                    label: const Text('Thử lại'),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}

@@ -1,0 +1,21 @@
+name: muop_agent
+description: "Mướp Agent Monitor — Ứng dụng Giao diện (Desktop & Mobile) kết nối Rust Server qua Socket.IO Realtime"
+publish_to: 'none'
+version: 1.1.0+2
+
+environment:
+  sdk: ^3.13.5
+
+dependencies:
+  flutter:
+    sdk: flutter
+  cupertino_icons: ^1.0.8
+  socket_io_client: ^3.0.2
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
+
+flutter:
+  uses-material-design: true

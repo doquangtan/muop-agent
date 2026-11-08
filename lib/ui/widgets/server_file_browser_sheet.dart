@@ -1,0 +1,2021 @@
+import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+
+import '../../models/agent_models.dart';
+import '../../services/brain_scanner_service.dart';
+
+/// Đại diện cho 1 tệp đã được nhóm (deduplicated) từ danh sách FileTouchRecord
+class GroupedFileChange {
+  const GroupedFileChange({
+    required this.path,
+    required this.action,
+    required this.repo,
+    required this.agentNames,
+    required this.touchCount,
+    required this.addedLines,
+    required this.removedLines,
+    required this.diffPreview,
+    required this.lastTimestamp,
+  });
+
+  final String path;
+  final String action; // WRITE, EDIT, READ
+  final String repo;
+  final List<String> agentNames;
+  final int touchCount;
+  final int addedLines;
+  final int removedLines;
+  final String diffPreview;
+  final DateTime lastTimestamp;
+
+  String get basename {
+    final parts = path.split('/');
+    return parts.isNotEmpty ? parts.last : path;
+  }
+
+  String get directoryPath {
+    final idx = path.lastIndexOf('/');
+    if (idx <= 0) return '/';
+    return path.substring(0, idx);
+  }
+
+  bool get hasChanges =>
+      action == 'EDIT' ||
+      action == 'WRITE' ||
+      addedLines > 0 ||
+      removedLines > 0 ||
+      diffPreview.trim().isNotEmpty;
+
+  static List<GroupedFileChange> groupRecords(List<FileTouchRecord> records) {
+    final map = <String, _MutableFileGroup>{};
+    for (final r in records) {
+      final cleanPath = r.path.trim();
+      if (cleanPath.isEmpty) continue;
+      final group = map.putIfAbsent(
+        cleanPath,
+        () => _MutableFileGroup(
+          path: cleanPath,
+          action: r.action,
+          repo: r.repo,
+          lastTimestamp: r.timestamp,
+        ),
+      );
+      group.touchCount += 1;
+      group.addedLines += r.addedLines;
+      group.removedLines += r.removedLines;
+      if (!group.agentNames.contains(r.agentName) &&
+          r.agentName.trim().isNotEmpty) {
+        group.agentNames.add(r.agentName);
+      }
+      // Ưu tiên trạng thái WRITE / EDIT hơn READ
+      if (r.action == 'WRITE') {
+        group.action = 'WRITE';
+      } else if (r.action == 'EDIT' && group.action != 'WRITE') {
+        group.action = 'EDIT';
+      }
+      if (r.diffPreview.trim().isNotEmpty) {
+        if (group.diffPreview.isEmpty) {
+          group.diffPreview = r.diffPreview.trim();
+        } else if (!group.diffPreview.contains(r.diffPreview.trim())) {
+          group.diffPreview = '${group.diffPreview}\n@@ --- @@\n${r.diffPreview.trim()}';
+        }
+      }
+      if (r.timestamp.isAfter(group.lastTimestamp)) {
+        group.lastTimestamp = r.timestamp;
+      }
+    }
+
+    final list = map.values
+        .map(
+          (g) => GroupedFileChange(
+            path: g.path,
+            action: g.action,
+            repo: g.repo,
+            agentNames: g.agentNames,
+            touchCount: g.touchCount,
+            addedLines: g.addedLines,
+            removedLines: g.removedLines,
+            diffPreview: g.diffPreview,
+            lastTimestamp: g.lastTimestamp,
+          ),
+        )
+        .toList();
+
+    // Sắp xếp tệp có chỉnh sửa (WRITE/EDIT) lên đầu, sau đó tới READ
+    list.sort((a, b) {
+      if (a.hasChanges != b.hasChanges) {
+        return a.hasChanges ? -1 : 1;
+      }
+      return b.lastTimestamp.compareTo(a.lastTimestamp);
+    });
+    return list;
+  }
+}
+
+class _MutableFileGroup {
+  _MutableFileGroup({
+    required this.path,
+    required this.action,
+    required this.repo,
+    required this.lastTimestamp,
+  });
+
+  final String path;
+  String action;
+  final String repo;
+  final List<String> agentNames = [];
+  int touchCount = 0;
+  int addedLines = 0;
+  int removedLines = 0;
+  String diffPreview = '';
+  DateTime lastTimestamp;
+}
+
+enum _SftpSortMode { nameAsc, sizeDesc, dateDesc }
+
+class ServerFileBrowserSheet extends StatefulWidget {
+  const ServerFileBrowserSheet({
+    super.key,
+    required this.scanner,
+    required this.serverAddress,
+    required this.initialPath,
+    required this.projects,
+    required this.sessionFiles,
+    this.initialTab = 0,
+  });
+
+  final BrainScannerService scanner;
+  final String serverAddress;
+  final String initialPath;
+  final List<ProjectWorkspace> projects;
+  final List<FileTouchRecord> sessionFiles;
+  final int initialTab;
+
+  static Future<void> show(
+    BuildContext context, {
+    required BrainScannerService scanner,
+    required String serverAddress,
+    required String initialPath,
+    required List<ProjectWorkspace> projects,
+    required List<FileTouchRecord> sessionFiles,
+    int initialTab = 0,
+  }) {
+    final colorScheme = Theme.of(context).colorScheme;
+    return showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      useSafeArea: true,
+      backgroundColor: colorScheme.surfaceContainer,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (ctx) => FractionallySizedBox(
+        heightFactor: 0.90,
+        child: ServerFileBrowserSheet(
+          scanner: scanner,
+          serverAddress: serverAddress,
+          initialPath: initialPath,
+          projects: projects,
+          sessionFiles: sessionFiles,
+          initialTab: initialTab,
+        ),
+      ),
+    );
+  }
+
+  /// Mở hộp thoại xem chi tiết Change (Diff) & Nội dung tệp trên Server + Tải về
+  static Future<void> showFilePreviewAndDiff(
+    BuildContext context, {
+    required BrainScannerService scanner,
+    required String serverAddress,
+    required String filePath,
+    GroupedFileChange? groupedChange,
+    required ValueChanged<String> onDownloadFile,
+  }) {
+    final colorScheme = Theme.of(context).colorScheme;
+    return showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      useSafeArea: true,
+      backgroundColor: colorScheme.surfaceContainer,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (ctx) => FractionallySizedBox(
+        heightFactor: 0.88,
+        child: _FileDiffAndContentSheet(
+          scanner: scanner,
+          serverAddress: serverAddress,
+          filePath: filePath,
+          groupedChange: groupedChange,
+          onDownloadFile: onDownloadFile,
+        ),
+      ),
+    );
+  }
+
+  @override
+  State<ServerFileBrowserSheet> createState() => _ServerFileBrowserSheetState();
+}
+
+class _ServerFileBrowserSheetState extends State<ServerFileBrowserSheet> {
+  late String _currentPath;
+  String _parentPath = '';
+  List<ServerFileEntry> _entries = [];
+  bool _isLoading = true;
+  String _errorMessage = '';
+  String _searchFilter = '';
+  late int _activeTab; // 0 = SFTP Server Browser, 1 = Grouped Files Changed
+  bool _showHidden = false;
+  _SftpSortMode _sortMode = _SftpSortMode.nameAsc;
+  bool _isEditingPath = false;
+  late TextEditingController _pathEditController;
+
+  final Set<String> _selectedFilePaths = {};
+  bool _isBatchDownloading = false;
+
+  String? _downloadingPath;
+  int _receivedBytes = 0;
+  int _totalBytes = 0;
+  String? _lastSavedPath;
+  String? _downloadError;
+
+  @override
+  void initState() {
+    super.initState();
+    _activeTab = widget.initialTab;
+    _currentPath = widget.initialPath.trim().isNotEmpty
+        ? widget.initialPath.trim()
+        : '/home/john/Documents/muop-ecosystem';
+    _pathEditController = TextEditingController(text: _currentPath);
+    _loadDirectory(_currentPath);
+  }
+
+  @override
+  void dispose() {
+    _pathEditController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _loadDirectory(String path) async {
+    setState(() {
+      _isLoading = true;
+      _errorMessage = '';
+      _isEditingPath = false;
+    });
+
+    final res = await widget.scanner.fetchServerDirectory(
+      address: widget.serverAddress,
+      path: path,
+      showHidden: _showHidden,
+    );
+
+    if (!mounted) return;
+    setState(() {
+      _isLoading = false;
+      if (res.ok) {
+        _currentPath = res.currentPath;
+        _parentPath = res.parentPath;
+        _entries = res.entries;
+        _pathEditController.text = res.currentPath;
+        _selectedFilePaths.clear();
+      } else {
+        _errorMessage = res.error.isNotEmpty
+            ? res.error
+            : 'Không thể đọc thư mục SFTP từ Rust Server';
+      }
+    });
+  }
+
+  Future<void> _downloadFile(String remotePath) async {
+    if (_downloadingPath != null) return;
+    setState(() {
+      _downloadingPath = remotePath;
+      _receivedBytes = 0;
+      _totalBytes = 0;
+      _lastSavedPath = null;
+      _downloadError = null;
+    });
+
+    final res = await widget.scanner.downloadFileFromServer(
+      address: widget.serverAddress,
+      remotePath: remotePath,
+      onProgress: (received, total) {
+        if (!mounted) return;
+        setState(() {
+          _receivedBytes = received;
+          _totalBytes = total;
+        });
+      },
+    );
+
+    if (!mounted) return;
+    setState(() {
+      _downloadingPath = null;
+      if (res.ok) {
+        _lastSavedPath = res.savedPath;
+      } else {
+        _downloadError = res.error;
+      }
+    });
+
+    if (res.ok) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Đã tải file về máy: ${res.savedPath}'),
+          duration: const Duration(seconds: 5),
+          action: SnackBarAction(
+            label: 'Mở tệp',
+            onPressed: () {
+              widget.scanner.openDownloadedFile(res.savedPath);
+            },
+          ),
+        ),
+      );
+    }
+  }
+
+  Future<void> _downloadSelectedBatch() async {
+    if (_selectedFilePaths.isEmpty || _isBatchDownloading) return;
+    final targets = _selectedFilePaths.toList();
+    setState(() {
+      _isBatchDownloading = true;
+      _downloadError = null;
+    });
+
+    int successCount = 0;
+    String lastPath = '';
+    for (final remotePath in targets) {
+      if (!mounted) break;
+      setState(() {
+        _downloadingPath = remotePath;
+        _receivedBytes = 0;
+        _totalBytes = 0;
+      });
+      final res = await widget.scanner.downloadFileFromServer(
+        address: widget.serverAddress,
+        remotePath: remotePath,
+        onProgress: (r, t) {
+          if (!mounted) return;
+          setState(() {
+            _receivedBytes = r;
+            _totalBytes = t;
+          });
+        },
+      );
+      if (res.ok) {
+        successCount++;
+        lastPath = res.savedPath;
+      }
+    }
+
+    if (!mounted) return;
+    setState(() {
+      _isBatchDownloading = false;
+      _downloadingPath = null;
+      _selectedFilePaths.clear();
+      if (lastPath.isNotEmpty) {
+        _lastSavedPath = lastPath;
+      }
+    });
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          'Đã tải hàng loạt $successCount/${targets.length} tệp về thiết bị!',
+        ),
+      ),
+    );
+  }
+
+  List<GroupedFileChange> get _groupedSessionFiles =>
+      GroupedFileChange.groupRecords(widget.sessionFiles);
+
+  @override
+  Widget build(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+    final textTheme = Theme.of(context).textTheme;
+    final isMobile = MediaQuery.sizeOf(context).width < 680;
+    final groupedFiles = _groupedSessionFiles;
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        // 1. Header SFTP & Chuyển Tab
+        Padding(
+          padding: EdgeInsets.fromLTRB(isMobile ? 14 : 20, 12, 10, 8),
+          child: Row(
+            children: [
+              Container(
+                padding: const EdgeInsets.all(7),
+                decoration: BoxDecoration(
+                  color: colorScheme.primaryContainer.withAlpha(140),
+                  borderRadius: BorderRadius.circular(10),
+                ),
+                child: Icon(
+                  Icons.dns_rounded,
+                  size: 18,
+                  color: colorScheme.primary,
+                ),
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      isMobile
+                          ? 'SFTP & Tệp Thay Đổi'
+                          : 'SFTP File Explorer & Changes — Rust Server',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: textTheme.titleSmall?.copyWith(
+                        fontWeight: FontWeight.w800,
+                      ),
+                    ),
+                    Text(
+                      'sftp://${widget.serverAddress}',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: textTheme.labelSmall?.copyWith(
+                        fontFamily: 'monospace',
+                        fontSize: 10.5,
+                        color: colorScheme.onSurfaceVariant,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              SegmentedButton<int>(
+                segments: [
+                  ButtonSegment<int>(
+                    value: 0,
+                    icon: const Icon(Icons.folder_special_rounded, size: 15),
+                    label: Text(isMobile ? 'SFTP' : 'Duyệt SFTP'),
+                  ),
+                  ButtonSegment<int>(
+                    value: 1,
+                    icon: const Icon(Icons.difference_rounded, size: 15),
+                    label: Text('Changes (${groupedFiles.length})'),
+                  ),
+                ],
+                selected: {_activeTab},
+                onSelectionChanged: (s) => setState(() => _activeTab = s.first),
+                style: const ButtonStyle(
+                  visualDensity: VisualDensity.compact,
+                ),
+              ),
+              const SizedBox(width: 4),
+              IconButton(
+                visualDensity: VisualDensity.compact,
+                icon: const Icon(Icons.close_rounded),
+                onPressed: () => Navigator.of(context).pop(),
+              ),
+            ],
+          ),
+        ),
+        Divider(height: 1, color: colorScheme.outlineVariant),
+
+        // 2. Thanh tiến trình tải file hoặc thao tác hàng loạt
+        if (_selectedFilePaths.isNotEmpty && _activeTab == 0)
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
+            color: colorScheme.secondaryContainer.withAlpha(140),
+            child: Row(
+              children: [
+                Icon(
+                  Icons.checklist_rounded,
+                  size: 16,
+                  color: colorScheme.primary,
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    'Đã chọn ${_selectedFilePaths.length} tệp để tải về máy',
+                    style: textTheme.labelMedium?.copyWith(
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                ),
+                TextButton(
+                  onPressed: () => setState(() => _selectedFilePaths.clear()),
+                  child: const Text('Bỏ chọn'),
+                ),
+                const SizedBox(width: 6),
+                FilledButton.icon(
+                  onPressed:
+                      _isBatchDownloading ? null : _downloadSelectedBatch,
+                  style: FilledButton.styleFrom(
+                    visualDensity: VisualDensity.compact,
+                  ),
+                  icon: const Icon(Icons.download_for_offline_rounded, size: 16),
+                  label: Text('Tải ${_selectedFilePaths.length} tệp'),
+                ),
+              ],
+            ),
+          ),
+
+        if (_downloadingPath != null)
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+            color: colorScheme.primaryContainer.withAlpha(110),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    const SizedBox(
+                      width: 13,
+                      height: 13,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        'Đang tải qua SFTP/HTTP: ${_downloadingPath!.split('/').last}...',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: textTheme.labelSmall?.copyWith(
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                    ),
+                    Text(
+                      _totalBytes > 0
+                          ? '${(_receivedBytes / 1024).toStringAsFixed(0)} / ${(_totalBytes / 1024).toStringAsFixed(0)} KB'
+                          : '${(_receivedBytes / 1024).toStringAsFixed(0)} KB',
+                      style: textTheme.labelSmall?.copyWith(
+                        fontFamily: 'monospace',
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 5),
+                LinearProgressIndicator(
+                  value: _totalBytes > 0 ? _receivedBytes / _totalBytes : null,
+                  borderRadius: BorderRadius.circular(4),
+                ),
+              ],
+            ),
+          ),
+
+        if (_lastSavedPath != null)
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
+            color: Colors.teal.withAlpha(30),
+            child: Row(
+              children: [
+                const Icon(
+                  Icons.check_circle_rounded,
+                  size: 15,
+                  color: Colors.teal,
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: SelectableText(
+                    'Đã lưu: $_lastSavedPath',
+                    style: textTheme.labelSmall?.copyWith(
+                      color: Colors.teal,
+                      fontWeight: FontWeight.w700,
+                      fontFamily: 'monospace',
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 6),
+                FilledButton.tonalIcon(
+                  onPressed: () async {
+                    final openRes = await widget.scanner
+                        .openDownloadedFile(_lastSavedPath!);
+                    if (!openRes.ok && context.mounted) {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        SnackBar(
+                          content: Text(
+                            'Không thể mở bằng ứng dụng ngoài: ${openRes.error}',
+                          ),
+                        ),
+                      );
+                    }
+                  },
+                  style: FilledButton.styleFrom(
+                    visualDensity: VisualDensity.compact,
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 10,
+                      vertical: 4,
+                    ),
+                  ),
+                  icon: const Icon(Icons.open_in_new_rounded, size: 14),
+                  label: const Text(
+                    'Mở tệp',
+                    style: TextStyle(fontSize: 11.5, fontWeight: FontWeight.w700),
+                  ),
+                ),
+                IconButton(
+                  tooltip: 'Sao chép đường dẫn',
+                  visualDensity: VisualDensity.compact,
+                  icon: const Icon(Icons.copy_rounded, size: 14),
+                  onPressed: () {
+                    Clipboard.setData(ClipboardData(text: _lastSavedPath!));
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(
+                        content: Text('Đã sao chép đường dẫn tệp vừa tải'),
+                        duration: Duration(seconds: 2),
+                      ),
+                    );
+                  },
+                ),
+              ],
+            ),
+          ),
+
+        if (_downloadError != null)
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
+            color: Colors.redAccent.withAlpha(30),
+            child: Row(
+              children: [
+                const Icon(
+                  Icons.error_outline_rounded,
+                  size: 15,
+                  color: Colors.redAccent,
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    'Lỗi tải tệp: $_downloadError',
+                    style: textTheme.labelSmall?.copyWith(
+                      color: Colors.redAccent,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+
+        // 3. Nội dung chính theo Tab
+        Expanded(
+          child: _activeTab == 0
+              ? _buildSftpExplorerTab(
+                  context,
+                  colorScheme,
+                  textTheme,
+                  isMobile,
+                )
+              : _buildGroupedChangesTab(
+                  context,
+                  groupedFiles,
+                  colorScheme,
+                  textTheme,
+                  isMobile,
+                ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildSftpExplorerTab(
+    BuildContext context,
+    ColorScheme colorScheme,
+    TextTheme textTheme,
+    bool isMobile,
+  ) {
+    final filtered = _entries.where((e) {
+      if (_searchFilter.isEmpty) return true;
+      return e.name.toLowerCase().contains(_searchFilter.toLowerCase());
+    }).toList();
+
+    // Sắp xếp thư mục luôn ở trên, sau đó theo chế độ Sort
+    filtered.sort((a, b) {
+      if (a.isDir != b.isDir) {
+        return a.isDir ? -1 : 1;
+      }
+      switch (_sortMode) {
+        case _SftpSortMode.nameAsc:
+          return a.name.toLowerCase().compareTo(b.name.toLowerCase());
+        case _SftpSortMode.sizeDesc:
+          return b.size.compareTo(a.size);
+        case _SftpSortMode.dateDesc:
+          return b.modifiedAt.compareTo(a.modifiedAt);
+      }
+    });
+
+    final dirCount = filtered.where((e) => e.isDir).length;
+    final fileCount = filtered.length - dirCount;
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        // 1. Bookmark nhảy nhanh tới các thư mục hệ thống & Project
+        SizedBox(
+          height: 38,
+          child: ListView(
+            scrollDirection: Axis.horizontal,
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+            children: [
+              Padding(
+                padding: const EdgeInsets.only(right: 6),
+                child: ActionChip(
+                  visualDensity: VisualDensity.compact,
+                  avatar: const Icon(Icons.home_outlined, size: 13.5),
+                  label: const Text('/home/john', style: TextStyle(fontSize: 11.5)),
+                  onPressed: () => _loadDirectory('/home/john'),
+                ),
+              ),
+              Padding(
+                padding: const EdgeInsets.only(right: 6),
+                child: ActionChip(
+                  visualDensity: VisualDensity.compact,
+                  avatar: const Icon(Icons.workspaces_outlined, size: 13.5),
+                  label: const Text(
+                    'muop-ecosystem',
+                    style: TextStyle(fontSize: 11.5),
+                  ),
+                  onPressed: () =>
+                      _loadDirectory('/home/john/Documents/muop-ecosystem'),
+                ),
+              ),
+              for (final p in widget.projects)
+                Padding(
+                  padding: const EdgeInsets.only(right: 6),
+                  child: ActionChip(
+                    visualDensity: VisualDensity.compact,
+                    avatar: Icon(
+                      Icons.folder_outlined,
+                      size: 13.5,
+                      color: _currentPath.startsWith(p.path)
+                          ? colorScheme.primary
+                          : null,
+                    ),
+                    label: Text(p.name, style: const TextStyle(fontSize: 11.5)),
+                    onPressed: () => _loadDirectory(p.path),
+                  ),
+                ),
+            ],
+          ),
+        ),
+
+        // 2. Thanh Breadcrumb Path có thể bấm từng cấp hoặc nhập đường dẫn trực tiếp
+        Padding(
+          padding: const EdgeInsets.fromLTRB(12, 2, 12, 6),
+          child: Row(
+            children: [
+              IconButton.filledTonal(
+                tooltip: 'Lên thư mục cha (..)',
+                visualDensity: VisualDensity.compact,
+                onPressed: _parentPath.isNotEmpty
+                    ? () => _loadDirectory(_parentPath)
+                    : null,
+                icon: const Icon(Icons.arrow_upward_rounded, size: 16),
+              ),
+              const SizedBox(width: 6),
+              Expanded(
+                child: _isEditingPath
+                    ? TextField(
+                        controller: _pathEditController,
+                        autofocus: true,
+                        style: textTheme.labelSmall?.copyWith(
+                          fontFamily: 'monospace',
+                        ),
+                        onSubmitted: (val) {
+                          if (val.trim().isNotEmpty) {
+                            _loadDirectory(val.trim());
+                          }
+                        },
+                        decoration: InputDecoration(
+                          hintText: 'Nhập đường dẫn trên Server...',
+                          isDense: true,
+                          contentPadding: const EdgeInsets.symmetric(
+                            horizontal: 10,
+                            vertical: 8,
+                          ),
+                          filled: true,
+                          fillColor: colorScheme.surfaceContainerLowest,
+                          suffixIcon: IconButton(
+                            icon: const Icon(Icons.subdirectory_arrow_left_rounded, size: 15),
+                            onPressed: () =>
+                                _loadDirectory(_pathEditController.text.trim()),
+                          ),
+                          border: OutlineInputBorder(
+                            borderRadius: BorderRadius.circular(8),
+                          ),
+                        ),
+                      )
+                    : _buildBreadcrumbBar(colorScheme, textTheme),
+              ),
+              const SizedBox(width: 4),
+              IconButton(
+                tooltip: _isEditingPath
+                    ? 'Đóng nhập đường dẫn'
+                    : 'Nhập đường dẫn trực tiếp',
+                visualDensity: VisualDensity.compact,
+                onPressed: () {
+                  setState(() {
+                    _isEditingPath = !_isEditingPath;
+                    _pathEditController.text = _currentPath;
+                  });
+                },
+                icon: Icon(
+                  _isEditingPath ? Icons.close_rounded : Icons.edit_location_alt_outlined,
+                  size: 17,
+                ),
+              ),
+              IconButton(
+                tooltip: 'Làm mới SFTP',
+                visualDensity: VisualDensity.compact,
+                onPressed: () => _loadDirectory(_currentPath),
+                icon: const Icon(Icons.refresh_rounded, size: 17),
+              ),
+            ],
+          ),
+        ),
+
+        // 3. Thanh công cụ lọc, hiện file ẩn (.env/.git), sắp xếp
+        Padding(
+          padding: const EdgeInsets.fromLTRB(12, 0, 12, 6),
+          child: Row(
+            children: [
+              Expanded(
+                child: TextField(
+                  onChanged: (v) => setState(() => _searchFilter = v.trim()),
+                  style: textTheme.bodySmall,
+                  decoration: InputDecoration(
+                    hintText:
+                        'Tìm tệp trong thư mục ($dirCount thư mục, $fileCount tệp)...',
+                    prefixIcon: const Icon(Icons.search_rounded, size: 15),
+                    isDense: true,
+                    contentPadding: const EdgeInsets.symmetric(vertical: 7),
+                    filled: true,
+                    fillColor: colorScheme.surfaceContainerHighest,
+                    border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(8),
+                      borderSide: BorderSide.none,
+                    ),
+                  ),
+                ),
+              ),
+              const SizedBox(width: 6),
+              FilterChip(
+                visualDensity: VisualDensity.compact,
+                label: const Text('.* Ẩn', style: TextStyle(fontSize: 11)),
+                tooltip: 'Hiện/Ẩn các tệp bắt đầu bằng dấu chấm (.env, .git...)',
+                selected: _showHidden,
+                onSelected: (v) {
+                  setState(() => _showHidden = v);
+                  _loadDirectory(_currentPath);
+                },
+              ),
+              const SizedBox(width: 4),
+              PopupMenuButton<_SftpSortMode>(
+                tooltip: 'Sắp xếp danh sách SFTP',
+                onSelected: (m) => setState(() => _sortMode = m),
+                itemBuilder: (ctx) => const [
+                  PopupMenuItem(
+                    value: _SftpSortMode.nameAsc,
+                    child: Text('Sắp xếp: Tên (A → Z)'),
+                  ),
+                  PopupMenuItem(
+                    value: _SftpSortMode.sizeDesc,
+                    child: Text('Sắp xếp: Dung lượng giảm dần'),
+                  ),
+                  PopupMenuItem(
+                    value: _SftpSortMode.dateDesc,
+                    child: Text('Sắp xếp: Mới sửa gần nhất'),
+                  ),
+                ],
+                child: Container(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+                  decoration: BoxDecoration(
+                    color: colorScheme.surfaceContainerHighest,
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(
+                        Icons.sort_rounded,
+                        size: 15,
+                        color: colorScheme.onSurfaceVariant,
+                      ),
+                      if (!isMobile) ...[
+                        const SizedBox(width: 4),
+                        Text(
+                          _sortMode == _SftpSortMode.nameAsc
+                              ? 'Tên'
+                              : _sortMode == _SftpSortMode.sizeDesc
+                                  ? 'Size'
+                                  : 'Ngày',
+                          style: textTheme.labelSmall,
+                        ),
+                      ],
+                    ],
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+
+        // 4. Danh sách tệp SFTP
+        Expanded(
+          child: _isLoading
+              ? const Center(child: CircularProgressIndicator())
+              : _errorMessage.isNotEmpty
+                  ? Center(
+                      child: Padding(
+                        padding: const EdgeInsets.all(20),
+                        child: Text(
+                          _errorMessage,
+                          style: textTheme.bodyMedium?.copyWith(
+                            color: Colors.redAccent,
+                          ),
+                        ),
+                      ),
+                    )
+                  : filtered.isEmpty
+                      ? Center(
+                          child: Text(
+                            'Thư mục trống hoặc không khớp bộ lọc',
+                            style: textTheme.bodySmall?.copyWith(
+                              color: colorScheme.onSurfaceVariant,
+                            ),
+                          ),
+                        )
+                      : ListView.separated(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 12,
+                            vertical: 4,
+                          ),
+                          itemCount: filtered.length,
+                          separatorBuilder: (_, _) =>
+                              const SizedBox(height: 4),
+                          itemBuilder: (context, idx) {
+                            final entry = filtered[idx];
+                            final isDownloadingThis =
+                                _downloadingPath == entry.path;
+                            final isSelected =
+                                _selectedFilePaths.contains(entry.path);
+
+                            return InkWell(
+                              borderRadius: BorderRadius.circular(10),
+                              onTap: entry.isDir
+                                  ? () => _loadDirectory(entry.path)
+                                  : () => ServerFileBrowserSheet
+                                          .showFilePreviewAndDiff(
+                                        context,
+                                        scanner: widget.scanner,
+                                        serverAddress: widget.serverAddress,
+                                        filePath: entry.path,
+                                        onDownloadFile: _downloadFile,
+                                      ),
+                              child: Container(
+                                padding: EdgeInsets.symmetric(
+                                  horizontal: isMobile ? 8 : 12,
+                                  vertical: 8,
+                                ),
+                                decoration: BoxDecoration(
+                                  color: isSelected
+                                      ? colorScheme.primaryContainer
+                                          .withAlpha(70)
+                                      : colorScheme.surfaceContainerLow,
+                                  borderRadius: BorderRadius.circular(10),
+                                  border: Border.all(
+                                    color: isSelected
+                                        ? colorScheme.primary
+                                        : colorScheme.outlineVariant,
+                                  ),
+                                ),
+                                child: Row(
+                                  children: [
+                                    if (!entry.isDir)
+                                      SizedBox(
+                                        width: 26,
+                                        height: 24,
+                                        child: Checkbox(
+                                          value: isSelected,
+                                          visualDensity: VisualDensity.compact,
+                                          onChanged: (v) {
+                                            setState(() {
+                                              if (v == true) {
+                                                _selectedFilePaths
+                                                    .add(entry.path);
+                                              } else {
+                                                _selectedFilePaths
+                                                    .remove(entry.path);
+                                              }
+                                            });
+                                          },
+                                        ),
+                                      )
+                                    else
+                                      const SizedBox(width: 4),
+                                    Icon(
+                                      entry.isDir
+                                          ? Icons.folder_rounded
+                                          : _iconForFileName(entry.name),
+                                      size: 20,
+                                      color: entry.isDir
+                                          ? Colors.amber
+                                          : colorScheme.primary,
+                                    ),
+                                    const SizedBox(width: 10),
+                                    Expanded(
+                                      child: Column(
+                                        crossAxisAlignment:
+                                            CrossAxisAlignment.start,
+                                        children: [
+                                          Text(
+                                            entry.name,
+                                            maxLines: 1,
+                                            overflow: TextOverflow.ellipsis,
+                                            style:
+                                                textTheme.bodySmall?.copyWith(
+                                              fontWeight: entry.isDir
+                                                  ? FontWeight.w700
+                                                  : FontWeight.w600,
+                                              color: colorScheme.onSurface,
+                                            ),
+                                          ),
+                                          const SizedBox(height: 2),
+                                          Row(
+                                            children: [
+                                              Text(
+                                                entry.permissions,
+                                                style: textTheme.labelSmall
+                                                    ?.copyWith(
+                                                  fontFamily: 'monospace',
+                                                  fontSize: 10,
+                                                  color: colorScheme
+                                                      .onSurfaceVariant,
+                                                ),
+                                              ),
+                                              const SizedBox(width: 8),
+                                              Text(
+                                                entry.formattedSize,
+                                                style: textTheme.labelSmall
+                                                    ?.copyWith(
+                                                  fontFamily: 'monospace',
+                                                  fontSize: 10,
+                                                  fontWeight: FontWeight.w700,
+                                                  color: colorScheme.primary,
+                                                ),
+                                              ),
+                                              const SizedBox(width: 8),
+                                              Flexible(
+                                                child: Text(
+                                                  _formatDateShort(
+                                                    entry.modifiedAt,
+                                                  ),
+                                                  maxLines: 1,
+                                                  overflow:
+                                                      TextOverflow.ellipsis,
+                                                  style: textTheme.labelSmall
+                                                      ?.copyWith(
+                                                    fontSize: 10,
+                                                    color: colorScheme
+                                                        .onSurfaceVariant,
+                                                  ),
+                                                ),
+                                              ),
+                                            ],
+                                          ),
+                                        ],
+                                      ),
+                                    ),
+                                    if (entry.isDir)
+                                      Icon(
+                                        Icons.chevron_right_rounded,
+                                        size: 18,
+                                        color: colorScheme.onSurfaceVariant,
+                                      )
+                                    else ...[
+                                      IconButton(
+                                        tooltip: 'Xem nội dung & Git Diff',
+                                        visualDensity: VisualDensity.compact,
+                                        onPressed: () => ServerFileBrowserSheet
+                                            .showFilePreviewAndDiff(
+                                          context,
+                                          scanner: widget.scanner,
+                                          serverAddress: widget.serverAddress,
+                                          filePath: entry.path,
+                                          onDownloadFile: _downloadFile,
+                                        ),
+                                        icon: Icon(
+                                          Icons.visibility_outlined,
+                                          size: 16,
+                                          color: colorScheme.onSurfaceVariant,
+                                        ),
+                                      ),
+                                      FilledButton.tonalIcon(
+                                        onPressed: isDownloadingThis
+                                            ? null
+                                            : () => _downloadFile(entry.path),
+                                        style: FilledButton.styleFrom(
+                                          visualDensity: VisualDensity.compact,
+                                          padding: const EdgeInsets.symmetric(
+                                            horizontal: 8,
+                                            vertical: 4,
+                                          ),
+                                        ),
+                                        icon: isDownloadingThis
+                                            ? const SizedBox(
+                                                width: 12,
+                                                height: 12,
+                                                child:
+                                                    CircularProgressIndicator(
+                                                  strokeWidth: 2,
+                                                ),
+                                              )
+                                            : const Icon(
+                                                Icons.download_rounded,
+                                                size: 14,
+                                              ),
+                                        label: Text(
+                                          isMobile ? 'Tải' : 'Tải về',
+                                          style: const TextStyle(fontSize: 11.5),
+                                        ),
+                                      ),
+                                    ],
+                                  ],
+                                ),
+                              ),
+                            );
+                          },
+                        ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildBreadcrumbBar(ColorScheme colorScheme, TextTheme textTheme) {
+    final segments =
+        _currentPath.split('/').where((s) => s.isNotEmpty).toList();
+    return Container(
+      height: 34,
+      padding: const EdgeInsets.symmetric(horizontal: 8),
+      decoration: BoxDecoration(
+        color: colorScheme.surfaceContainerLowest,
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: colorScheme.outlineVariant),
+      ),
+      child: SingleChildScrollView(
+        scrollDirection: Axis.horizontal,
+        reverse: true,
+        child: Row(
+          children: [
+            InkWell(
+              onTap: () => _loadDirectory('/'),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 4),
+                child: Text(
+                  '/',
+                  style: textTheme.labelSmall?.copyWith(
+                    fontFamily: 'monospace',
+                    fontWeight: FontWeight.w800,
+                    color: colorScheme.primary,
+                  ),
+                ),
+              ),
+            ),
+            for (int i = 0; i < segments.length; i++) ...[
+              Icon(
+                Icons.chevron_right_rounded,
+                size: 14,
+                color: colorScheme.onSurfaceVariant,
+              ),
+              InkWell(
+                borderRadius: BorderRadius.circular(4),
+                onTap: () {
+                  final target = '/${segments.sublist(0, i + 1).join('/')}';
+                  _loadDirectory(target);
+                },
+                child: Padding(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 4, vertical: 4),
+                  child: Text(
+                    segments[i],
+                    style: textTheme.labelSmall?.copyWith(
+                      fontFamily: 'monospace',
+                      fontWeight: i == segments.length - 1
+                          ? FontWeight.w800
+                          : FontWeight.w500,
+                      color: i == segments.length - 1
+                          ? colorScheme.onSurface
+                          : colorScheme.onSurfaceVariant,
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// Tab hiển thị các tệp đã nhóm theo Repo / Thư mục kèm số dòng +Added / -Removed và nút Xem Change
+  Widget _buildGroupedChangesTab(
+    BuildContext context,
+    List<GroupedFileChange> groupedFiles,
+    ColorScheme colorScheme,
+    TextTheme textTheme,
+    bool isMobile,
+  ) {
+    if (groupedFiles.isEmpty) {
+      return Center(
+        child: Text(
+          'Phiên hội thoại này chưa có tệp nào được tác động.',
+          style: textTheme.bodySmall?.copyWith(
+            color: colorScheme.onSurfaceVariant,
+          ),
+        ),
+      );
+    }
+
+    // Nhóm theo Repo (`muop-erp-server`, `muop-erp-app`, `muop-agent`, `system`)
+    final byRepo = <String, List<GroupedFileChange>>{};
+    for (final f in groupedFiles) {
+      byRepo.putIfAbsent(f.repo, () => []).add(f);
+    }
+
+    return ListView(
+      padding: const EdgeInsets.all(12),
+      children: [
+        for (final entry in byRepo.entries) ...[
+          Padding(
+            padding: const EdgeInsets.only(bottom: 6, top: 4),
+            child: Row(
+              children: [
+                Icon(
+                  Icons.inventory_2_outlined,
+                  size: 15,
+                  color: colorScheme.primary,
+                ),
+                const SizedBox(width: 6),
+                Text(
+                  '${entry.key} (${entry.value.length} tệp)',
+                  style: textTheme.labelMedium?.copyWith(
+                    fontWeight: FontWeight.w800,
+                    color: colorScheme.primary,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          for (final f in entry.value)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 6),
+              child: InkWell(
+                borderRadius: BorderRadius.circular(10),
+                onTap: () => ServerFileBrowserSheet.showFilePreviewAndDiff(
+                  context,
+                  scanner: widget.scanner,
+                  serverAddress: widget.serverAddress,
+                  filePath: f.path,
+                  groupedChange: f,
+                  onDownloadFile: _downloadFile,
+                ),
+                child: Container(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                  decoration: BoxDecoration(
+                    color: colorScheme.surfaceContainerLow,
+                    borderRadius: BorderRadius.circular(10),
+                    border: Border.all(color: colorScheme.outlineVariant),
+                  ),
+                  child: Row(
+                    children: [
+                      _buildActionBadge(f.action, textTheme),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Row(
+                              children: [
+                                Expanded(
+                                  child: Text(
+                                    f.basename,
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: textTheme.bodySmall?.copyWith(
+                                      fontWeight: FontWeight.w700,
+                                    ),
+                                  ),
+                                ),
+                                if (f.addedLines > 0 || f.removedLines > 0) ...[
+                                  const SizedBox(width: 6),
+                                  _buildDiffStatPill(
+                                    f.addedLines,
+                                    f.removedLines,
+                                    textTheme,
+                                  ),
+                                ],
+                              ],
+                            ),
+                            const SizedBox(height: 2),
+                            Text(
+                              f.path,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: textTheme.labelSmall?.copyWith(
+                                fontFamily: 'monospace',
+                                fontSize: 10,
+                                color: colorScheme.onSurfaceVariant,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      OutlinedButton.icon(
+                        onPressed: () =>
+                            ServerFileBrowserSheet.showFilePreviewAndDiff(
+                          context,
+                          scanner: widget.scanner,
+                          serverAddress: widget.serverAddress,
+                          filePath: f.path,
+                          groupedChange: f,
+                          onDownloadFile: _downloadFile,
+                        ),
+                        style: OutlinedButton.styleFrom(
+                          visualDensity: VisualDensity.compact,
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 8,
+                            vertical: 4,
+                          ),
+                        ),
+                        icon: const Icon(Icons.difference_outlined, size: 14),
+                        label: Text(
+                          isMobile ? 'Diff' : 'Xem Change',
+                          style: const TextStyle(fontSize: 11.5),
+                        ),
+                      ),
+                      const SizedBox(width: 4),
+                      IconButton.filledTonal(
+                        tooltip: 'Tải file về máy',
+                        visualDensity: VisualDensity.compact,
+                        onPressed: _downloadingPath == f.path
+                            ? null
+                            : () => _downloadFile(f.path),
+                        icon: const Icon(Icons.download_rounded, size: 15),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          const SizedBox(height: 8),
+        ],
+      ],
+    );
+  }
+
+  Widget _buildActionBadge(String action, TextTheme textTheme) {
+    Color bg;
+    Color fg;
+    String label;
+    if (action == 'WRITE') {
+      bg = Colors.teal.withAlpha(35);
+      fg = Colors.teal;
+      label = 'NEW';
+    } else if (action == 'EDIT') {
+      bg = Colors.amber.withAlpha(35);
+      fg = Colors.amber.shade700;
+      label = 'MOD';
+    } else {
+      bg = Colors.blueGrey.withAlpha(30);
+      fg = Colors.blueGrey;
+      label = 'READ';
+    }
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+      decoration: BoxDecoration(
+        color: bg,
+        borderRadius: BorderRadius.circular(5),
+      ),
+      child: Text(
+        label,
+        style: textTheme.labelSmall?.copyWith(
+          fontSize: 9.5,
+          fontWeight: FontWeight.w800,
+          color: fg,
+        ),
+      ),
+    );
+  }
+
+  Widget _buildDiffStatPill(int added, int removed, TextTheme textTheme) {
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        if (added > 0)
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
+            decoration: BoxDecoration(
+              color: Colors.teal.withAlpha(30),
+              borderRadius: BorderRadius.circular(4),
+            ),
+            child: Text(
+              '+$added',
+              style: textTheme.labelSmall?.copyWith(
+                fontFamily: 'monospace',
+                fontSize: 10,
+                fontWeight: FontWeight.w800,
+                color: Colors.teal,
+              ),
+            ),
+          ),
+        if (added > 0 && removed > 0) const SizedBox(width: 3),
+        if (removed > 0)
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
+            decoration: BoxDecoration(
+              color: Colors.redAccent.withAlpha(30),
+              borderRadius: BorderRadius.circular(4),
+            ),
+            child: Text(
+              '-$removed',
+              style: textTheme.labelSmall?.copyWith(
+                fontFamily: 'monospace',
+                fontSize: 10,
+                fontWeight: FontWeight.w800,
+                color: Colors.redAccent,
+              ),
+            ),
+          ),
+      ],
+    );
+  }
+
+  String _formatDateShort(DateTime dt) {
+    final local = dt.toLocal();
+    final d = local.day.toString().padLeft(2, '0');
+    final m = local.month.toString().padLeft(2, '0');
+    final h = local.hour.toString().padLeft(2, '0');
+    final min = local.minute.toString().padLeft(2, '0');
+    return '$d/$m $h:$min';
+  }
+
+  IconData _iconForFileName(String name) {
+    final lower = name.toLowerCase();
+    if (lower.endsWith('.apk')) return Icons.android_rounded;
+    if (lower.endsWith('.dart') ||
+        lower.endsWith('.go') ||
+        lower.endsWith('.rs') ||
+        lower.endsWith('.py') ||
+        lower.endsWith('.js') ||
+        lower.endsWith('.ts')) {
+      return Icons.code_rounded;
+    }
+    if (lower.endsWith('.json') ||
+        lower.endsWith('.yaml') ||
+        lower.endsWith('.toml')) {
+      return Icons.data_object_rounded;
+    }
+    if (lower.endsWith('.md') || lower.endsWith('.txt')) {
+      return Icons.description_outlined;
+    }
+    if (lower.endsWith('.png') ||
+        lower.endsWith('.jpg') ||
+        lower.endsWith('.jpeg') ||
+        lower.endsWith('.webp')) {
+      return Icons.image_outlined;
+    }
+    if (lower.endsWith('.zip') ||
+        lower.endsWith('.tar') ||
+        lower.endsWith('.gz')) {
+      return Icons.folder_zip_outlined;
+    }
+    return Icons.insert_drive_file_outlined;
+  }
+}
+
+/// Modal hiển thị trực quan Change (Diff xanh/đỏ) và Nội dung tệp từ Rust Server
+class _FileDiffAndContentSheet extends StatefulWidget {
+  const _FileDiffAndContentSheet({
+    required this.scanner,
+    required this.serverAddress,
+    required this.filePath,
+    this.groupedChange,
+    required this.onDownloadFile,
+  });
+
+  final BrainScannerService scanner;
+  final String serverAddress;
+  final String filePath;
+  final GroupedFileChange? groupedChange;
+  final ValueChanged<String> onDownloadFile;
+
+  @override
+  State<_FileDiffAndContentSheet> createState() =>
+      _FileDiffAndContentSheetState();
+}
+
+class _FileDiffAndContentSheetState extends State<_FileDiffAndContentSheet> {
+  bool _isLoading = true;
+  ServerFileReadResponse? _readResponse;
+  int _selectedTab = 0; // 0 = Changes (Diff), 1 = Full File Content
+  bool _isDownloading = false;
+  double _downloadProgress = 0.0;
+  String? _downloadedLocalPath;
+
+  @override
+  void initState() {
+    super.initState();
+    _fetchFileDetail();
+  }
+
+  Future<void> _fetchFileDetail() async {
+    setState(() => _isLoading = true);
+    final res = await widget.scanner.readServerFile(
+      address: widget.serverAddress,
+      path: widget.filePath,
+    );
+    if (!mounted) return;
+    final hasAnyDiff =
+        (widget.groupedChange?.diffPreview.trim().isNotEmpty == true) ||
+            res.gitDiff.trim().isNotEmpty;
+    setState(() {
+      _isLoading = false;
+      _readResponse = res;
+      _selectedTab = hasAnyDiff ? 0 : 1;
+    });
+  }
+
+  Future<void> _downloadAndTrack() async {
+    if (_isDownloading) return;
+    setState(() {
+      _isDownloading = true;
+      _downloadProgress = 0.0;
+    });
+    final res = await widget.scanner.downloadFileFromServer(
+      address: widget.serverAddress,
+      remotePath: widget.filePath,
+      onProgress: (received, total) {
+        if (!mounted) return;
+        setState(() {
+          if (total > 0) {
+            _downloadProgress = (received / total).clamp(0.0, 1.0);
+          } else {
+            _downloadProgress = (_downloadProgress + 0.08).clamp(0.0, 0.95);
+          }
+        });
+      },
+    );
+    if (!mounted) return;
+    setState(() {
+      _isDownloading = false;
+      if (res.ok) {
+        _downloadProgress = 1.0;
+        _downloadedLocalPath = res.savedPath;
+      }
+    });
+    if (res.ok) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Đã tải xong: ${res.savedPath}'),
+          action: SnackBarAction(
+            label: 'Mở tệp',
+            onPressed: () => widget.scanner.openDownloadedFile(res.savedPath),
+          ),
+        ),
+      );
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+    final textTheme = Theme.of(context).textTheme;
+    final filename = widget.filePath.split('/').last;
+    final agentDiff = widget.groupedChange?.diffPreview.trim() ?? '';
+    final gitDiff = _readResponse?.gitDiff.trim() ?? '';
+    final combinedDiff = agentDiff.isNotEmpty
+        ? (gitDiff.isNotEmpty
+            ? '@@ Thay đổi bởi Agent trong hội thoại @@\n$agentDiff\n\n@@ Git Diff HEAD trên Server @@\n$gitDiff'
+            : agentDiff)
+        : gitDiff;
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        // Header
+        Padding(
+          padding: const EdgeInsets.fromLTRB(16, 12, 10, 8),
+          child: Row(
+            children: [
+              Icon(
+                Icons.difference_rounded,
+                size: 20,
+                color: colorScheme.primary,
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      filename,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: textTheme.titleSmall?.copyWith(
+                        fontWeight: FontWeight.w800,
+                      ),
+                    ),
+                    Text(
+                      widget.filePath,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: textTheme.labelSmall?.copyWith(
+                        fontFamily: 'monospace',
+                        fontSize: 10.5,
+                        color: colorScheme.onSurfaceVariant,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              // Khi tải về xong: Thay thế hoàn toàn bằng nút Mở tệp
+              if (_downloadedLocalPath != null) ...[
+                FilledButton.icon(
+                  onPressed: () =>
+                      widget.scanner.openDownloadedFile(_downloadedLocalPath!),
+                  style: FilledButton.styleFrom(
+                    visualDensity: VisualDensity.compact,
+                    backgroundColor: Colors.teal,
+                    foregroundColor: Colors.white,
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                  ),
+                  icon: const Icon(Icons.open_in_new_rounded, size: 15),
+                  label: const Text(
+                    'Mở tệp',
+                    style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700),
+                  ),
+                ),
+                const SizedBox(width: 2),
+                IconButton(
+                  visualDensity: VisualDensity.compact,
+                  tooltip: 'Tải lại',
+                  icon: const Icon(Icons.refresh_rounded, size: 16),
+                  onPressed: _isDownloading ? null : _downloadAndTrack,
+                ),
+              ] else ...[
+                // Lúc bấm tải về: Đổ màu từ trái qua phải theo % tải về
+                _buildProgressDownloadButton(context),
+              ],
+              const SizedBox(width: 4),
+              IconButton(
+                visualDensity: VisualDensity.compact,
+                icon: const Icon(Icons.close_rounded),
+                onPressed: () => Navigator.of(context).pop(),
+              ),
+            ],
+          ),
+        ),
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+          child: SegmentedButton<int>(
+            segments: [
+              ButtonSegment<int>(
+                value: 0,
+                icon: const Icon(Icons.compare_arrows_rounded, size: 15),
+                label: Text(
+                  widget.groupedChange != null &&
+                          (widget.groupedChange!.addedLines > 0 ||
+                              widget.groupedChange!.removedLines > 0)
+                      ? 'Changes (+${widget.groupedChange!.addedLines} / -${widget.groupedChange!.removedLines})'
+                      : 'Changes (Diff)',
+                ),
+              ),
+              const ButtonSegment<int>(
+                value: 1,
+                icon: Icon(Icons.article_outlined, size: 15),
+                label: Text('Nội dung tệp'),
+              ),
+            ],
+            selected: {_selectedTab},
+            onSelectionChanged: (s) => setState(() => _selectedTab = s.first),
+            style: const ButtonStyle(visualDensity: VisualDensity.compact),
+          ),
+        ),
+        const SizedBox(height: 4),
+        Divider(height: 1, color: colorScheme.outlineVariant),
+        Expanded(
+          child: _isLoading
+              ? const Center(child: CircularProgressIndicator())
+              : _selectedTab == 0
+                  ? _buildColoredDiffView(
+                      context,
+                      combinedDiff,
+                      colorScheme,
+                      textTheme,
+                    )
+                  : _buildFullFileContentView(
+                      context,
+                      _readResponse,
+                      colorScheme,
+                      textTheme,
+                    ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildColoredDiffView(
+    BuildContext context,
+    String diffText,
+    ColorScheme colorScheme,
+    TextTheme textTheme,
+  ) {
+    if (diffText.trim().isEmpty) {
+      return Center(
+        child: Padding(
+          padding: const EdgeInsets.all(24),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(
+                Icons.check_circle_outline_rounded,
+                size: 36,
+                color: colorScheme.onSurfaceVariant,
+              ),
+              const SizedBox(height: 10),
+              Text(
+                'Tệp này chỉ được đọc (READ) hoặc không có khác biệt so với Git HEAD.',
+                textAlign: TextAlign.center,
+                style: textTheme.bodySmall?.copyWith(
+                  color: colorScheme.onSurfaceVariant,
+                ),
+              ),
+              const SizedBox(height: 12),
+              OutlinedButton.icon(
+                onPressed: () => setState(() => _selectedTab = 1),
+                icon: const Icon(Icons.article_outlined, size: 16),
+                label: const Text('Xem toàn bộ nội dung tệp'),
+              ),
+            ],
+          ),
+        ),
+      );
+    }
+
+    final lines = diffText.split('\n');
+    return ListView.builder(
+      padding: const EdgeInsets.all(12),
+      itemCount: lines.length,
+      itemBuilder: (context, index) {
+        final line = lines[index];
+        Color? bgColor;
+        Color textColor = colorScheme.onSurface;
+        FontWeight weight = FontWeight.w400;
+
+        if (line.startsWith('+') && !line.startsWith('+++')) {
+          bgColor = Colors.teal.withAlpha(38);
+          textColor = Colors.teal.shade300;
+          weight = FontWeight.w600;
+        } else if (line.startsWith('-') && !line.startsWith('---')) {
+          bgColor = Colors.redAccent.withAlpha(38);
+          textColor = Colors.redAccent.shade100;
+          weight = FontWeight.w600;
+        } else if (line.startsWith('@@')) {
+          bgColor = colorScheme.primaryContainer.withAlpha(65);
+          textColor = colorScheme.primary;
+          weight = FontWeight.w700;
+        }
+
+        return Container(
+          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+          color: bgColor,
+          child: SelectableText(
+            line,
+            style: textTheme.bodySmall?.copyWith(
+              fontFamily: 'monospace',
+              fontSize: 11.5,
+              height: 1.35,
+              color: textColor,
+              fontWeight: weight,
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  Widget _buildFullFileContentView(
+    BuildContext context,
+    ServerFileReadResponse? resp,
+    ColorScheme colorScheme,
+    TextTheme textTheme,
+  ) {
+    if (resp == null || !resp.ok) {
+      return Center(
+        child: Text(
+          resp?.error ?? 'Không thể đọc tệp từ Server',
+          style: textTheme.bodySmall?.copyWith(color: Colors.redAccent),
+        ),
+      );
+    }
+    if (resp.isBinary) {
+      return Center(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(
+              Icons.memory_rounded,
+              size: 40,
+              color: colorScheme.onSurfaceVariant,
+            ),
+            const SizedBox(height: 10),
+            Text(
+              'Đây là tệp nhị phân (${(resp.size / 1024).toStringAsFixed(1)} KB). Hãy tải về máy để mở.',
+              style: textTheme.bodySmall,
+            ),
+            const SizedBox(height: 14),
+            if (_downloadedLocalPath != null)
+              FilledButton.icon(
+                onPressed: () =>
+                    widget.scanner.openDownloadedFile(_downloadedLocalPath!),
+                style: FilledButton.styleFrom(
+                  backgroundColor: Colors.teal,
+                  foregroundColor: Colors.white,
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                ),
+                icon: const Icon(Icons.open_in_new_rounded, size: 16),
+                label: const Text(
+                  'Mở tệp đã tải',
+                  style: TextStyle(fontWeight: FontWeight.w700),
+                ),
+              )
+            else
+              _buildProgressDownloadButton(context),
+          ],
+        ),
+      );
+    }
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Container(
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
+          color: colorScheme.surfaceContainerLow,
+          child: Row(
+            children: [
+              Text(
+                'Kích thước: ${(resp.size / 1024).toStringAsFixed(1)} KB',
+                style: textTheme.labelSmall?.copyWith(
+                  fontFamily: 'monospace',
+                  color: colorScheme.onSurfaceVariant,
+                ),
+              ),
+              const Spacer(),
+              TextButton.icon(
+                onPressed: () {
+                  Clipboard.setData(ClipboardData(text: resp.content));
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(
+                      content: Text('Đã sao chép nội dung tệp'),
+                      duration: Duration(seconds: 2),
+                    ),
+                  );
+                },
+                icon: const Icon(Icons.copy_rounded, size: 14),
+                label: const Text('Copy toàn bộ'),
+              ),
+            ],
+          ),
+        ),
+        Expanded(
+          child: SingleChildScrollView(
+            padding: const EdgeInsets.all(14),
+            child: SelectableText(
+              resp.content,
+              style: textTheme.bodySmall?.copyWith(
+                fontFamily: 'monospace',
+                fontSize: 11.5,
+                height: 1.45,
+              ),
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  /// Nút tải về có hiệu ứng đổ màu từ trái sang phải theo % tiến độ tải về
+  Widget _buildProgressDownloadButton(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+    final int percent = (_downloadProgress * 100).toInt().clamp(0, 100);
+
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        borderRadius: BorderRadius.circular(10),
+        onTap: _isDownloading ? null : _downloadAndTrack,
+        child: Container(
+          height: 32,
+          constraints: const BoxConstraints(minWidth: 86),
+          decoration: BoxDecoration(
+            color: colorScheme.surfaceContainerHighest,
+            borderRadius: BorderRadius.circular(10),
+            border: Border.all(
+              color: _isDownloading
+                  ? colorScheme.primary
+                  : colorScheme.outlineVariant.withAlpha(140),
+              width: 1,
+            ),
+          ),
+          child: ClipRRect(
+            borderRadius: BorderRadius.circular(9),
+            child: Stack(
+              children: [
+                // Layer 1: Đổ màu từ trái qua phải theo % tiến độ tải về
+                if (_isDownloading)
+                  Positioned.fill(
+                    child: FractionallySizedBox(
+                      alignment: Alignment.centerLeft,
+                      widthFactor: _downloadProgress > 0
+                          ? _downloadProgress.clamp(0.06, 1.0)
+                          : 0.06,
+                      child: Container(
+                        decoration: BoxDecoration(
+                          gradient: LinearGradient(
+                            begin: Alignment.centerLeft,
+                            end: Alignment.centerRight,
+                            colors: [
+                              colorScheme.primary.withAlpha(150),
+                              colorScheme.primary,
+                            ],
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+
+                // Layer 2: Icon và nhãn hiển thị bên trên lớp đổ màu
+                Center(
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 10),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        if (_isDownloading) ...[
+                          Text(
+                            '$percent%',
+                            style: TextStyle(
+                              fontFamily: 'monospace',
+                              fontSize: 11,
+                              fontWeight: FontWeight.w800,
+                              color: _downloadProgress > 0.45
+                                  ? colorScheme.onPrimary
+                                  : colorScheme.primary,
+                            ),
+                          ),
+                          const SizedBox(width: 4),
+                          SizedBox(
+                            width: 10,
+                            height: 10,
+                            child: CircularProgressIndicator(
+                              strokeWidth: 1.6,
+                              valueColor: AlwaysStoppedAnimation<Color>(
+                                _downloadProgress > 0.45
+                                    ? colorScheme.onPrimary
+                                    : colorScheme.primary,
+                              ),
+                            ),
+                          ),
+                        ] else ...[
+                          Icon(
+                            Icons.download_rounded,
+                            size: 15,
+                            color: colorScheme.primary,
+                          ),
+                          const SizedBox(width: 4),
+                          Text(
+                            'Tải về',
+                            style: TextStyle(
+                              fontSize: 12,
+                              fontWeight: FontWeight.w700,
+                              color: colorScheme.primary,
+                            ),
+                          ),
+                        ],
+                      ],
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
