@@ -37,6 +37,7 @@ class _ParallelAgentFlowScreenState extends State<ParallelAgentFlowScreen>
   final BrainScannerService _scanner = BrainScannerService();
   StreamSubscription<AgentMonitorSnapshot>? _snapshotSub;
   StreamSubscription<ChatTurnStreamState>? _chatStreamSub;
+  StreamSubscription<ConversationSession>? _sessionUpdateSub;
 
   ConversationSession? _session;
   ChatTurnStreamState? _activeStream;
@@ -102,12 +103,26 @@ class _ParallelAgentFlowScreenState extends State<ParallelAgentFlowScreen>
         });
       }
     });
+
+    _sessionUpdateSub = _scanner.sessionUpdateStream.listen((updated) {
+      if (!mounted) return;
+      final currentId = _session?.id ?? widget.session?.id;
+      if (currentId == updated.id) {
+        setState(() {
+          _session = updated;
+          if (updated.subagentLanes.isNotEmpty) {
+            _lanes = updated.subagentLanes;
+          }
+        });
+      }
+    });
   }
 
   @override
   void dispose() {
     _snapshotSub?.cancel();
     _chatStreamSub?.cancel();
+    _sessionUpdateSub?.cancel();
     _pulseController.dispose();
     _flowController.dispose();
     _tabController.dispose();

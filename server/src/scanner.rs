@@ -162,6 +162,7 @@ pub fn scan_running_agy_conversations() -> std::collections::HashSet<String> {
 }
 
 /// Tính chữ ký thay đổi (fingerprint) nhanh của thư mục brain và DB để phát hiện thay đổi realtime
+#[allow(dead_code)]
 pub fn compute_filesystem_fingerprint() -> u64 {
     let mut hash: u64 = 14695981039346656037;
     let mut mix = |val: u64| {
@@ -194,12 +195,158 @@ pub fn compute_filesystem_fingerprint() -> u64 {
     hash
 }
 
+/// Bộ theo dõi dấu vết thay đổi từng session độc lập để phát event nhỏ gọn (Granular Events)
+#[derive(Debug, Clone, Default)]
+pub struct SessionChangeTracker {
+    pub transcript_fingerprints: HashMap<String, (u64, u64)>, // id -> (mtime_ms, file_size)
+    pub sqlite_mtime: u64,
+}
+
+pub fn init_session_change_tracker() -> SessionChangeTracker {
+    let mut tracker = SessionChangeTracker::default();
+    let brain_dir = Path::new(BRAIN_DIR_PATH);
+    if let Ok(entries) = fs::read_dir(brain_dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                if let Some(id) = path.file_name().and_then(|n| n.to_str()) {
+                    if id != "tempmediaStorage" && !id.starts_with('.') {
+                        let transcript_path = path.join(".system_generated/logs/transcript.jsonl");
+                        if let Ok(meta) = fs::metadata(&transcript_path) {
+                            let mtime = meta
+                                .modified()
+                                .unwrap_or(SystemTime::UNIX_EPOCH)
+                                .duration_since(SystemTime::UNIX_EPOCH)
+                                .map(|d| d.as_millis() as u64)
+                                .unwrap_or(0);
+                            let size = meta.len();
+                            tracker.transcript_fingerprints.insert(id.to_string(), (mtime, size));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if let Ok(meta) = fs::metadata(SUMMARY_DB_PATH) {
+        tracker.sqlite_mtime = meta
+            .modified()
+            .unwrap_or(SystemTime::UNIX_EPOCH)
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
+    }
+
+    tracker
+}
+
+/// Phát hiện danh sách các conversation có thay đổi thực tế (chỉ scan và gửi event mỗi conversation đó)
+pub fn detect_changed_sessions(
+    tracker: &mut SessionChangeTracker,
+) -> (Vec<String>, bool) {
+    let mut changed_top_ids = HashSet::new();
+    let mut projects_changed = false;
+
+    let brain_dir = Path::new(BRAIN_DIR_PATH);
+    if !brain_dir.exists() {
+        return (Vec::new(), false);
+    }
+
+    let db_meta_map = load_conversation_summary_meta();
+
+    // Map to quickly find parent ID for subagents
+    let mut child_to_parent: HashMap<String, String> = HashMap::new();
+    let mut subagent_ids: HashSet<String> = HashSet::new();
+    for (id, m) in &db_meta_map {
+        if !m.parent_id.is_empty() {
+            child_to_parent.insert(id.clone(), m.parent_id.clone());
+            subagent_ids.insert(id.clone());
+        } else if !m.agent_name.is_empty()
+            && m.agent_name != "Coordinator"
+            && m.agent_name != "user"
+        {
+            subagent_ids.insert(id.clone());
+        }
+    }
+
+    // 1. Quét các directory trong brain
+    if let Ok(entries) = fs::read_dir(brain_dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !path.is_dir() {
+                continue;
+            }
+            let id = match path.file_name().and_then(|n| n.to_str()) {
+                Some(s) => s.to_string(),
+                None => continue,
+            };
+            if id == "tempmediaStorage" || id.starts_with('.') {
+                continue;
+            }
+
+            let transcript_path = path.join(".system_generated/logs/transcript.jsonl");
+            if let Ok(meta) = fs::metadata(&transcript_path) {
+                let mtime = meta
+                    .modified()
+                    .unwrap_or(SystemTime::UNIX_EPOCH)
+                    .duration_since(SystemTime::UNIX_EPOCH)
+                    .map(|d| d.as_millis() as u64)
+                    .unwrap_or(0);
+                let size = meta.len();
+
+                let changed = match tracker.transcript_fingerprints.get(&id) {
+                    Some(&(old_mtime, old_size)) => old_mtime != mtime || old_size != size,
+                    None => true,
+                };
+
+                if changed {
+                    tracker.transcript_fingerprints.insert(id.clone(), (mtime, size));
+                    // Nếu id là subagent, trigger cập nhật session cha
+                    if let Some(parent) = child_to_parent.get(&id) {
+                        changed_top_ids.insert(parent.clone());
+                    } else if !subagent_ids.contains(&id) {
+                        // Nếu là top-level session
+                        changed_top_ids.insert(id.clone());
+                    }
+                }
+            }
+        }
+    }
+
+    // 2. Kiểm tra SQLite db mtime
+    let db_path = Path::new(SUMMARY_DB_PATH);
+    if let Ok(meta) = fs::metadata(db_path) {
+        let db_mtime = meta
+            .modified()
+            .unwrap_or(SystemTime::UNIX_EPOCH)
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
+        if tracker.sqlite_mtime != db_mtime {
+            tracker.sqlite_mtime = db_mtime;
+            for (id, m) in &db_meta_map {
+                if m.parent_id.is_empty()
+                    && (m.agent_name.is_empty() || m.agent_name == "Coordinator")
+                {
+                    if !tracker.transcript_fingerprints.contains_key(id) {
+                        changed_top_ids.insert(id.clone());
+                    }
+                }
+            }
+            projects_changed = true;
+        }
+    }
+
+    (changed_top_ids.into_iter().collect(), projects_changed)
+}
+
 pub fn build_full_snapshot(
     active_streams: &HashMap<String, ChatTurnStreamState>,
     active_id: Option<&str>,
     max_sessions: usize,
 ) -> AgentMonitorSnapshot {
-    let sessions = scan_all_sessions(active_streams, active_id, max_sessions);
+    let limit = if max_sessions == 0 { 500 } else { max_sessions };
+    let sessions = scan_all_sessions(active_streams, active_id, limit);
     let custom_agents = load_custom_agent_specs();
     let projects = discover_projects(&sessions);
     let hostname = detect_hostname();
@@ -1005,7 +1152,11 @@ pub fn scan_all_sessions(
     }
 
     let selected: Vec<(String, DateTime<Utc>)> =
-        top_level_entries.into_iter().take(max_sessions).collect();
+        if max_sessions == 0 || max_sessions >= top_level_entries.len() {
+            top_level_entries
+        } else {
+            top_level_entries.into_iter().take(max_sessions).collect()
+        };
 
     let target_active = active_id
         .map(|s| s.to_string())
@@ -1294,8 +1445,29 @@ pub fn scan_pending_plans(session_id: &str) -> Vec<PlanArtifactInfo> {
 
 /// Đọc đầy đủ 100% chi tiết các steps của một session cụ thể khi người dùng chọn xem
 pub fn get_single_session_full(session_id: &str) -> Option<ConversationSession> {
+    get_single_session_with_streams(session_id, &HashMap::new())
+}
+
+/// Đọc đầy đủ session kết hợp kiểm tra trạng thái active_streams hiện thời
+pub fn get_single_session_with_streams(
+    session_id: &str,
+    active_streams: &HashMap<String, ChatTurnStreamState>,
+) -> Option<ConversationSession> {
     let brain_dir = Path::new(BRAIN_DIR_PATH);
-    let session_dir = brain_dir.join(session_id);
+
+    let db_meta_map = load_conversation_summary_meta();
+    // Nếu session_id là child subagent, tự động chuyển sang đọc session cha
+    let target_id = if let Some(m) = db_meta_map.get(session_id) {
+        if !m.parent_id.is_empty() {
+            m.parent_id.as_str()
+        } else {
+            session_id
+        }
+    } else {
+        session_id
+    };
+
+    let session_dir = brain_dir.join(target_id);
     if !session_dir.exists() {
         return None;
     }
@@ -1303,10 +1475,9 @@ pub fn get_single_session_full(session_id: &str) -> Option<ConversationSession> 
     let meta = fs::metadata(&transcript_path).ok()?;
     let modified: DateTime<Utc> = meta.modified().unwrap_or(SystemTime::UNIX_EPOCH).into();
 
-    let db_meta_map = load_conversation_summary_meta();
-    let db_meta = db_meta_map.get(session_id);
+    let db_meta = db_meta_map.get(target_id);
 
-    let parsed = parse_transcript_file(session_id, modified, db_meta)?;
+    let parsed = parse_transcript_file(target_id, modified, db_meta)?;
 
     let mut raw_sessions: HashMap<String, ParsedTranscript> = HashMap::new();
     for s in &parsed.spawned_subagents {
@@ -1322,7 +1493,11 @@ pub fn get_single_session_full(session_id: &str) -> Option<ConversationSession> 
     }
 
     let live_agy_cids = scan_running_agy_conversations();
-    let is_actually_running = live_agy_cids.contains(session_id);
+    let is_stream_running = active_streams
+        .get(target_id)
+        .map(|st| st.is_running)
+        .unwrap_or(false);
+    let is_actually_running = is_stream_running || live_agy_cids.contains(target_id);
     let (status, is_interrupted, interrupted_reason) = if is_actually_running {
         ("running".to_string(), false, None)
     } else if parsed.status == "running" || parsed.status == "interrupted" {

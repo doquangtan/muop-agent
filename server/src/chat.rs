@@ -36,13 +36,57 @@ impl AppState {
         }
     }
 
+    /// Phát event cập nhật chỉ riêng cho 1 session cụ thể (Granular Event)
+    pub fn broadcast_session_update(&self, session_id: &str) {
+        let streams = self
+            .active_streams
+            .lock()
+            .map(|g| g.clone())
+            .unwrap_or_default();
+        if let Some(session) = scanner::get_single_session_with_streams(session_id, &streams) {
+            if let Ok(val) = serde_json::to_value(&session) {
+                if let Some(ns) = self.io.of("/") {
+                    let _ = ns.emit("session:update", &val);
+                }
+            }
+        }
+    }
+
+    /// Phát event cập nhật danh sách projects khi có thay đổi
+    pub fn broadcast_projects_update(&self) {
+        let streams = self
+            .active_streams
+            .lock()
+            .map(|g| g.clone())
+            .unwrap_or_default();
+        let sessions = scanner::scan_all_sessions(&streams, None, 500);
+        let projects = scanner::discover_projects(&sessions);
+        if let Ok(val) = serde_json::to_value(&projects) {
+            if let Some(ns) = self.io.of("/") {
+                let _ = ns.emit("projects:update", &val);
+            }
+        }
+    }
+
+    /// Phát event cập nhật quotas khi có thay đổi
+    #[allow(dead_code)]
+    pub fn broadcast_quotas_update(&self) {
+        let quotas = scanner::fetch_antigravity_model_quotas();
+        if let Ok(val) = serde_json::to_value(&quotas) {
+            if let Some(ns) = self.io.of("/") {
+                let _ = ns.emit("quotas:update", &val);
+            }
+        }
+    }
+
+    #[allow(dead_code)]
     pub fn broadcast_snapshot(&self) {
         let streams = self
             .active_streams
             .lock()
             .map(|g| g.clone())
             .unwrap_or_default();
-        let snapshot = scanner::build_full_snapshot(&streams, None, 150);
+        let snapshot = scanner::build_full_snapshot(&streams, None, 500);
         if let Ok(val) = serde_json::to_value(&snapshot) {
             if let Some(ns) = self.io.of("/") {
                 let _ = ns.emit("snapshot:update", &val);
@@ -347,7 +391,7 @@ pub async fn start_chat_turn(state: AppState, req: ChatSendRequest) -> ChatSendR
                 streams.insert(tracked_id.clone(), final_state.clone());
             }
             state_clone.broadcast_stream_state(&final_state);
-            state_clone.broadcast_snapshot();
+            state_clone.broadcast_session_update(&tracked_id);
 
             let finish_cid = tracked_id.clone();
             tokio::spawn(async move {
@@ -373,7 +417,7 @@ pub async fn start_chat_turn(state: AppState, req: ChatSendRequest) -> ChatSendR
                     }
                 }
                 if removed {
-                    cleanup_state.broadcast_snapshot();
+                    cleanup_state.broadcast_session_update(&cid_cleanup);
                 }
             });
         }
@@ -419,7 +463,7 @@ pub fn stop_chat_turn(state: &AppState, conversation_id: &str) -> bool {
         }
         if let Some(st) = updated_stream {
             state.broadcast_stream_state(&st);
-            state.broadcast_snapshot();
+            state.broadcast_session_update(cid);
         }
         return true;
     }

@@ -28,7 +28,7 @@ use std::net::SocketAddr;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::time::{Instant, SystemTime};
+use std::time::SystemTime;
 use tokio::time::{interval, Duration};
 use tower_http::cors::CorsLayer;
 
@@ -43,7 +43,7 @@ fn setup_socket_handlers(io: &SocketIo, state: AppState) {
             .lock()
             .map(|g| g.clone())
             .unwrap_or_default();
-        let snapshot = scanner::build_full_snapshot(&streams, None, 150);
+        let snapshot = scanner::build_full_snapshot(&streams, None, 500);
         if let Ok(val) = serde_json::to_value(&snapshot) {
             let _ = socket.emit("snapshot:update", &val);
         }
@@ -57,7 +57,7 @@ fn setup_socket_handlers(io: &SocketIo, state: AppState) {
                     .lock()
                     .map(|g| g.clone())
                     .unwrap_or_default();
-                let snap = scanner::build_full_snapshot(&active, None, 150);
+                let snap = scanner::build_full_snapshot(&active, None, 500);
                 if let Ok(val) = serde_json::to_value(&snap) {
                     let _ = s.emit("snapshot:update", &val);
                 }
@@ -71,7 +71,7 @@ fn setup_socket_handlers(io: &SocketIo, state: AppState) {
                 let st = send_state.clone();
                 async move {
                     let res = chat::start_chat_turn(st.clone(), req).await;
-                    st.broadcast_snapshot();
+                    st.broadcast_session_update(&res.conversation_id);
                     let _ = ack.send(&res);
                 }
             },
@@ -111,7 +111,7 @@ async fn handle_snapshot(State(state): State<AppState>) -> impl IntoResponse {
         .lock()
         .map(|g| g.clone())
         .unwrap_or_default();
-    let snapshot = scanner::build_full_snapshot(&streams, None, 150);
+    let snapshot = scanner::build_full_snapshot(&streams, None, 500);
     Json(snapshot)
 }
 
@@ -184,7 +184,7 @@ async fn handle_chat_send(
     Json(req): Json<ChatSendRequest>,
 ) -> impl IntoResponse {
     let result = chat::start_chat_turn(state.clone(), req).await;
-    state.broadcast_snapshot();
+    state.broadcast_session_update(&result.conversation_id);
     let status = if result.ok {
         StatusCode::OK
     } else {
@@ -315,7 +315,7 @@ async fn handle_plan_action(
         };
 
         let result = chat::start_chat_turn(state.clone(), send_req).await;
-        state.broadcast_snapshot();
+        state.broadcast_session_update(conv_id);
 
         (
             StatusCode::OK,
@@ -349,7 +349,7 @@ async fn handle_plan_action(
         };
 
         let result = chat::start_chat_turn(state.clone(), send_req).await;
-        state.broadcast_snapshot();
+        state.broadcast_session_update(conv_id);
 
         (
             StatusCode::OK,
@@ -369,7 +369,7 @@ async fn handle_project_create(
 ) -> impl IntoResponse {
     match scanner::create_new_project(&req.name, &req.template, &req.description) {
         Ok(project) => {
-            state.broadcast_snapshot();
+            state.broadcast_projects_update();
             (
                 StatusCode::OK,
                 Json(models::CreateProjectResponse {
@@ -423,7 +423,7 @@ async fn handle_git_push(
             let stderr = String::from_utf8_lossy(&out.stderr).to_string();
             let combined = format!("{}\n{}", stdout, stderr).trim().to_string();
             if out.status.success() {
-                state.broadcast_snapshot();
+                state.broadcast_projects_update();
                 (
                     StatusCode::OK,
                     Json(models::GitPushResponse {
@@ -1162,40 +1162,35 @@ async fn main() {
 
     setup_socket_handlers(&io, app_state.clone());
 
-    // Watcher ngầm theo dõi sự thay đổi của transcript.jsonl & conversation_summaries.db (chu kỳ 1.5s, debounce 1.2s)
+    // Watcher ngầm theo dõi các session độc lập: Chỉ emit session:update cho đúng conversation có thay đổi
     let watcher_state = app_state.clone();
     tokio::spawn(async move {
         let mut ticker = interval(Duration::from_millis(1500));
-        let mut last_fp = scanner::compute_filesystem_fingerprint();
-        let mut last_emit = Instant::now();
+        let mut tracker = scanner::init_session_change_tracker();
         loop {
             ticker.tick().await;
-            let current_fp = scanner::compute_filesystem_fingerprint();
-            if current_fp != last_fp {
-                last_fp = current_fp;
+            let (changed_sessions, projects_changed) =
+                scanner::detect_changed_sessions(&mut tracker);
 
-                // Debounce tối thiểu 1.2s để tránh spam client khi agent đang stream liên tục
-                if last_emit.elapsed() < Duration::from_millis(1200) {
-                    tokio::time::sleep(Duration::from_millis(600)).await;
-                }
-                last_emit = Instant::now();
-
+            if !changed_sessions.is_empty() {
                 let streams = watcher_state
                     .active_streams
                     .lock()
                     .map(|g| g.clone())
                     .unwrap_or_default();
-                let snapshot = tokio::task::spawn_blocking(move || {
-                    scanner::build_full_snapshot(&streams, None, 150)
-                })
-                .await
-                .unwrap_or_else(|_| scanner::build_full_snapshot(&HashMap::new(), None, 150));
-
-                if let Ok(val) = serde_json::to_value(&snapshot) {
-                    if let Some(ns) = watcher_state.io.of("/") {
-                        let _ = ns.emit("snapshot:update", &val);
+                for sid in changed_sessions {
+                    if let Some(session) = scanner::get_single_session_with_streams(&sid, &streams) {
+                        if let Ok(val) = serde_json::to_value(&session) {
+                            if let Some(ns) = watcher_state.io.of("/") {
+                                let _ = ns.emit("session:update", &val);
+                            }
+                        }
                     }
                 }
+            }
+
+            if projects_changed {
+                watcher_state.broadcast_projects_update();
             }
         }
     });

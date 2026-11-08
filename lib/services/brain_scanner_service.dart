@@ -219,10 +219,22 @@ class BrainScannerService {
       StreamController<ChatTurnStreamState>.broadcast();
   final StreamController<bool> _socketStatusController =
       StreamController<bool>.broadcast();
+  final StreamController<ConversationSession> _sessionUpdateController =
+      StreamController<ConversationSession>.broadcast();
+  final StreamController<List<ProjectWorkspace>> _projectsUpdateController =
+      StreamController<List<ProjectWorkspace>>.broadcast();
+  final StreamController<List<ModelQuotaGroup>> _quotasUpdateController =
+      StreamController<List<ModelQuotaGroup>>.broadcast();
 
   Stream<AgentMonitorSnapshot> get snapshotStream => _snapshotController.stream;
   Stream<ChatTurnStreamState> get chatStream => _chatStreamController.stream;
   Stream<bool> get socketConnectionStream => _socketStatusController.stream;
+  Stream<ConversationSession> get sessionUpdateStream =>
+      _sessionUpdateController.stream;
+  Stream<List<ProjectWorkspace>> get projectsUpdateStream =>
+      _projectsUpdateController.stream;
+  Stream<List<ModelQuotaGroup>> get quotasUpdateStream =>
+      _quotasUpdateController.stream;
   bool get isSocketConnected => _isSocketConnected;
 
   File get _configFile =>
@@ -355,6 +367,67 @@ class BrainScannerService {
       } catch (_) {}
     });
 
+    // Event cập nhật một session duy nhất theo nguyên tắc phân nhỏ event (Granular Update)
+    socket.on('session:update', (data) {
+      if (_sessionUpdateController.isClosed || data == null) return;
+      try {
+        Map<String, dynamic>? map;
+        if (data is Map<String, dynamic>) {
+          map = data;
+        } else if (data is Map) {
+          map = Map<String, dynamic>.from(data);
+        } else if (data is String) {
+          map = jsonDecode(data) as Map<String, dynamic>;
+        }
+        if (map != null) {
+          final session = ConversationSession.fromJson(map);
+          _sessionUpdateController.add(session);
+        }
+      } catch (_) {}
+    });
+
+    // Event cập nhật danh sách Projects độc lập
+    socket.on('projects:update', (data) {
+      if (_projectsUpdateController.isClosed || data == null) return;
+      try {
+        List? list;
+        if (data is List) {
+          list = data;
+        } else if (data is String) {
+          list = jsonDecode(data) as List?;
+        }
+        if (list != null) {
+          final projects = list
+              .map((item) => ProjectWorkspace.fromJson(item is Map<String, dynamic>
+                  ? item
+                  : Map<String, dynamic>.from(item as Map)))
+              .toList();
+          _projectsUpdateController.add(projects);
+        }
+      } catch (_) {}
+    });
+
+    // Event cập nhật Quotas độc lập
+    socket.on('quotas:update', (data) {
+      if (_quotasUpdateController.isClosed || data == null) return;
+      try {
+        List? list;
+        if (data is List) {
+          list = data;
+        } else if (data is String) {
+          list = jsonDecode(data) as List?;
+        }
+        if (list != null) {
+          final quotas = list
+              .map((item) => ModelQuotaGroup.fromJson(item is Map<String, dynamic>
+                  ? item
+                  : Map<String, dynamic>.from(item as Map)))
+              .toList();
+          _quotasUpdateController.add(quotas);
+        }
+      } catch (_) {}
+    });
+
     _socket = socket;
     socket.connect();
   }
@@ -379,6 +452,9 @@ class BrainScannerService {
     _snapshotController.close();
     _chatStreamController.close();
     _socketStatusController.close();
+    _sessionUpdateController.close();
+    _projectsUpdateController.close();
+    _quotasUpdateController.close();
   }
 
   /// Kiểm tra kết nối tới Rust Server qua HTTP `/api/ping`

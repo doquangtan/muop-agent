@@ -59,6 +59,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
   StreamSubscription<AgentMonitorSnapshot>? _snapshotSub;
   StreamSubscription<ChatTurnStreamState>? _chatStreamSub;
   StreamSubscription<bool>? _socketStatusSub;
+  StreamSubscription<ConversationSession>? _sessionUpdateSub;
+  StreamSubscription<List<ProjectWorkspace>>? _projectsSub;
+  StreamSubscription<List<ModelQuotaGroup>>? _quotasSub;
 
   @override
   void initState() {
@@ -78,6 +81,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
     _snapshotSub?.cancel();
     _chatStreamSub?.cancel();
     _socketStatusSub?.cancel();
+    _sessionUpdateSub?.cancel();
+    _projectsSub?.cancel();
+    _quotasSub?.cancel();
     _scanner.dispose();
     _searchController.dispose();
     super.dispose();
@@ -93,6 +99,34 @@ class _DashboardScreenState extends State<DashboardScreen> {
           // Đồng bộ lại toàn bộ snapshot ngay khi kết nối lại sau restart
           _refreshSessions(silent: true);
         }
+      });
+    });
+
+    // Lắng nghe cập nhật granular cho từng conversation riêng lẻ
+    _sessionUpdateSub = _scanner.sessionUpdateStream.listen((updatedSession) {
+      if (!mounted) return;
+      _handleSessionUpdate(updatedSession);
+    });
+
+    // Lắng nghe cập nhật Projects độc lập
+    _projectsSub = _scanner.projectsUpdateStream.listen((projects) {
+      if (!mounted) return;
+      setState(() {
+        _projects = projects;
+        if (_activeChatProject != null) {
+          _activeChatProject = _projects.firstWhere(
+            (p) => p.name == _activeChatProject!.name,
+            orElse: () => _activeChatProject!,
+          );
+        }
+      });
+    });
+
+    // Lắng nghe cập nhật Model Quotas độc lập
+    _quotasSub = _scanner.quotasUpdateStream.listen((quotas) {
+      if (!mounted) return;
+      setState(() {
+        _modelQuotas = quotas;
       });
     });
 
@@ -118,6 +152,74 @@ class _DashboardScreenState extends State<DashboardScreen> {
           _selectedSessionId = streamState.conversationId;
         }
       });
+    });
+  }
+
+  /// Cập nhật một conversation duy nhất mà không ghi đè làm mất các conversation cũ
+  void _handleSessionUpdate(ConversationSession updated) {
+    setState(() {
+      final existingIndex = _sessions.indexWhere((s) => s.id == updated.id);
+      if (existingIndex >= 0) {
+        final existing = _sessions[existingIndex];
+        final mergedFiles = _mergeFilesTouched(existing.filesTouched, updated.filesTouched);
+        final mergedLanes = updated.subagentLanes.isNotEmpty ? updated.subagentLanes : existing.subagentLanes;
+
+        List<AgentStep> finalSteps;
+        if (existing.steps.isNotEmpty && existing.steps.length > updated.steps.length) {
+          finalSteps = _mergeNewerSteps(existing.steps, updated.steps);
+        } else if (updated.steps.isEmpty && existing.steps.isNotEmpty) {
+          finalSteps = existing.steps;
+        } else {
+          finalSteps = updated.steps;
+        }
+
+        final merged = updated.copyWith(
+          steps: finalSteps,
+          filesTouched: mergedFiles,
+          subagentLanes: mergedLanes,
+        );
+
+        _sessions[existingIndex] = merged;
+      } else {
+        // Conversation mới tinh vừa được tạo trên server!
+        _sessions.insert(0, updated);
+      }
+
+      // Sắp xếp các session theo updatedAt mới nhất lên đầu
+      _sessions.sort((a, b) => b.updatedAt.compareTo(a.updatedAt));
+
+      // Cập nhật lại số lượng sessionCount và runningCount trong project tương ứng
+      final pIndex = _projects.indexWhere((p) => p.name == updated.projectName);
+      if (pIndex >= 0) {
+        final p = _projects[pIndex];
+        final count = _sessions.where((s) => s.projectName == p.name).length;
+        final running = _sessions.where((s) => s.projectName == p.name && s.status == AgentStatus.running).length;
+        _projects[pIndex] = ProjectWorkspace(
+          id: p.id,
+          name: p.name,
+          path: p.path,
+          sessionCount: count,
+          runningCount: running,
+          lastActiveAt: updated.updatedAt,
+          gitSyncStatus: p.gitSyncStatus,
+          customAgents: p.customAgents,
+          availableAgents: p.availableAgents,
+        );
+      }
+
+      // Mở rộng project nếu session đang chọn nằm từ vị trí thứ 5 trở đi
+      if (_selectedSessionId == updated.id) {
+        final pSessions = _sessions.where((s) => s.projectName == updated.projectName).toList();
+        final idx = pSessions.indexWhere((s) => s.id == updated.id);
+        if (idx >= 5) {
+          _expandedProjects.add(updated.projectName);
+        }
+        if (updated.isInterrupted ||
+            updated.status == AgentStatus.interrupted ||
+            updated.status == AgentStatus.completed) {
+          _isSendingPrompt = false;
+        }
+      }
     });
   }
 
