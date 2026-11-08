@@ -85,6 +85,7 @@ class ServerFileReadResponse {
     required this.name,
     required this.size,
     required this.isBinary,
+    this.isImage = false,
     required this.content,
     required this.gitDiff,
     this.error = '',
@@ -95,9 +96,31 @@ class ServerFileReadResponse {
   final String name;
   final int size;
   final bool isBinary;
+  final bool isImage;
   final String content;
   final String gitDiff;
   final String error;
+
+  bool get isMarkdown {
+    final lower = (name.isNotEmpty ? name : path).toLowerCase();
+    return lower.endsWith('.md') ||
+        lower.endsWith('.markdown') ||
+        lower.endsWith('.mdown') ||
+        lower.endsWith('.plan');
+  }
+
+  bool get isImageFile {
+    if (isImage) return true;
+    final lower = (name.isNotEmpty ? name : path).toLowerCase();
+    return lower.endsWith('.png') ||
+        lower.endsWith('.jpg') ||
+        lower.endsWith('.jpeg') ||
+        lower.endsWith('.gif') ||
+        lower.endsWith('.webp') ||
+        lower.endsWith('.bmp') ||
+        lower.endsWith('.ico') ||
+        lower.endsWith('.svg');
+  }
 
   factory ServerFileReadResponse.fromJson(Map<String, dynamic> json) {
     return ServerFileReadResponse(
@@ -106,6 +129,7 @@ class ServerFileReadResponse {
       name: '${json['name'] ?? ''}',
       size: (json['size'] as num?)?.toInt() ?? 0,
       isBinary: json['isBinary'] == true,
+      isImage: json['isImage'] == true,
       content: '${json['content'] ?? ''}',
       gitDiff: '${json['gitDiff'] ?? ''}',
       error: '${json['error'] ?? ''}',
@@ -883,6 +907,17 @@ class BrainScannerService {
     } finally {
       client.close(force: true);
     }
+  }
+
+  /// Lấy URL trực tiếp để tải hoặc xem tệp / hình ảnh từ Rust Server
+  String getFileDownloadUrl({
+    required String address,
+    required String remotePath,
+  }) {
+    final baseUrl = normalizeBaseUrl(address);
+    return Uri.parse('$baseUrl/api/files/download')
+        .replace(queryParameters: {'path': remotePath})
+        .toString();
   }
 
   /// Tải file từ Rust Server (`/api/files/download`) về thư mục Downloads trên thiết bị

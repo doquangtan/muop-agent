@@ -3,6 +3,7 @@ import 'package:flutter/services.dart';
 
 import '../../models/agent_models.dart';
 import '../../services/brain_scanner_service.dart';
+import 'complete_markdown_doc_view.dart';
 import 'project_git_history_sheet.dart';
 
 /// Đại diện cho 1 tệp đã được nhóm (deduplicated) từ danh sách FileTouchRecord
@@ -1531,14 +1532,44 @@ class _FileDiffAndContentSheetState extends State<_FileDiffAndContentSheet> {
   bool _isLoading = true;
   ServerFileReadResponse? _readResponse;
   int _selectedTab = 0; // 0 = Changes (Diff), 1 = Full File Content
+  int _markdownViewMode = 0; // 0 = Preview (Bản xem trước), 1 = Raw Source (Mã nguồn)
   bool _isDownloading = false;
   double _downloadProgress = 0.0;
   String? _downloadedLocalPath;
+  final TransformationController _imageTransformController =
+      TransformationController();
+  double _currentImageScale = 1.0;
 
   @override
   void initState() {
     super.initState();
     _fetchFileDetail();
+  }
+
+  @override
+  void dispose() {
+    _imageTransformController.dispose();
+    super.dispose();
+  }
+
+  bool _isImageFile(String path) {
+    final lower = path.toLowerCase();
+    return lower.endsWith('.png') ||
+        lower.endsWith('.jpg') ||
+        lower.endsWith('.jpeg') ||
+        lower.endsWith('.gif') ||
+        lower.endsWith('.webp') ||
+        lower.endsWith('.bmp') ||
+        lower.endsWith('.ico') ||
+        lower.endsWith('.svg');
+  }
+
+  bool _isMarkdownFile(String path) {
+    final lower = path.toLowerCase();
+    return lower.endsWith('.md') ||
+        lower.endsWith('.markdown') ||
+        lower.endsWith('.mdown') ||
+        lower.endsWith('.plan');
   }
 
   Future<void> _fetchFileDetail() async {
@@ -1548,13 +1579,14 @@ class _FileDiffAndContentSheetState extends State<_FileDiffAndContentSheet> {
       path: widget.filePath,
     );
     if (!mounted) return;
+    final isImg = res.isImageFile || _isImageFile(widget.filePath);
     final hasAnyDiff =
         (widget.groupedChange?.diffPreview.trim().isNotEmpty == true) ||
             res.gitDiff.trim().isNotEmpty;
     setState(() {
       _isLoading = false;
       _readResponse = res;
-      _selectedTab = hasAnyDiff ? 0 : 1;
+      _selectedTab = isImg ? 1 : (hasAnyDiff ? 0 : 1);
     });
   }
 
@@ -1705,10 +1737,23 @@ class _FileDiffAndContentSheetState extends State<_FileDiffAndContentSheet> {
                       : 'Changes (Diff)',
                 ),
               ),
-              const ButtonSegment<int>(
+              ButtonSegment<int>(
                 value: 1,
-                icon: Icon(Icons.article_outlined, size: 15),
-                label: Text('Nội dung tệp'),
+                icon: Icon(
+                  (_readResponse?.isImageFile == true || _isImageFile(widget.filePath))
+                      ? Icons.image_outlined
+                      : ((_readResponse?.isMarkdown == true || _isMarkdownFile(widget.filePath))
+                          ? Icons.description_outlined
+                          : Icons.article_outlined),
+                  size: 15,
+                ),
+                label: Text(
+                  (_readResponse?.isImageFile == true || _isImageFile(widget.filePath))
+                      ? 'Hình ảnh (Image)'
+                      : ((_readResponse?.isMarkdown == true || _isMarkdownFile(widget.filePath))
+                          ? 'Tài liệu Markdown'
+                          : 'Nội dung tệp'),
+                ),
               ),
             ],
             selected: {_selectedTab},
@@ -1827,12 +1872,54 @@ class _FileDiffAndContentSheetState extends State<_FileDiffAndContentSheet> {
   ) {
     if (resp == null || !resp.ok) {
       return Center(
-        child: Text(
-          resp?.error ?? 'Không thể đọc tệp từ Server',
-          style: textTheme.bodySmall?.copyWith(color: Colors.redAccent),
+        child: Padding(
+          padding: const EdgeInsets.all(24),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Icon(
+                Icons.error_outline_rounded,
+                size: 40,
+                color: Colors.redAccent,
+              ),
+              const SizedBox(height: 10),
+              Text(
+                resp?.error.isNotEmpty == true
+                    ? resp!.error
+                    : 'Không thể đọc tệp từ Server',
+                textAlign: TextAlign.center,
+                style: textTheme.bodySmall?.copyWith(color: Colors.redAccent),
+              ),
+              const SizedBox(height: 14),
+              FilledButton.tonalIcon(
+                onPressed: _fetchFileDetail,
+                icon: const Icon(Icons.refresh_rounded, size: 16),
+                label: const Text('Thử lại'),
+              ),
+            ],
+          ),
         ),
       );
     }
+
+    final isImg = resp.isImageFile || _isImageFile(widget.filePath);
+    if (isImg) {
+      return _buildImageViewer(context, resp, colorScheme, textTheme);
+    }
+
+    final isMd = resp.isMarkdown || _isMarkdownFile(widget.filePath);
+    final isMobile = MediaQuery.sizeOf(context).width < 600;
+
+    if (isMd) {
+      return _buildMarkdownContentView(
+        context,
+        resp.content,
+        colorScheme,
+        textTheme,
+        isMobile,
+      );
+    }
+
     if (resp.isBinary) {
       return Center(
         child: Column(
@@ -1875,16 +1962,345 @@ class _FileDiffAndContentSheetState extends State<_FileDiffAndContentSheet> {
       );
     }
 
+    return _buildCodeWithLineNumbers(
+      context,
+      resp.content,
+      colorScheme,
+      textTheme,
+    );
+  }
+
+  /// Trình xem ảnh hoàn chỉnh với Zoom & Pan, Nền ca-rô trong suốt và Điều khiển
+  Widget _buildImageViewer(
+    BuildContext context,
+    ServerFileReadResponse resp,
+    ColorScheme colorScheme,
+    TextTheme textTheme,
+  ) {
+    final imageUrl = widget.scanner.getFileDownloadUrl(
+      address: widget.serverAddress,
+      remotePath: widget.filePath,
+    );
+    final ext = widget.filePath.split('.').last.toUpperCase();
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
+        // Thanh công cụ ảnh
+        Container(
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
+          color: colorScheme.surfaceContainerLow,
+          child: Row(
+            children: [
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                decoration: BoxDecoration(
+                  color: Colors.purple.withAlpha(35),
+                  borderRadius: BorderRadius.circular(5),
+                  border: Border.all(
+                    color: Colors.purpleAccent.withAlpha(100),
+                    width: 0.8,
+                  ),
+                ),
+                child: Text(
+                  ext,
+                  style: const TextStyle(
+                    fontFamily: 'monospace',
+                    fontSize: 10,
+                    fontWeight: FontWeight.w800,
+                    color: Colors.purpleAccent,
+                  ),
+                ),
+              ),
+              const SizedBox(width: 8),
+              Text(
+                '${(resp.size / 1024).toStringAsFixed(1)} KB • Tỉ lệ: ${(_currentImageScale * 100).toInt()}%',
+                style: textTheme.labelSmall?.copyWith(
+                  fontFamily: 'monospace',
+                  color: colorScheme.onSurfaceVariant,
+                ),
+              ),
+              const Spacer(),
+              // Zoom Controls
+              IconButton(
+                visualDensity: VisualDensity.compact,
+                tooltip: 'Thu nhỏ (-)',
+                icon: const Icon(Icons.remove_circle_outline_rounded, size: 18),
+                onPressed: () {
+                  setState(() {
+                    _currentImageScale =
+                        (_currentImageScale / 1.25).clamp(0.2, 8.0);
+                    _imageTransformController.value =
+                        Matrix4.diagonal3Values(_currentImageScale, _currentImageScale, 1.0);
+                  });
+                },
+              ),
+              IconButton(
+                visualDensity: VisualDensity.compact,
+                tooltip: 'Phóng to (+)',
+                icon: const Icon(Icons.add_circle_outline_rounded, size: 18),
+                onPressed: () {
+                  setState(() {
+                    _currentImageScale =
+                        (_currentImageScale * 1.25).clamp(0.2, 8.0);
+                    _imageTransformController.value =
+                        Matrix4.diagonal3Values(_currentImageScale, _currentImageScale, 1.0);
+                  });
+                },
+              ),
+              Tooltip(
+                message: 'Vừa màn hình (100%)',
+                child: TextButton.icon(
+                  style: TextButton.styleFrom(
+                    visualDensity: VisualDensity.compact,
+                    padding: const EdgeInsets.symmetric(horizontal: 6),
+                  ),
+                  icon: const Icon(Icons.aspect_ratio_rounded, size: 15),
+                  label: const Text('100%'),
+                  onPressed: () {
+                    setState(() {
+                      _currentImageScale = 1.0;
+                      _imageTransformController.value = Matrix4.identity();
+                    });
+                  },
+                ),
+              ),
+            ],
+          ),
+        ),
+        // Image Canvas với hoa văn ca-rô
+        Expanded(
+          child: Stack(
+            children: [
+              Positioned.fill(
+                child: CustomPaint(
+                  painter: _CheckerboardPainter(isDark: isDark),
+                ),
+              ),
+              Positioned.fill(
+                child: InteractiveViewer(
+                  transformationController: _imageTransformController,
+                  minScale: 0.2,
+                  maxScale: 8.0,
+                  onInteractionUpdate: (details) {
+                    final scale =
+                        _imageTransformController.value.getMaxScaleOnAxis();
+                    if ((scale - _currentImageScale).abs() > 0.05) {
+                      setState(() => _currentImageScale = scale);
+                    }
+                  },
+                  child: Center(
+                    child: Image.network(
+                      imageUrl,
+                      fit: BoxFit.contain,
+                      loadingBuilder: (context, child, loadingProgress) {
+                        if (loadingProgress == null) return child;
+                        final total = loadingProgress.expectedTotalBytes;
+                        final loaded = loadingProgress.cumulativeBytesLoaded;
+                        final progress =
+                            total != null && total > 0 ? loaded / total : null;
+
+                        return Center(
+                          child: Column(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              CircularProgressIndicator(value: progress),
+                              const SizedBox(height: 10),
+                              Text(
+                                progress != null
+                                    ? 'Đang tải ảnh: ${(progress * 100).toInt()}%'
+                                    : 'Đang tải ảnh...',
+                                style: textTheme.bodySmall,
+                              ),
+                            ],
+                          ),
+                        );
+                      },
+                      errorBuilder: (context, error, stackTrace) {
+                        return Center(
+                          child: Padding(
+                            padding: const EdgeInsets.all(20),
+                            child: Column(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                const Icon(
+                                  Icons.broken_image_rounded,
+                                  size: 48,
+                                  color: Colors.redAccent,
+                                ),
+                                const SizedBox(height: 10),
+                                Text(
+                                  'Không thể hiển thị hình ảnh từ máy chủ',
+                                  style: textTheme.bodyMedium?.copyWith(
+                                    fontWeight: FontWeight.w700,
+                                    color: Colors.redAccent,
+                                  ),
+                                ),
+                                const SizedBox(height: 4),
+                                Text(
+                                  '$error',
+                                  textAlign: TextAlign.center,
+                                  style: textTheme.bodySmall?.copyWith(
+                                    fontSize: 11,
+                                    color: colorScheme.onSurfaceVariant,
+                                  ),
+                                ),
+                                const SizedBox(height: 12),
+                                FilledButton.tonalIcon(
+                                  onPressed: () => setState(() {}),
+                                  icon: const Icon(
+                                    Icons.refresh_rounded,
+                                    size: 16,
+                                  ),
+                                  label: const Text('Thử lại'),
+                                ),
+                              ],
+                            ),
+                          ),
+                        );
+                      },
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+
+  /// Trình xem tài liệu Markdown hoàn chỉnh với 2 chế độ:
+  /// - 👁️ Xem tài liệu (Formatted Markdown Document)
+  /// - 💻 Mã nguồn (Raw Markdown Source với đánh số dòng)
+  Widget _buildMarkdownContentView(
+    BuildContext context,
+    String content,
+    ColorScheme colorScheme,
+    TextTheme textTheme,
+    bool isMobile,
+  ) {
+    final lineCount = content.split('\n').length;
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        // Thanh chuyển đổi chế độ xem tài liệu
+        Container(
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
+          color: colorScheme.surfaceContainerLow,
+          child: Row(
+            children: [
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                decoration: BoxDecoration(
+                  color: Colors.deepPurple.withAlpha(35),
+                  borderRadius: BorderRadius.circular(5),
+                  border: Border.all(
+                    color: Colors.deepPurpleAccent.withAlpha(100),
+                    width: 0.8,
+                  ),
+                ),
+                child: const Text(
+                  'MARKDOWN',
+                  style: TextStyle(
+                    fontFamily: 'monospace',
+                    fontSize: 10,
+                    fontWeight: FontWeight.w800,
+                    color: Colors.deepPurpleAccent,
+                  ),
+                ),
+              ),
+              const SizedBox(width: 8),
+              Text(
+                '$lineCount dòng • ${((_readResponse?.size ?? 0) / 1024).toStringAsFixed(1)} KB',
+                style: textTheme.labelSmall?.copyWith(
+                  fontFamily: 'monospace',
+                  color: colorScheme.onSurfaceVariant,
+                ),
+              ),
+              const Spacer(),
+              SegmentedButton<int>(
+                segments: const [
+                  ButtonSegment<int>(
+                    value: 0,
+                    icon: Icon(Icons.visibility_outlined, size: 14),
+                    label: Text('Tài liệu'),
+                  ),
+                  ButtonSegment<int>(
+                    value: 1,
+                    icon: Icon(Icons.code_rounded, size: 14),
+                    label: Text('Mã nguồn'),
+                  ),
+                ],
+                selected: {_markdownViewMode},
+                onSelectionChanged: (s) =>
+                    setState(() => _markdownViewMode = s.first),
+                style: const ButtonStyle(visualDensity: VisualDensity.compact),
+              ),
+            ],
+          ),
+        ),
+        // Nội dung
+        Expanded(
+          child: _markdownViewMode == 0
+              ? SingleChildScrollView(
+                  padding: EdgeInsets.symmetric(
+                    horizontal: isMobile ? 12 : 20,
+                    vertical: 14,
+                  ),
+                  child: CompleteMarkdownDocView(
+                    markdown: content,
+                    isMobile: isMobile,
+                    onLinkTap: (url, label) {
+                      final cleanUrl = url.replaceFirst('file://', '');
+                      if (cleanUrl.contains('/') || cleanUrl.endsWith('.md')) {
+                        ServerFileBrowserSheet.showFilePreviewAndDiff(
+                          context,
+                          scanner: widget.scanner,
+                          serverAddress: widget.serverAddress,
+                          filePath: cleanUrl,
+                          onDownloadFile: widget.onDownloadFile,
+                        );
+                      }
+                    },
+                  ),
+                )
+              : _buildCodeWithLineNumbers(
+                  context,
+                  content,
+                  colorScheme,
+                  textTheme,
+                ),
+        ),
+      ],
+    );
+  }
+
+  /// Trình xem mã nguồn / tệp văn bản có ĐÁNH SỐ DÒNG và CUỘN NGANG
+  Widget _buildCodeWithLineNumbers(
+    BuildContext context,
+    String content,
+    ColorScheme colorScheme,
+    TextTheme textTheme,
+  ) {
+    final lines = content.split('\n');
+    final lineCount = lines.length;
+    final digits = lineCount.toString().length;
+    final gutterWidth = (digits * 9.0 + 20.0).clamp(38.0, 72.0);
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        // Top stats bar
         Container(
           padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
           color: colorScheme.surfaceContainerLow,
           child: Row(
             children: [
               Text(
-                'Kích thước: ${(resp.size / 1024).toStringAsFixed(1)} KB',
+                'Tổng: $lineCount dòng • ${((_readResponse?.size ?? 0) / 1024).toStringAsFixed(1)} KB',
                 style: textTheme.labelSmall?.copyWith(
                   fontFamily: 'monospace',
                   color: colorScheme.onSurfaceVariant,
@@ -1893,31 +2309,63 @@ class _FileDiffAndContentSheetState extends State<_FileDiffAndContentSheet> {
               const Spacer(),
               TextButton.icon(
                 onPressed: () {
-                  Clipboard.setData(ClipboardData(text: resp.content));
+                  Clipboard.setData(ClipboardData(text: content));
                   ScaffoldMessenger.of(context).showSnackBar(
                     const SnackBar(
-                      content: Text('Đã sao chép nội dung tệp'),
+                      content: Text('Đã sao chép toàn bộ nội dung tệp!'),
                       duration: Duration(seconds: 2),
+                      behavior: SnackBarBehavior.floating,
                     ),
                   );
                 },
                 icon: const Icon(Icons.copy_rounded, size: 14),
-                label: const Text('Copy toàn bộ'),
+                label: const Text('Sao chép'),
               ),
             ],
           ),
         ),
+        // Code view with line numbers
         Expanded(
-          child: SingleChildScrollView(
-            padding: const EdgeInsets.all(14),
-            child: SelectableText(
-              resp.content,
-              style: textTheme.bodySmall?.copyWith(
-                fontFamily: 'monospace',
-                fontSize: 11.5,
-                height: 1.45,
-              ),
-            ),
+          child: ListView.builder(
+            padding: const EdgeInsets.symmetric(vertical: 8),
+            itemCount: lines.length,
+            itemBuilder: (context, idx) {
+              final lineNum = idx + 1;
+              final lineText = lines[idx];
+
+              return Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Container(
+                    width: gutterWidth,
+                    padding: const EdgeInsets.only(right: 10),
+                    alignment: Alignment.centerRight,
+                    child: Text(
+                      '$lineNum',
+                      style: TextStyle(
+                        fontFamily: 'monospace',
+                        fontSize: 11.5,
+                        color: colorScheme.onSurfaceVariant.withAlpha(120),
+                        height: 1.45,
+                      ),
+                    ),
+                  ),
+                  Expanded(
+                    child: SingleChildScrollView(
+                      scrollDirection: Axis.horizontal,
+                      child: SelectableText(
+                        lineText.isEmpty ? ' ' : lineText,
+                        style: textTheme.bodySmall?.copyWith(
+                          fontFamily: 'monospace',
+                          fontSize: 11.5,
+                          height: 1.45,
+                        ),
+                      ),
+                    ),
+                  ),
+                ],
+              );
+            },
           ),
         ),
       ],
@@ -2033,4 +2481,32 @@ class _FileDiffAndContentSheetState extends State<_FileDiffAndContentSheet> {
       ),
     );
   }
+}
+
+/// Vẽ hoa văn ca-rô (checkerboard) cho vùng hiển thị hình ảnh trong suốt
+class _CheckerboardPainter extends CustomPainter {
+  const _CheckerboardPainter({required this.isDark});
+  final bool isDark;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final paint1 = Paint()
+      ..color = isDark ? const Color(0xFF14141E) : const Color(0xFFF1F5F9);
+    final paint2 = Paint()
+      ..color = isDark ? const Color(0xFF1F1F2C) : const Color(0xFFE2E8F0);
+    const double squareSize = 16.0;
+
+    canvas.drawRect(Rect.fromLTWH(0, 0, size.width, size.height), paint1);
+    for (double y = 0; y < size.height; y += squareSize) {
+      for (double x = 0; x < size.width; x += squareSize) {
+        if (((x / squareSize).floor() + (y / squareSize).floor()) % 2 == 0) {
+          canvas.drawRect(Rect.fromLTWH(x, y, squareSize, squareSize), paint2);
+        }
+      }
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant _CheckerboardPainter oldDelegate) =>
+      oldDelegate.isDark != isDark;
 }

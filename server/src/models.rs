@@ -280,6 +280,8 @@ pub struct ServerFileReadResponse {
     pub name: String,
     pub size: u64,
     pub is_binary: bool,
+    #[serde(default)]
+    pub is_image: bool,
     pub content: String,
     pub git_diff: String,
     pub error: String,

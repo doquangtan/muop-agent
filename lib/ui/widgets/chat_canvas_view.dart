@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../../models/agent_models.dart';
+import 'complete_markdown_doc_view.dart';
 import 'server_file_browser_sheet.dart';
 
 class ChatCanvasView extends StatefulWidget {
@@ -1862,21 +1863,18 @@ class _ChatCanvasViewState extends State<ChatCanvasView> {
                 ),
                 const Divider(height: 1),
                 Expanded(
-                  child: SelectionArea(
-                    child: SingleChildScrollView(
-                      controller: scrollController,
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 16,
-                        vertical: 12,
-                      ),
-                      child: _AntigravityMarkdownSegment(
-                        text: plan.content.isNotEmpty
-                            ? plan.content
-                            : '# ${plan.fileName}\n\n*Không có nội dung chi tiết.*',
-                        isExpanded: true,
-                        isMobile: isMobile,
-                        onLinkTap: (url, label) => _handleLinkTap(url, label),
-                      ),
+                  child: SingleChildScrollView(
+                    controller: scrollController,
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 16,
+                      vertical: 12,
+                    ),
+                    child: CompleteMarkdownDocView(
+                      markdown: plan.content.isNotEmpty
+                          ? plan.content
+                          : '# ${plan.fileName}\n\n*Không có nội dung chi tiết.*',
+                      isMobile: isMobile,
+                      onLinkTap: (url, label) => _handleLinkTap(url, label),
                     ),
                   ),
                 ),

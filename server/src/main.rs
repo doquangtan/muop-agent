@@ -952,6 +952,7 @@ async fn handle_file_read(Query(params): Query<HashMap<String, String>>) -> impl
                     name: String::new(),
                     size: 0,
                     is_binary: false,
+                    is_image: false,
                     content: String::new(),
                     git_diff: String::new(),
                     error: "Thiếu đường dẫn tệp (path)".to_string(),
@@ -970,6 +971,7 @@ async fn handle_file_read(Query(params): Query<HashMap<String, String>>) -> impl
                 name: String::new(),
                 size: 0,
                 is_binary: false,
+                is_image: false,
                 content: String::new(),
                 git_diff: String::new(),
                 error: "Tệp không tồn tại trên server".to_string(),
@@ -983,6 +985,16 @@ async fn handle_file_read(Query(params): Query<HashMap<String, String>>) -> impl
         .unwrap_or("file")
         .to_string();
     let size = fs::metadata(file_path).map(|m| m.len()).unwrap_or(0);
+
+    let ext = file_path
+        .extension()
+        .and_then(|s| s.to_str())
+        .unwrap_or("")
+        .to_lowercase();
+    let is_image = matches!(
+        ext.as_str(),
+        "png" | "jpg" | "jpeg" | "gif" | "webp" | "bmp" | "ico" | "svg"
+    );
 
     // Chạy git diff nếu file nằm trong git repository
     let mut git_diff = String::new();
@@ -1000,13 +1012,17 @@ async fn handle_file_read(Query(params): Query<HashMap<String, String>>) -> impl
 
     match fs::read(file_path) {
         Ok(bytes) => {
-            let max_preview = 120 * 1024;
+            let max_preview = 5 * 1024 * 1024; // Hỗ trợ xem các file lớn đến 5MB
             let slice = if bytes.len() > max_preview {
                 &bytes[..max_preview]
             } else {
                 &bytes[..]
             };
-            let is_binary = slice.iter().take(512).any(|&b| b == 0);
+            let is_binary = if is_image && ext != "svg" {
+                true
+            } else {
+                slice.iter().take(512).any(|&b| b == 0)
+            };
             let content = if is_binary {
                 String::new()
             } else {
@@ -1020,6 +1036,7 @@ async fn handle_file_read(Query(params): Query<HashMap<String, String>>) -> impl
                     name,
                     size,
                     is_binary,
+                    is_image,
                     content,
                     git_diff,
                     error: String::new(),
@@ -1034,6 +1051,7 @@ async fn handle_file_read(Query(params): Query<HashMap<String, String>>) -> impl
                 name,
                 size,
                 is_binary: false,
+                is_image,
                 content: String::new(),
                 git_diff,
                 error: format!("Không thể đọc tệp: {}", e),
@@ -1069,17 +1087,37 @@ async fn handle_file_download(Query(params): Query<HashMap<String, String>>) -> 
         .unwrap_or("download.bin")
         .replace('"', "");
 
+    let ext = file_path
+        .extension()
+        .and_then(|s| s.to_str())
+        .unwrap_or("")
+        .to_lowercase();
+    let mime = match ext.as_str() {
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        "svg" => "image/svg+xml",
+        "bmp" => "image/bmp",
+        "ico" => "image/x-icon",
+        "md" | "markdown" => "text/markdown; charset=utf-8",
+        "json" => "application/json",
+        "txt" | "log" => "text/plain; charset=utf-8",
+        _ => "application/octet-stream",
+    };
+
     match tokio::fs::read(file_path).await {
         Ok(bytes) => {
             let len = bytes.len();
             Response::builder()
                 .status(StatusCode::OK)
-                .header(header::CONTENT_TYPE, "application/octet-stream")
+                .header(header::CONTENT_TYPE, mime)
                 .header(
                     header::CONTENT_DISPOSITION,
-                    format!("attachment; filename=\"{}\"", filename),
+                    format!("inline; filename=\"{}\"", filename),
                 )
                 .header(header::CONTENT_LENGTH, len.to_string())
+                .header(header::CACHE_CONTROL, "public, max-age=3600")
                 .body(Body::from(bytes))
                 .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
         }
