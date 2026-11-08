@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
@@ -6479,6 +6480,156 @@ class _AnimatedThinkingRobotIconState extends State<_AnimatedThinkingRobotIcon>
   }
 }
 
+/// Hiệu ứng đẻ ra từng từ / từng chữ kiểu AI (Streaming Typewriter with Pulsing Cursor)
+class _AiStreamingTypewriterText extends StatefulWidget {
+  const _AiStreamingTypewriterText({
+    required this.text,
+    this.prefix = '',
+    this.prefixStyle,
+    this.textStyle,
+    this.cursorColor,
+  });
+
+  final String text;
+  final String prefix;
+  final TextStyle? prefixStyle;
+  final TextStyle? textStyle;
+  final Color? cursorColor;
+  static const Duration charInterval = Duration(milliseconds: 20);
+
+  @override
+  State<_AiStreamingTypewriterText> createState() =>
+      _AiStreamingTypewriterTextState();
+}
+
+class _AiStreamingTypewriterTextState extends State<_AiStreamingTypewriterText>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _cursorBlinkController;
+  Timer? _typewriterTimer;
+  int _displayedLength = 0;
+  String _targetText = '';
+
+  @override
+  void initState() {
+    super.initState();
+    _cursorBlinkController = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 450),
+    )..repeat(reverse: true);
+
+    _targetText = widget.text;
+    _displayedLength = 0;
+    _startTyping();
+  }
+
+  @override
+  void didUpdateWidget(covariant _AiStreamingTypewriterText oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.text != widget.text) {
+      _targetText = widget.text;
+      // Nếu text mới bắt đầu bằng phần đã hiển thị, giữ nguyên tiến trình và gõ tiếp
+      final currentSub = oldWidget.text.length >= _displayedLength
+          ? oldWidget.text.substring(0, _displayedLength)
+          : oldWidget.text;
+      if (!widget.text.startsWith(currentSub)) {
+        // Tìm prefix chung
+        int common = 0;
+        final minLen = math.min(_displayedLength, widget.text.length);
+        while (common < minLen && oldWidget.text[common] == widget.text[common]) {
+          common++;
+        }
+        _displayedLength = common;
+      }
+      _startTyping();
+    }
+  }
+
+  void _startTyping() {
+    _typewriterTimer?.cancel();
+    if (_displayedLength >= _targetText.length) {
+      if (mounted) setState(() {});
+      return;
+    }
+
+    _typewriterTimer =
+        Timer.periodic(_AiStreamingTypewriterText.charInterval, (timer) {
+      if (!mounted) {
+        timer.cancel();
+        return;
+      }
+      if (_displayedLength < _targetText.length) {
+        final remaining = _targetText.length - _displayedLength;
+        final stepChars = math.max(2, (remaining / 24).ceil());
+        setState(() {
+          _displayedLength =
+              math.min(_displayedLength + stepChars, _targetText.length);
+        });
+      } else {
+        timer.cancel();
+      }
+    });
+  }
+
+  @override
+  void dispose() {
+    _typewriterTimer?.cancel();
+    _cursorBlinkController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final effectiveText =
+        _targetText.substring(0, _displayedLength.clamp(0, _targetText.length));
+    final isTyping = _displayedLength < _targetText.length;
+    final cursorColor = widget.cursorColor ?? Colors.deepPurpleAccent;
+
+    return AnimatedBuilder(
+      animation: _cursorBlinkController,
+      builder: (context, _) {
+        final cursorAlpha =
+            (isTyping || _cursorBlinkController.value > 0.35) ? 1.0 : 0.0;
+        return RichText(
+          text: TextSpan(
+            children: [
+              if (widget.prefix.isNotEmpty)
+                TextSpan(
+                  text: widget.prefix,
+                  style: widget.prefixStyle,
+                ),
+              TextSpan(
+                text: effectiveText,
+                style: widget.textStyle,
+              ),
+              WidgetSpan(
+                alignment: PlaceholderAlignment.middle,
+                child: Opacity(
+                  opacity: cursorAlpha,
+                  child: Container(
+                    margin: const EdgeInsets.only(left: 2.5),
+                    width: 6.5,
+                    height: 12,
+                    decoration: BoxDecoration(
+                      color: cursorColor,
+                      borderRadius: BorderRadius.circular(1.5),
+                      boxShadow: [
+                        BoxShadow(
+                          color: cursorColor.withAlpha(140),
+                          blurRadius: 4,
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+}
+
 /// Card trực quan hiển thị Robot Coordinator đang suy nghĩ & phân tích với animation
 class _AnimatedThinkingRobotCard extends StatefulWidget {
   const _AnimatedThinkingRobotCard({
@@ -6635,6 +6786,97 @@ class _AnimatedThinkingRobotCardState extends State<_AnimatedThinkingRobotCard>
       lastStep,
     );
 
+    // Xác định Tool đang dùng
+    String toolName = 'Thinking';
+    IconData toolIcon = Icons.psychology_rounded;
+    Color toolColor = Colors.deepPurpleAccent;
+
+    final activeTool =
+        lastStep?.toolCalls.isNotEmpty == true ? lastStep!.toolCalls.last : null;
+    if (activeTool != null) {
+      toolName = activeTool.name;
+    } else if (stream.activeStepType.isNotEmpty &&
+        stream.activeStepType.toLowerCase() != 'step') {
+      toolName = stream.activeStepType;
+    }
+
+    switch (toolName) {
+      case 'run_command':
+        toolIcon = Icons.terminal_rounded;
+        toolColor = Colors.blueAccent;
+        break;
+      case 'edit_file':
+        toolIcon = Icons.edit_note_rounded;
+        toolColor = Colors.orangeAccent;
+        break;
+      case 'write_file':
+        toolIcon = Icons.note_add_rounded;
+        toolColor = Colors.tealAccent.shade400;
+        break;
+      case 'read_file':
+        toolIcon = Icons.menu_book_rounded;
+        toolColor = Colors.amberAccent;
+        break;
+      case 'search_web':
+        toolIcon = Icons.travel_explore_rounded;
+        toolColor = Colors.lightBlueAccent;
+        break;
+      case 'invoke_subagent':
+        toolIcon = Icons.hub_rounded;
+        toolColor = Colors.pinkAccent;
+        break;
+      case 'define_subagent':
+      case 'manage_subagents':
+        toolIcon = Icons.supervised_user_circle_rounded;
+        toolColor = Colors.purpleAccent;
+        break;
+      case 'schedule':
+      case 'manage_task':
+        toolIcon = Icons.schedule_rounded;
+        toolColor = Colors.cyanAccent;
+        break;
+      case 'ask_question':
+        toolIcon = Icons.help_outline_rounded;
+        toolColor = Colors.deepOrangeAccent;
+        break;
+      default:
+        toolIcon = Icons.psychology_rounded;
+        toolColor = Colors.deepPurpleAccent;
+        break;
+    }
+
+    // Xác định Title của bước / hành động
+    String actionTitle = '';
+    if (activeTool != null) {
+      final summary = activeTool.args['toolSummary']?.toString() ?? '';
+      if (summary.isNotEmpty) {
+        actionTitle = summary;
+      } else {
+        final path = activeTool.args['Path']?.toString() ?? '';
+        if (path.isNotEmpty) {
+          actionTitle = '${activeTool.name}: ${path.split('/').last}';
+        } else {
+          final cmd = activeTool.args['CommandLine']?.toString() ?? '';
+          if (cmd.isNotEmpty) {
+            actionTitle = cmd.length > 55 ? '${cmd.substring(0, 55)}...' : cmd;
+          }
+        }
+      }
+    }
+
+    if (actionTitle.isEmpty) {
+      if (lastStep != null && lastStep.vietnameseTitle.isNotEmpty) {
+        actionTitle = lastStep.vietnameseTitle;
+      } else if (stream.userPrompt.isNotEmpty) {
+        final firstPromptLine = stream.userPrompt.split('\n').first.trim();
+        actionTitle = firstPromptLine.length > 50
+            ? '${firstPromptLine.substring(0, 50)}...'
+            : firstPromptLine;
+      } else {
+        actionTitle = 'Đang phân tích & xử lý tác vụ...';
+      }
+    }
+
     final rawLines = stream.streamingText.trimRight().split('\n');
     final int maxTail = widget.collapsedTailLines > 0 ? widget.collapsedTailLines : 10;
     final recentLines = rawLines.length > maxTail
@@ -6680,27 +6922,108 @@ class _AnimatedThinkingRobotCardState extends State<_AnimatedThinkingRobotCard>
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          Row(
+                          Wrap(
+                            spacing: 6,
+                            runSpacing: 4,
+                            crossAxisAlignment: WrapCrossAlignment.center,
                             children: [
-                              Text(
-                                'Robot Coordinator',
-                                style: textTheme.labelMedium?.copyWith(
-                                  fontWeight: FontWeight.w800,
-                                  color: Colors.deepPurpleAccent,
+                              // 1. Badge: AI Thinking
+                              Container(
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 7,
+                                  vertical: 2,
+                                ),
+                                decoration: BoxDecoration(
+                                  gradient: const LinearGradient(
+                                    colors: [
+                                      Colors.deepPurpleAccent,
+                                      Colors.indigoAccent,
+                                    ],
+                                  ),
+                                  borderRadius: BorderRadius.circular(6),
+                                  boxShadow: [
+                                    BoxShadow(
+                                      color: Colors.deepPurpleAccent.withAlpha(
+                                        (90 * _borderGlowAnimation.value).round(),
+                                      ),
+                                      blurRadius: 5,
+                                    ),
+                                  ],
+                                ),
+                                child: Row(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    Container(
+                                      width: 6,
+                                      height: 6,
+                                      decoration: const BoxDecoration(
+                                        shape: BoxShape.circle,
+                                        color: Colors.greenAccent,
+                                      ),
+                                    ),
+                                    const SizedBox(width: 5),
+                                    const Text(
+                                      'AI Thinking',
+                                      style: TextStyle(
+                                        fontFamily: 'monospace',
+                                        fontSize: 10.5,
+                                        fontWeight: FontWeight.w800,
+                                        color: Colors.white,
+                                        letterSpacing: 0.3,
+                                      ),
+                                    ),
+                                  ],
                                 ),
                               ),
-                              if (stepIndex != null) ...[
-                                const SizedBox(width: 6),
+
+                              // 2. Badge: Tool
+                              Container(
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 6,
+                                  vertical: 2,
+                                ),
+                                decoration: BoxDecoration(
+                                  color: toolColor.withAlpha(35),
+                                  borderRadius: BorderRadius.circular(6),
+                                  border: Border.all(
+                                    color: toolColor.withAlpha(160),
+                                    width: 0.8,
+                                  ),
+                                ),
+                                child: Row(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    Icon(
+                                      toolIcon,
+                                      size: 11.5,
+                                      color: toolColor,
+                                    ),
+                                    const SizedBox(width: 4),
+                                    Text(
+                                      toolName,
+                                      style: TextStyle(
+                                        fontFamily: 'monospace',
+                                        fontSize: 10,
+                                        fontWeight: FontWeight.w700,
+                                        color: toolColor,
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
+
+                              // Bước #index nếu có
+                              if (stepIndex != null)
                                 Container(
                                   padding: const EdgeInsets.symmetric(
                                     horizontal: 5,
-                                    vertical: 1,
+                                    vertical: 2,
                                   ),
                                   decoration: BoxDecoration(
-                                    color: colorScheme.primaryContainer.withAlpha(150),
-                                    borderRadius: BorderRadius.circular(4),
+                                    color: colorScheme.surfaceContainerHighest.withAlpha(180),
+                                    borderRadius: BorderRadius.circular(5),
                                     border: Border.all(
-                                      color: colorScheme.primary.withAlpha(120),
+                                      color: colorScheme.outlineVariant.withAlpha(90),
                                       width: 0.8,
                                     ),
                                   ),
@@ -6709,34 +7032,24 @@ class _AnimatedThinkingRobotCardState extends State<_AnimatedThinkingRobotCard>
                                     style: TextStyle(
                                       fontFamily: 'monospace',
                                       fontSize: 9.5,
-                                      fontWeight: FontWeight.w800,
-                                      color: colorScheme.onPrimaryContainer,
+                                      fontWeight: FontWeight.w700,
+                                      color: colorScheme.onSurfaceVariant,
                                     ),
                                   ),
                                 ),
-                              ],
                             ],
                           ),
-                          const SizedBox(height: 2),
-                          Row(
-                            children: [
-                              Container(
-                                width: 6,
-                                height: 6,
-                                decoration: BoxDecoration(
-                                  shape: BoxShape.circle,
-                                  color: Colors.tealAccent.shade700,
-                                ),
-                              ),
-                              const SizedBox(width: 4),
-                              Text(
-                                'AI Thinking • ${stream.activeStepType.isNotEmpty ? stream.activeStepType : 'processing'}',
-                                style: textTheme.labelSmall?.copyWith(
-                                  fontSize: 10,
-                                  color: colorScheme.onSurfaceVariant,
-                                ),
-                              ),
-                            ],
+                          const SizedBox(height: 3),
+                          // 3. Title: Tóm tắt hành động
+                          Text(
+                            actionTitle,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: textTheme.labelMedium?.copyWith(
+                              fontWeight: FontWeight.w700,
+                              fontSize: 12,
+                              color: colorScheme.onSurface,
+                            ),
                           ),
                         ],
                       ),
@@ -6774,7 +7087,7 @@ class _AnimatedThinkingRobotCardState extends State<_AnimatedThinkingRobotCard>
                 ),
               ),
 
-              // Banner: Đang làm cụ thể những gì
+              // Banner: Đang làm cụ thể những gì (với hiệu ứng đẻ ra từng chữ kiểu AI)
               Container(
                 margin: const EdgeInsets.symmetric(horizontal: 10, vertical: 2),
                 padding: const EdgeInsets.all(9),
@@ -6798,28 +7111,21 @@ class _AnimatedThinkingRobotCardState extends State<_AnimatedThinkingRobotCard>
                     ),
                     const SizedBox(width: 7),
                     Expanded(
-                      child: RichText(
-                        text: TextSpan(
-                          children: [
-                            const TextSpan(
-                              text: 'Đang làm: ',
-                              style: TextStyle(
-                                fontSize: 11.5,
-                                fontWeight: FontWeight.w800,
-                                color: Colors.deepPurpleAccent,
-                              ),
-                            ),
-                            TextSpan(
-                              text: specificAction,
-                              style: TextStyle(
-                                fontSize: 11.5,
-                                fontWeight: FontWeight.w600,
-                                color: colorScheme.onSurface,
-                                height: 1.35,
-                              ),
-                            ),
-                          ],
+                      child: _AiStreamingTypewriterText(
+                        prefix: 'Đang làm: ',
+                        prefixStyle: const TextStyle(
+                          fontSize: 11.5,
+                          fontWeight: FontWeight.w800,
+                          color: Colors.deepPurpleAccent,
                         ),
+                        text: specificAction,
+                        textStyle: TextStyle(
+                          fontSize: 11.5,
+                          fontWeight: FontWeight.w600,
+                          color: colorScheme.onSurface,
+                          height: 1.35,
+                        ),
+                        cursorColor: Colors.deepPurpleAccent,
                       ),
                     ),
                   ],
