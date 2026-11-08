@@ -665,6 +665,40 @@ class BrainScannerService {
     }
   }
 
+  /// Đẩy commits lên máy chủ từ xa remote git repository (`/api/git/push`)
+  Future<GitPushResponse> gitPush({
+    required String address,
+    required String projectPath,
+    String branch = '',
+  }) async {
+    final baseUrl = normalizeBaseUrl(address);
+    final client = HttpClient()
+      ..connectionTimeout = const Duration(seconds: 10);
+    try {
+      final uri = Uri.parse('$baseUrl/api/git/push');
+      final req = await client.postUrl(uri);
+      req.headers.contentType = ContentType.json;
+      req.write(
+        jsonEncode({
+          'projectPath': projectPath.trim(),
+          'branch': branch.trim(),
+        }),
+      );
+      final resp = await req.close().timeout(const Duration(seconds: 35));
+      final body = await resp.transform(utf8.decoder).join();
+      final map = jsonDecode(body) as Map<String, dynamic>;
+      return GitPushResponse.fromJson(map);
+    } catch (e) {
+      return GitPushResponse(
+        ok: false,
+        message: 'Lỗi kết nối khi git push: $e',
+        error: '$e',
+      );
+    } finally {
+      client.close(force: true);
+    }
+  }
+
   /// Duyệt danh sách file và thư mục trên Rust Server (`/api/files/list`)
   Future<ServerDirListResponse> fetchServerDirectory({
     required String address,

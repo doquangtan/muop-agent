@@ -111,8 +111,23 @@ pub async fn start_chat_turn(state: AppState, req: ChatSendRequest) -> ChatSendR
         agy_bin, clean_conv_id, clean_model, effective_cwd, trimmed_prompt
     );
 
-    let mut child = match Command::new(agy_bin)
-        .args(&args)
+    let use_systemd_scope =
+        Path::new("/usr/bin/systemd-run").exists() || Path::new("/bin/systemd-run").exists();
+    let mut cmd = if use_systemd_scope {
+        let mut c = Command::new("systemd-run");
+        c.arg("--user")
+            .arg("--scope")
+            .arg("--quiet")
+            .arg(agy_bin)
+            .args(&args);
+        c
+    } else {
+        let mut c = Command::new(agy_bin);
+        c.args(&args);
+        c
+    };
+
+    let mut child = match cmd
         .current_dir(&effective_cwd)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())

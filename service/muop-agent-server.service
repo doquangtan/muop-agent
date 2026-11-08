@@ -1,0 +1,16 @@
+[Unit]
+Description=Muop Agent Server Engine (Rust Backend)
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/john/Documents/muop-ecosystem/muop-agent/server
+ExecStart=/home/john/Documents/muop-ecosystem/muop-agent/server/target/release/muop-agent-server
+Restart=always
+RestartSec=2s
+KillMode=process
+Environment=RUST_LOG=info
+LimitNOFILE=65535
+
+[Install]
+WantedBy=default.target

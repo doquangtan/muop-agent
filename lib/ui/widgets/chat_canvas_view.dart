@@ -37,6 +37,7 @@ class ChatCanvasView extends StatefulWidget {
     this.onLoadOlderHistory,
     this.onOpenParallelFlow,
     this.onOpenCreateProject,
+    this.onGitPush,
   });
 
   final ConversationSession? session;
@@ -68,6 +69,8 @@ class ChatCanvasView extends StatefulWidget {
   final Future<bool> Function()? onLoadOlderHistory;
   final VoidCallback? onOpenParallelFlow;
   final VoidCallback? onOpenCreateProject;
+  final Future<GitPushResponse> Function(String projectPath, String branch)?
+      onGitPush;
 
   @override
   State<ChatCanvasView> createState() => _ChatCanvasViewState();
@@ -190,6 +193,8 @@ class _ChatCanvasViewState extends State<ChatCanvasView> {
   bool _hasLoadedAllServerHistory = false;
   bool _showScrollToBottomBtn = false;
   bool _isTaskRunningExpanded = false;
+  String? _dismissedGitAheadHash;
+  bool _isPushingGit = false;
 
   /// Lưu trạng thái mở rộng (show full) của từng đoạn response theo turnIndex
   final Set<int> _expandedResponseTurns = {};
@@ -618,11 +623,13 @@ class _ChatCanvasViewState extends State<ChatCanvasView> {
     final colorScheme = Theme.of(context).colorScheme;
     final isMobile = MediaQuery.sizeOf(context).width < 760;
     final session = widget.session;
-    final isTurnRunning = widget.isSending ||
-        (widget.activeStream != null && widget.activeStream!.isRunning) ||
-        (!widget.isNewConversationMode &&
-            session != null &&
-            session.status == AgentStatus.running);
+    final isTurnRunning = !widget.isNewConversationMode &&
+        (session?.isInterrupted != true) &&
+        (widget.isSending ||
+            (widget.activeStream != null &&
+                widget.activeStream!.isRunning &&
+                widget.activeStream!.activeStepType != 'interrupted') ||
+            (session != null && session.status == AgentStatus.running));
 
     final allTurns = (!widget.isNewConversationMode && session != null)
         ? _buildTurnGroups(session.steps, session.filesTouched)
@@ -1106,6 +1113,27 @@ class _ChatCanvasViewState extends State<ChatCanvasView> {
                   ),
               ],
 
+              // [0.3] CẢNH BÁO TIẾN TRÌNH AGY BỊ GIÁN ĐOẠN (SERVER RESTART / CRASH)
+              if (widget.session != null &&
+                  (widget.session!.isInterrupted ||
+                      widget.session!.status == AgentStatus.interrupted))
+                _buildInterruptedNoticeBanner(context, widget.session!, isMobile),
+
+              // [0.5] KHUNG XÁC NHẬN PUSH LÊN SERVER SAU KHI AGENT COMMIT XONG
+              () {
+                final gitSync = widget.session?.gitSyncStatus ??
+                    widget.selectedProject?.gitSyncStatus;
+                final showGitPushPrompt = gitSync != null &&
+                    gitSync.isAhead &&
+                    gitSync.aheadCount > 0 &&
+                    _dismissedGitAheadHash != gitSync.lastCommitHash;
+                if (!showGitPushPrompt) return const SizedBox.shrink();
+                return Padding(
+                  padding: const EdgeInsets.only(bottom: 6),
+                  child: _buildGitPushPromptCard(context, gitSync, isMobile),
+                );
+              }(),
+
               // [1] PHẦN TRÊN: TASK RUNNING PANEL (+ Nút Mở tệp vừa tải về)
               _buildTaskRunningPanel(context, isMobile, isTurnRunning),
               const SizedBox(height: 5),
@@ -1119,6 +1147,359 @@ class _ChatCanvasViewState extends State<ChatCanvasView> {
             ],
           ),
         ),
+      ),
+    );
+  }
+
+  /// [0.3] Cảnh báo tiến trình Agent bị ngắt đột ngột (server restart / cli crash)
+  Widget _buildInterruptedNoticeBanner(
+    BuildContext context,
+    ConversationSession session,
+    bool isMobile,
+  ) {
+    final colorScheme = Theme.of(context).colorScheme;
+    final textTheme = Theme.of(context).textTheme;
+
+    return Container(
+      margin: const EdgeInsets.only(bottom: 6),
+      padding: EdgeInsets.symmetric(
+        horizontal: isMobile ? 12 : 14,
+        vertical: 8,
+      ),
+      decoration: BoxDecoration(
+        color: Colors.amber.withAlpha(25),
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(
+          color: Colors.amber.shade700.withAlpha(120),
+          width: 1,
+        ),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Icon(
+            Icons.warning_amber_rounded,
+            size: 18,
+            color: Colors.amber.shade700,
+          ),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(
+                  'Tiến trình Agent trước đó đã bị gián đoạn',
+                  style: textTheme.labelMedium?.copyWith(
+                    fontWeight: FontWeight.bold,
+                    color: Colors.amber.shade900,
+                  ),
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  session.interruptedReason ??
+                      'Lượt xử lý đã dừng do máy chủ khởi động lại hoặc agy CLI bị ngắt đột ngột. Bạn có thể gửi tin nhắn tiếp theo để tiếp tục bình thường.',
+                  style: textTheme.bodySmall?.copyWith(
+                    fontSize: 11.5,
+                    color: colorScheme.onSurfaceVariant,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// [0.5] GIT PUSH PROMPT CARD — Khung hỏi người dùng có cần push lên remote server sau khi Agent commit xong
+  Widget _buildGitPushPromptCard(
+    BuildContext context,
+    GitSyncStatus gitSync,
+    bool isMobile,
+  ) {
+    final colorScheme = Theme.of(context).colorScheme;
+    final textTheme = Theme.of(context).textTheme;
+
+    return Container(
+      decoration: BoxDecoration(
+        color: colorScheme.surfaceContainerHighest.withAlpha(220),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(
+          color: Colors.amber.shade700.withAlpha(160),
+          width: 1.2,
+        ),
+      ),
+      padding: EdgeInsets.symmetric(
+        horizontal: isMobile ? 12 : 16,
+        vertical: 10,
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          // Row 1: Tiêu đề & nút đóng
+          Row(
+            children: [
+              Container(
+                padding: const EdgeInsets.all(6),
+                decoration: BoxDecoration(
+                  color: Colors.amber.shade700.withAlpha(35),
+                  shape: BoxShape.circle,
+                ),
+                child: Icon(
+                  Icons.cloud_upload_outlined,
+                  size: 16,
+                  color: Colors.amber.shade700,
+                ),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  'Agent đã commit mã nguồn (${gitSync.aheadCount} commit chưa push)',
+                  style: textTheme.labelLarge?.copyWith(
+                    fontWeight: FontWeight.bold,
+                    color: colorScheme.onSurface,
+                  ),
+                ),
+              ),
+              InkWell(
+                borderRadius: BorderRadius.circular(12),
+                onTap: () {
+                  setState(
+                    () => _dismissedGitAheadHash = gitSync.lastCommitHash,
+                  );
+                },
+                child: Padding(
+                  padding: const EdgeInsets.all(4),
+                  child: Icon(
+                    Icons.close_rounded,
+                    size: 16,
+                    color: colorScheme.onSurfaceVariant,
+                  ),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+
+          // Row 2: Chi tiết commit (branch, hash, message, tác giả)
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
+            decoration: BoxDecoration(
+              color: colorScheme.surface.withAlpha(180),
+              borderRadius: BorderRadius.circular(8),
+              border: Border.all(
+                color: colorScheme.outlineVariant.withAlpha(80),
+              ),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 5,
+                        vertical: 1.5,
+                      ),
+                      decoration: BoxDecoration(
+                        color: colorScheme.primaryContainer.withAlpha(120),
+                        borderRadius: BorderRadius.circular(4),
+                      ),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(
+                            Icons.alt_route_rounded,
+                            size: 11,
+                            color: colorScheme.primary,
+                          ),
+                          const SizedBox(width: 3),
+                          Text(
+                            gitSync.branch.isNotEmpty
+                                ? gitSync.branch
+                                : 'main',
+                            style: TextStyle(
+                              fontSize: 10.5,
+                              fontWeight: FontWeight.bold,
+                              color: colorScheme.primary,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(width: 6),
+                    Text(
+                      gitSync.lastCommitHash.isNotEmpty
+                          ? gitSync.lastCommitHash.substring(
+                              0,
+                              math.min(7, gitSync.lastCommitHash.length),
+                            )
+                          : '',
+                      style: const TextStyle(
+                        fontFamily: 'monospace',
+                        fontSize: 11,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                    if (gitSync.lastCommitAuthor.isNotEmpty) ...[
+                      const SizedBox(width: 6),
+                      Text(
+                        '• ${gitSync.lastCommitAuthor}',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: textTheme.bodySmall?.copyWith(fontSize: 11),
+                      ),
+                    ],
+                  ],
+                ),
+                if (gitSync.lastCommitMessage.isNotEmpty) ...[
+                  const SizedBox(height: 4),
+                  Text(
+                    gitSync.lastCommitMessage,
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                    style: textTheme.bodySmall?.copyWith(
+                      fontSize: 12,
+                      fontWeight: FontWeight.w600,
+                      color: colorScheme.onSurface,
+                    ),
+                  ),
+                ],
+              ],
+            ),
+          ),
+          const SizedBox(height: 8),
+
+          // Row 3: Action Buttons
+          Row(
+            mainAxisAlignment: MainAxisAlignment.end,
+            children: [
+              OutlinedButton.icon(
+                style: OutlinedButton.styleFrom(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 10,
+                    vertical: 6,
+                  ),
+                  visualDensity: VisualDensity.compact,
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                ),
+                icon: const Icon(Icons.close_rounded, size: 14),
+                label: const Text('Bỏ qua', style: TextStyle(fontSize: 12)),
+                onPressed: () {
+                  setState(
+                    () => _dismissedGitAheadHash = gitSync.lastCommitHash,
+                  );
+                },
+              ),
+              const SizedBox(width: 8),
+              FilledButton.icon(
+                style: FilledButton.styleFrom(
+                  backgroundColor: Colors.teal.shade700,
+                  foregroundColor: Colors.white,
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 12,
+                    vertical: 6,
+                  ),
+                  visualDensity: VisualDensity.compact,
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                ),
+                icon: _isPushingGit
+                    ? const SizedBox(
+                        width: 13,
+                        height: 13,
+                        child: CircularProgressIndicator(
+                          strokeWidth: 2,
+                          valueColor: AlwaysStoppedAnimation<Color>(
+                            Colors.white,
+                          ),
+                        ),
+                      )
+                    : const Icon(Icons.cloud_upload_rounded, size: 14),
+                label: Text(
+                  _isPushingGit ? 'Đang push...' : 'Push lên Server',
+                  style: const TextStyle(
+                    fontSize: 12,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+                onPressed: _isPushingGit
+                    ? null
+                    : () async {
+                        setState(() => _isPushingGit = true);
+                        try {
+                          final res = await widget.onGitPush?.call(
+                            gitSync.projectPath,
+                            gitSync.branch,
+                          );
+                          if (!context.mounted) return;
+                          if (res != null && res.ok) {
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              SnackBar(
+                                content: Row(
+                                  children: [
+                                    const Icon(
+                                      Icons.check_circle_rounded,
+                                      color: Colors.white,
+                                      size: 18,
+                                    ),
+                                    const SizedBox(width: 8),
+                                    Expanded(
+                                      child: Text(
+                                        res.message.isNotEmpty
+                                            ? res.message
+                                            : 'Đã push thành công lên máy chủ từ xa!',
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                                backgroundColor: Colors.teal.shade700,
+                                behavior: SnackBarBehavior.floating,
+                              ),
+                            );
+                            setState(
+                              () => _dismissedGitAheadHash =
+                                  gitSync.lastCommitHash,
+                            );
+                          } else {
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              SnackBar(
+                                content: Text(
+                                  res?.message ??
+                                      'Lỗi khi push git lên remote server',
+                                ),
+                                backgroundColor:
+                                    Theme.of(context).colorScheme.error,
+                                behavior: SnackBarBehavior.floating,
+                              ),
+                            );
+                          }
+                        } catch (e) {
+                          if (context.mounted) {
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              SnackBar(
+                                content: Text('Lỗi: $e'),
+                                backgroundColor:
+                                    Theme.of(context).colorScheme.error,
+                                behavior: SnackBarBehavior.floating,
+                              ),
+                            );
+                          }
+                        } finally {
+                          if (mounted) {
+                            setState(() => _isPushingGit = false);
+                          }
+                        }
+                      },
+              ),
+            ],
+          ),
+        ],
       ),
     );
   }
@@ -2331,7 +2712,7 @@ class _ChatCanvasViewState extends State<ChatCanvasView> {
       totalRemoved += f.removedLines;
     }
 
-    final runningSubagents = (!widget.isNewConversationMode && session != null)
+    final runningSubagents = (!widget.isNewConversationMode && session != null && !session.isInterrupted)
         ? session.subagentLanes
             .where((lane) =>
                 lane.name != 'Coordinator' &&
@@ -2459,6 +2840,32 @@ class _ChatCanvasViewState extends State<ChatCanvasView> {
     final taskTitle = activeTaskCount > 0
         ? '$activeTaskCount task${activeTaskCount > 1 ? 's' : ''} running'
         : '0 tasks running';
+
+    final lastStep = (!widget.isNewConversationMode &&
+            session != null &&
+            session.steps.isNotEmpty)
+        ? session.steps.last
+        : null;
+    final bool isGitCommitTask = isCoordinatorRunning &&
+        ((stream != null &&
+                (stream.activeStepType == 'gitCommit' ||
+                    stream.streamingText.toLowerCase().contains('git commit') ||
+                    stream.userPrompt.toLowerCase().contains('commit'))) ||
+            (lastStep != null &&
+                (lastStep.phase.name == 'gitCommit' ||
+                    lastStep.vietnameseTitle.contains('Git Commit') ||
+                    lastStep.toolCalls.any((t) {
+                      final cmd =
+                          t.args['CommandLine']?.toString().toLowerCase() ?? '';
+                      final sum =
+                          t.args['toolSummary']?.toString().toLowerCase() ?? '';
+                      return cmd.contains('git commit') ||
+                          sum.contains('commit');
+                    }))));
+    String gitCommitDetail = '';
+    if (isGitCommitTask && lastStep != null && lastStep.vietnameseDetail.isNotEmpty) {
+      gitCommitDetail = lastStep.vietnameseDetail;
+    }
 
     final taskPath = (stream != null && stream.projectPath.isNotEmpty)
         ? stream.projectPath
@@ -2686,6 +3093,42 @@ class _ChatCanvasViewState extends State<ChatCanvasView> {
                                   color: colorScheme.primary,
                                 ),
                               ),
+                              if (isGitCommitTask) ...[
+                                const SizedBox(width: 6),
+                                Container(
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: 5,
+                                    vertical: 1,
+                                  ),
+                                  decoration: BoxDecoration(
+                                    color: Colors.amber.withAlpha(40),
+                                    borderRadius: BorderRadius.circular(4),
+                                    border: Border.all(
+                                      color: Colors.amber.shade700
+                                          .withAlpha(120),
+                                    ),
+                                  ),
+                                  child: Row(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      Icon(
+                                        Icons.commit_rounded,
+                                        size: 10,
+                                        color: Colors.amber.shade700,
+                                      ),
+                                      const SizedBox(width: 2),
+                                      Text(
+                                        'Git Commit',
+                                        style: TextStyle(
+                                          fontSize: 9.5,
+                                          fontWeight: FontWeight.bold,
+                                          color: Colors.amber.shade700,
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              ],
                               const SizedBox(width: 6),
                               Text(
                                 '•',
@@ -2711,7 +3154,21 @@ class _ChatCanvasViewState extends State<ChatCanvasView> {
                               ),
                             ],
                           ),
-                          if (stream != null &&
+                          if (isGitCommitTask) ...[
+                            const SizedBox(height: 2),
+                            Text(
+                              gitCommitDetail.isNotEmpty
+                                  ? gitCommitDetail
+                                  : 'Đang thực hiện Git Commit mã nguồn...',
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: TextStyle(
+                                fontSize: 11,
+                                fontWeight: FontWeight.w500,
+                                color: Colors.amber.shade700,
+                              ),
+                            ),
+                          ] else if (stream != null &&
                               stream.streamingText.trim().isNotEmpty) ...[
                             const SizedBox(height: 2),
                             Text(
@@ -3786,17 +4243,24 @@ class _ChatCanvasViewState extends State<ChatCanvasView> {
             mainAxisSize: MainAxisSize.min,
             children: [
               Container(
-                width: 48,
-                height: 48,
+                width: 56,
+                height: 56,
                 decoration: BoxDecoration(
-                  color: colorScheme.surfaceContainerHighest,
-                  borderRadius: BorderRadius.circular(14),
-                  border: Border.all(color: colorScheme.outlineVariant),
+                  color: colorScheme.surfaceContainerHighest.withAlpha(180),
+                  borderRadius: BorderRadius.circular(16),
+                  border: Border.all(
+                    color: colorScheme.outlineVariant.withAlpha(120),
+                  ),
                 ),
-                child: Icon(
-                  Icons.auto_awesome_rounded,
-                  size: 24,
-                  color: colorScheme.primary,
+                padding: const EdgeInsets.all(6),
+                child: ClipRRect(
+                  borderRadius: BorderRadius.circular(10),
+                  child: Image.asset(
+                    'assets/images/logo.png',
+                    width: 44,
+                    height: 44,
+                    fit: BoxFit.contain,
+                  ),
                 ),
               ),
               const SizedBox(height: 12),

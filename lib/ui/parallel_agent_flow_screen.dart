@@ -115,6 +115,7 @@ class _ParallelAgentFlowScreenState extends State<ParallelAgentFlowScreen>
   }
 
   bool get _isTurnRunning {
+    if (_session?.isInterrupted == true) return false;
     return (_activeStream != null && _activeStream!.isRunning) ||
         (_session != null && _session!.status == AgentStatus.running);
   }

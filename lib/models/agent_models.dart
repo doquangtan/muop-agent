@@ -28,6 +28,8 @@ extension AgentStatusUi on AgentStatus {
         return Icons.hourglass_top_rounded;
       case AgentStatus.completed:
         return Icons.check_circle_rounded;
+      case AgentStatus.interrupted:
+        return Icons.warning_amber_rounded;
       case AgentStatus.error:
         return Icons.error_rounded;
       case AgentStatus.idle:

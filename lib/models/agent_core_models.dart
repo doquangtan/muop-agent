@@ -42,6 +42,7 @@ enum AgentStatus {
   running('ĐANG CHẠY'),
   waiting('ĐANG CHỜ ĐỒNG BỘ'),
   completed('HOÀN TẤT'),
+  interrupted('BỊ GIÁN ĐOẠN'),
   error('CẢNH BÁO / LỖI'),
   idle('SẴN SÀNG');
 
@@ -49,10 +50,84 @@ enum AgentStatus {
   final String label;
 
   static AgentStatus fromName(String? name) {
+    if (name == 'interrupted') return AgentStatus.interrupted;
     for (final v in AgentStatus.values) {
       if (v.name == name) return v;
     }
     return AgentStatus.idle;
+  }
+}
+
+class GitSyncStatus {
+  const GitSyncStatus({
+    required this.projectPath,
+    required this.projectName,
+    required this.branch,
+    required this.aheadCount,
+    required this.lastCommitHash,
+    required this.lastCommitMessage,
+    required this.lastCommitAuthor,
+    required this.lastCommitAt,
+    required this.isAhead,
+  });
+
+  final String projectPath;
+  final String projectName;
+  final String branch;
+  final int aheadCount;
+  final String lastCommitHash;
+  final String lastCommitMessage;
+  final String lastCommitAuthor;
+  final String lastCommitAt;
+  final bool isAhead;
+
+  Map<String, dynamic> toJson() => {
+        'projectPath': projectPath,
+        'projectName': projectName,
+        'branch': branch,
+        'aheadCount': aheadCount,
+        'lastCommitHash': lastCommitHash,
+        'lastCommitMessage': lastCommitMessage,
+        'lastCommitAuthor': lastCommitAuthor,
+        'lastCommitAt': lastCommitAt,
+        'isAhead': isAhead,
+      };
+
+  factory GitSyncStatus.fromJson(Map<String, dynamic> json) {
+    return GitSyncStatus(
+      projectPath: '${json['projectPath'] ?? ''}',
+      projectName: '${json['projectName'] ?? ''}',
+      branch: '${json['branch'] ?? ''}',
+      aheadCount: (json['aheadCount'] as num?)?.toInt() ?? 0,
+      lastCommitHash: '${json['lastCommitHash'] ?? ''}',
+      lastCommitMessage: '${json['lastCommitMessage'] ?? ''}',
+      lastCommitAuthor: '${json['lastCommitAuthor'] ?? ''}',
+      lastCommitAt: '${json['lastCommitAt'] ?? ''}',
+      isAhead: json['isAhead'] == true,
+    );
+  }
+}
+
+class GitPushResponse {
+  const GitPushResponse({
+    required this.ok,
+    required this.message,
+    this.output = '',
+    this.error,
+  });
+
+  final bool ok;
+  final String message;
+  final String output;
+  final String? error;
+
+  factory GitPushResponse.fromJson(Map<String, dynamic> json) {
+    return GitPushResponse(
+      ok: json['ok'] == true,
+      message: json['message']?.toString() ?? '',
+      output: json['output']?.toString() ?? '',
+      error: json['error']?.toString(),
+    );
   }
 }
 
@@ -64,6 +139,7 @@ class ProjectWorkspace {
     required this.sessionCount,
     required this.runningCount,
     this.lastActiveAt,
+    this.gitSyncStatus,
   });
 
   final String id;
@@ -72,6 +148,7 @@ class ProjectWorkspace {
   final int sessionCount;
   final int runningCount;
   final DateTime? lastActiveAt;
+  final GitSyncStatus? gitSyncStatus;
 
   Map<String, dynamic> toJson() => {
         'id': id,
@@ -80,6 +157,7 @@ class ProjectWorkspace {
         'sessionCount': sessionCount,
         'runningCount': runningCount,
         'lastActiveAt': lastActiveAt?.toIso8601String(),
+        'gitSyncStatus': gitSyncStatus?.toJson(),
       };
 
   factory ProjectWorkspace.fromJson(Map<String, dynamic> json) {
@@ -91,6 +169,11 @@ class ProjectWorkspace {
       runningCount: (json['runningCount'] as num?)?.toInt() ?? 0,
       lastActiveAt: json['lastActiveAt'] != null
           ? DateTime.tryParse('${json['lastActiveAt']}')
+          : null,
+      gitSyncStatus: json['gitSyncStatus'] is Map
+          ? GitSyncStatus.fromJson(
+              Map<String, dynamic>.from(json['gitSyncStatus'] as Map),
+            )
           : null,
     );
   }
@@ -534,6 +617,9 @@ class ConversationSession {
     this.projectPath = '/home/john/Documents/muop-ecosystem/muop-erp-server',
     this.isSimulated = false,
     this.pendingPlans = const [],
+    this.gitSyncStatus,
+    this.isInterrupted = false,
+    this.interruptedReason,
   });
 
   final String id;
@@ -553,6 +639,9 @@ class ConversationSession {
   final String projectPath;
   final bool isSimulated;
   final List<PlanArtifactInfo> pendingPlans;
+  final GitSyncStatus? gitSyncStatus;
+  final bool isInterrupted;
+  final String? interruptedReason;
 
   int get subagentCount => subagentLanes.length;
 
@@ -574,6 +663,9 @@ class ConversationSession {
     String? projectPath,
     bool? isSimulated,
     List<PlanArtifactInfo>? pendingPlans,
+    GitSyncStatus? gitSyncStatus,
+    bool? isInterrupted,
+    String? interruptedReason,
   }) {
     return ConversationSession(
       id: id ?? this.id,
@@ -593,6 +685,9 @@ class ConversationSession {
       projectPath: projectPath ?? this.projectPath,
       isSimulated: isSimulated ?? this.isSimulated,
       pendingPlans: pendingPlans ?? this.pendingPlans,
+      gitSyncStatus: gitSyncStatus ?? this.gitSyncStatus,
+      isInterrupted: isInterrupted ?? this.isInterrupted,
+      interruptedReason: interruptedReason ?? this.interruptedReason,
     );
   }
 
@@ -614,6 +709,9 @@ class ConversationSession {
         'projectPath': projectPath,
         'isSimulated': isSimulated,
         'pendingPlans': pendingPlans.map((e) => e.toJson()).toList(),
+        'gitSyncStatus': gitSyncStatus?.toJson(),
+        'isInterrupted': isInterrupted,
+        'interruptedReason': interruptedReason,
       };
 
   factory ConversationSession.fromJson(Map<String, dynamic> json) {
@@ -682,6 +780,13 @@ class ConversationSession {
               .map((e) => PlanArtifactInfo.fromJson(Map<String, dynamic>.from(e)))
               .toList()
           : const [],
+      gitSyncStatus: json['gitSyncStatus'] is Map
+          ? GitSyncStatus.fromJson(
+              Map<String, dynamic>.from(json['gitSyncStatus'] as Map),
+            )
+          : null,
+      isInterrupted: json['isInterrupted'] == true,
+      interruptedReason: json['interruptedReason']?.toString(),
     );
   }
 }

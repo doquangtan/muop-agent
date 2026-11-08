@@ -45,6 +45,16 @@ static void my_application_activate(GApplication* application) {
 
   gtk_window_set_default_size(window, 1440, 900);
 
+  // Thiết lập logo Mướp Agent cho cửa sổ ứng dụng Linux
+  GError* icon_error = nullptr;
+  gtk_window_set_icon_from_file(
+      window,
+      "/home/john/Documents/muop-ecosystem/muop-agent/assets/images/logo.png",
+      &icon_error);
+  if (icon_error) {
+    g_clear_error(&icon_error);
+  }
+
   g_autoptr(FlDartProject) project = fl_dart_project_new();
   fl_dart_project_set_dart_entrypoint_arguments(
       project, self->dart_entrypoint_arguments);

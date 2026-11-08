@@ -10,6 +10,8 @@ pub struct ProjectWorkspace {
     pub session_count: usize,
     pub running_count: usize,
     pub last_active_at: Option<String>,
+    #[serde(default)]
+    pub git_sync_status: Option<GitSyncStatus>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -135,6 +137,12 @@ pub struct ConversationSession {
     pub is_simulated: bool,
     #[serde(default)]
     pub pending_plans: Vec<PlanArtifactInfo>,
+    #[serde(default)]
+    pub git_sync_status: Option<GitSyncStatus>,
+    #[serde(default)]
+    pub is_interrupted: bool,
+    #[serde(default)]
+    pub interrupted_reason: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -301,5 +309,39 @@ pub struct CreateProjectResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GitSyncStatus {
+    pub project_path: String,
+    pub project_name: String,
+    pub branch: String,
+    pub ahead_count: usize,
+    pub last_commit_hash: String,
+    pub last_commit_message: String,
+    pub last_commit_author: String,
+    pub last_commit_at: String,
+    pub is_ahead: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GitPushRequest {
+    pub project_path: String,
+    #[serde(default)]
+    pub branch: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GitPushResponse {
+    pub ok: bool,
+    pub message: String,
+    #[serde(default)]
+    pub output: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
 
 

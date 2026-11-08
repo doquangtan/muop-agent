@@ -1,6 +1,7 @@
 mod chat;
 mod models;
 mod scanner;
+mod tray;
 
 use axum::{
     body::Body,
@@ -345,6 +346,71 @@ async fn handle_project_create(
     }
 }
 
+async fn handle_git_push(
+    State(state): State<AppState>,
+    Json(req): Json<models::GitPushRequest>,
+) -> impl IntoResponse {
+    let p = PathBuf::from(&req.project_path);
+    if !p.exists() || !p.is_dir() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(models::GitPushResponse {
+                ok: false,
+                message: format!("Thư mục dự án không tồn tại: {}", req.project_path),
+                output: String::new(),
+                error: Some("PathNotFound".to_string()),
+            }),
+        );
+    }
+
+    let mut cmd = tokio::process::Command::new("git");
+    cmd.current_dir(&p);
+    if !req.branch.trim().is_empty() {
+        cmd.args(["push", "origin", req.branch.trim()]);
+    } else {
+        cmd.arg("push");
+    }
+
+    match cmd.output().await {
+        Ok(out) => {
+            let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+            let stderr = String::from_utf8_lossy(&out.stderr).to_string();
+            let combined = format!("{}\n{}", stdout, stderr).trim().to_string();
+            if out.status.success() {
+                state.broadcast_snapshot();
+                (
+                    StatusCode::OK,
+                    Json(models::GitPushResponse {
+                        ok: true,
+                        message: "Đã push thành công lên máy chủ từ xa (remote git repository)!".to_string(),
+                        output: combined,
+                        error: None,
+                    }),
+                )
+            } else {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(models::GitPushResponse {
+                        ok: false,
+                        message: format!("Lỗi khi chạy git push: {}", combined),
+                        output: combined,
+                        error: Some("GitPushFailed".to_string()),
+                    }),
+                )
+            }
+        }
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(models::GitPushResponse {
+                ok: false,
+                message: format!("Không thể khởi chạy git push: {}", e),
+                output: String::new(),
+                error: Some(e.to_string()),
+            }),
+        ),
+    }
+}
+
 async fn handle_files_list(Query(params): Query<HashMap<String, String>>) -> impl IntoResponse {
     let raw_path = params
         .get("path")
@@ -614,10 +680,10 @@ async fn main() {
 
     setup_socket_handlers(&io, app_state.clone());
 
-    // Watcher ngầm siêu tốc theo dõi sự thay đổi của transcript.jsonl & conversation_summaries.db
+    // Watcher ngầm theo dõi sự thay đổi của transcript.jsonl & conversation_summaries.db (chu kỳ 1s)
     let watcher_state = app_state.clone();
     tokio::spawn(async move {
-        let mut ticker = interval(Duration::from_millis(250));
+        let mut ticker = interval(Duration::from_millis(1000));
         let mut last_fp = scanner::compute_filesystem_fingerprint();
         loop {
             ticker.tick().await;
@@ -629,7 +695,12 @@ async fn main() {
                     .lock()
                     .map(|g| g.clone())
                     .unwrap_or_default();
-                let snapshot = scanner::build_full_snapshot(&streams, None, 100);
+                let snapshot = tokio::task::spawn_blocking(move || {
+                    scanner::build_full_snapshot(&streams, None, 100)
+                })
+                .await
+                .unwrap_or_else(|_| scanner::build_full_snapshot(&HashMap::new(), None, 100));
+
                 if let Ok(val) = serde_json::to_value(&snapshot) {
                     if let Some(ns) = watcher_state.io.of("/") {
                         let _ = ns.emit("snapshot:update", &val);
@@ -652,6 +723,7 @@ async fn main() {
         .route("/api/chat/send", post(handle_chat_send))
         .route("/api/chat/stop", post(handle_chat_stop))
         .route("/api/project/create", post(handle_project_create))
+        .route("/api/git/push", post(handle_git_push))
         .route("/api/plan/pending", get(handle_plan_pending))
         .route("/api/plan/action", post(handle_plan_action))
         .route("/api/files/list", get(handle_files_list))
@@ -677,7 +749,11 @@ async fn main() {
     }
     println!("⚡ Socket.IO Realtime Events: snapshot:update, chat:stream");
     println!("📂 File Server API: /api/files/list & /api/files/download");
+    println!("🔔 System Tray: Biểu tượng khay hệ thống hiển thị logo Mướp Agent");
     println!("==============================================================");
+
+    // Khởi chạy biểu tượng System Tray nền (StatusNotifierItem)
+    tray::spawn_system_tray();
 
     let listener = tokio::net::TcpListener::bind(addr)
         .await

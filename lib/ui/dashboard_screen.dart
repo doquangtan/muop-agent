@@ -88,6 +88,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
         _isSocketLive = connected;
         if (connected) {
           _isRemoteConnected = true;
+          // Đồng bộ lại toàn bộ snapshot ngay khi kết nối lại sau restart
+          _refreshSessions(silent: true);
         }
       });
     });
@@ -171,6 +173,14 @@ class _DashboardScreenState extends State<DashboardScreen> {
         _modelQuotas = snapshot.modelQuotas;
       }
       _activeStreams = snapshot.activeStreams;
+      // Nếu session đang chọn đã hoàn tất hoặc bị gián đoạn, mở khóa composer
+      final curActive = _sessions.where((s) => s.id == _selectedSessionId).firstOrNull;
+      if (curActive != null &&
+          (curActive.isInterrupted ||
+              curActive.status == AgentStatus.interrupted ||
+              curActive.status == AgentStatus.completed)) {
+        _isSendingPrompt = false;
+      }
       _syncDefaultSelections();
       _isLoading = false;
     });
@@ -439,6 +449,17 @@ class _DashboardScreenState extends State<DashboardScreen> {
         ),
       );
     }
+  }
+
+  Future<GitPushResponse> _handleGitPush(
+    String projectPath,
+    String branch,
+  ) async {
+    return _scanner.gitPush(
+      address: _serverAddress,
+      projectPath: projectPath,
+      branch: branch,
+    );
   }
 
   Future<bool> _handleLoadOlderHistory() async {
@@ -1242,6 +1263,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                                 onOpenParallelFlow: _openParallelAgentFlowScreen,
                                 onOpenCreateProject: () =>
                                     _showCreateProjectDialog(context),
+                                onGitPush: _handleGitPush,
                               ),
                   ),
                 ],
@@ -1290,8 +1312,18 @@ class _DashboardScreenState extends State<DashboardScreen> {
               }
             },
           ),
+          const SizedBox(width: 4),
+          ClipRRect(
+            borderRadius: BorderRadius.circular(5),
+            child: Image.asset(
+              'assets/images/logo.png',
+              width: 22,
+              height: 22,
+              fit: BoxFit.contain,
+            ),
+          ),
           if (!isMobile) ...[
-            const SizedBox(width: 4),
+            const SizedBox(width: 6),
             Container(
               padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
               decoration: BoxDecoration(
@@ -1693,6 +1725,42 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 ),
               ),
             ),
+            if (project.gitSyncStatus?.isAhead == true &&
+                project.gitSyncStatus!.aheadCount > 0) ...[
+              Container(
+                margin: const EdgeInsets.symmetric(horizontal: 4),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 5,
+                  vertical: 1.5,
+                ),
+                decoration: BoxDecoration(
+                  color: Colors.amber.withAlpha(35),
+                  borderRadius: BorderRadius.circular(4),
+                  border: Border.all(
+                    color: Colors.amber.shade700.withAlpha(120),
+                  ),
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(
+                      Icons.cloud_upload_outlined,
+                      size: 10,
+                      color: Colors.amber.shade700,
+                    ),
+                    const SizedBox(width: 2),
+                    Text(
+                      '${project.gitSyncStatus!.aheadCount}',
+                      style: TextStyle(
+                        fontSize: 9.5,
+                        fontWeight: FontWeight.bold,
+                        color: Colors.amber.shade700,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
             InkWell(
               borderRadius: BorderRadius.circular(4),
               onTap: () {
@@ -1747,8 +1815,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
   }) {
     final colorScheme = Theme.of(context).colorScheme;
     final textTheme = Theme.of(context).textTheme;
-    final isRunning = session.status == AgentStatus.running ||
-        (_activeStreams[session.id]?.isRunning == true);
+    final isRunning = !session.isInterrupted &&
+        (session.status == AgentStatus.running ||
+            _activeStreams[session.id]?.isRunning == true);
 
     return Padding(
       padding: const EdgeInsets.only(bottom: 2),
@@ -1792,6 +1861,13 @@ class _DashboardScreenState extends State<DashboardScreen> {
                   width: 10,
                   height: 10,
                   child: CircularProgressIndicator(strokeWidth: 1.8),
+                ),
+                const SizedBox(width: 8),
+              ] else if (session.isInterrupted) ...[
+                const Icon(
+                  Icons.pause_circle_outline_rounded,
+                  size: 13,
+                  color: Colors.amber,
                 ),
                 const SizedBox(width: 8),
               ] else ...[

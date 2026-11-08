@@ -1,7 +1,8 @@
 use crate::models::{
     AgentMonitorSnapshot, AgentStep, ChatTurnStreamState, CommandExecutionRecord,
-    ConversationSession, CustomAgentSpec, FileTouchRecord, ModelQuotaBucket, ModelQuotaGroup,
-    PlanArtifactInfo, ProjectWorkspace, SessionStepsPageResponse, SubagentLane, ToolCallInfo,
+    ConversationSession, CustomAgentSpec, FileTouchRecord, GitSyncStatus, ModelQuotaBucket,
+    ModelQuotaGroup, PlanArtifactInfo, ProjectWorkspace, SessionStepsPageResponse, SubagentLane,
+    ToolCallInfo,
 };
 use chrono::{DateTime, Utc};
 use regex::Regex;
@@ -121,6 +122,45 @@ pub fn detect_lan_ips() -> Vec<String> {
         ips.push("192.168.31.96".to_string());
     }
     ips
+}
+
+/// Quét toàn bộ /proc để tìm danh sách các conversation_id của các tiến trình agy CLI đang thực sự chạy trên hệ thống
+pub fn scan_running_agy_conversations() -> std::collections::HashSet<String> {
+    let mut running_ids = std::collections::HashSet::new();
+    let proc_dir = match fs::read_dir("/proc") {
+        Ok(d) => d,
+        Err(_) => return running_ids,
+    };
+
+    for entry in proc_dir.flatten() {
+        let file_name = entry.file_name();
+        let name_str = file_name.to_string_lossy();
+        if !name_str.chars().all(|c| c.is_ascii_digit()) {
+            continue;
+        }
+
+        let cmdline_path = entry.path().join("cmdline");
+        if let Ok(bytes) = fs::read(&cmdline_path) {
+            let cmdline = String::from_utf8_lossy(&bytes);
+            if cmdline.contains("agy") && cmdline.contains("--conversation") {
+                let parts: Vec<&str> = cmdline.split('\0').collect();
+                for i in 0..parts.len() {
+                    if parts[i] == "--conversation" && i + 1 < parts.len() {
+                        let cid = parts[i + 1].trim();
+                        if !cid.is_empty() {
+                            running_ids.insert(cid.to_string());
+                        }
+                    } else if let Some(rest) = parts[i].strip_prefix("--conversation=") {
+                        let cid = rest.trim();
+                        if !cid.is_empty() {
+                            running_ids.insert(cid.to_string());
+                        }
+                    }
+                }
+            }
+        }
+    }
+    running_ids
 }
 
 /// Tính chữ ký thay đổi (fingerprint) nhanh của thư mục brain và DB để phát hiện thay đổi realtime
@@ -449,6 +489,122 @@ fn normalize_project_path(raw_path: &str) -> (String, String) {
     (name, raw_path.to_string())
 }
 
+/// Kiểm tra trạng thái Git (nhánh hiện tại, commit mới nhất, số commit chưa push lên server)
+pub fn check_git_sync_status(project_path_str: &str) -> Option<GitSyncStatus> {
+    if project_path_str.trim().is_empty() {
+        return None;
+    }
+    let p = Path::new(project_path_str);
+    if !p.exists() || !p.is_dir() {
+        return None;
+    }
+    if !p.join(".git").exists() {
+        return None;
+    }
+
+    // 1. Lấy tên nhánh hiện tại (branch name)
+    let branch_out = Command::new("git")
+        .args(["rev-parse", "--abbrev-ref", "HEAD"])
+        .current_dir(p)
+        .output()
+        .ok()?;
+    if !branch_out.status.success() {
+        return None;
+    }
+    let branch = String::from_utf8_lossy(&branch_out.stdout).trim().to_string();
+    if branch.is_empty() || branch == "HEAD" {
+        return None;
+    }
+
+    // 2. Kiểm tra số commit chưa push lên remote (ahead count)
+    let mut ahead_count: usize = 0;
+    let mut count_determined = false;
+
+    // Cách 1: Thử git rev-list --count @{u}..HEAD (nếu upstream đã thiết lập)
+    if let Ok(out) = Command::new("git")
+        .args(["rev-list", "--count", "@{u}..HEAD"])
+        .current_dir(p)
+        .output()
+    {
+        if out.status.success() {
+            let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            if let Ok(n) = s.parse::<usize>() {
+                ahead_count = n;
+                count_determined = true;
+            }
+        }
+    }
+
+    // Cách 2: Fallback thử origin/<branch>..HEAD
+    if !count_determined {
+        let origin_ref = format!("origin/{}..HEAD", branch);
+        if let Ok(out) = Command::new("git")
+            .args(["rev-list", "--count", &origin_ref])
+            .current_dir(p)
+            .output()
+        {
+            if out.status.success() {
+                let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
+                if let Ok(n) = s.parse::<usize>() {
+                    ahead_count = n;
+                    count_determined = true;
+                }
+            }
+        }
+    }
+
+    // Cách 3: Fallback phân tích cú pháp git status -sb (tìm chuỗi [ahead X])
+    if !count_determined {
+        if let Ok(out) = Command::new("git")
+            .args(["status", "-sb"])
+            .current_dir(p)
+            .output()
+        {
+            let s = String::from_utf8_lossy(&out.stdout);
+            if let Some(pos) = s.find("[ahead ") {
+                let rest = &s[pos + 7..];
+                if let Some(end_pos) = rest.find(']') {
+                    let num_str = rest[..end_pos].trim();
+                    if let Ok(n) = num_str.parse::<usize>() {
+                        ahead_count = n;
+                    }
+                }
+            }
+        }
+    }
+
+    // 3. Lấy thông tin commit mới nhất
+    let log_out = Command::new("git")
+        .args(["log", "-1", "--pretty=format:%h\t%s\t%an\t%cI"])
+        .current_dir(p)
+        .output()
+        .ok()?;
+    let log_str = String::from_utf8_lossy(&log_out.stdout).trim().to_string();
+    let parts: Vec<&str> = log_str.split('\t').collect();
+    let last_commit_hash = parts.first().unwrap_or(&"").to_string();
+    let last_commit_message = parts.get(1).unwrap_or(&"").to_string();
+    let last_commit_author = parts.get(2).unwrap_or(&"").to_string();
+    let last_commit_at = parts.get(3).unwrap_or(&"").to_string();
+
+    let project_name = p
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("project")
+        .to_string();
+
+    Some(GitSyncStatus {
+        project_path: project_path_str.to_string(),
+        project_name,
+        branch,
+        ahead_count,
+        last_commit_hash,
+        last_commit_message,
+        last_commit_author,
+        last_commit_at,
+        is_ahead: ahead_count > 0,
+    })
+}
+
 pub fn discover_projects(sessions: &[ConversationSession]) -> Vec<ProjectWorkspace> {
     let mut project_map: HashMap<String, (String, usize, usize, Option<String>)> = HashMap::new();
 
@@ -489,13 +645,17 @@ pub fn discover_projects(sessions: &[ConversationSession]) -> Vec<ProjectWorkspa
 
     let mut list: Vec<ProjectWorkspace> = project_map
         .into_iter()
-        .map(|(name, (path, count, running, last_active))| ProjectWorkspace {
-            id: name.clone(),
-            name,
-            path,
-            session_count: count,
-            running_count: running,
-            last_active_at: last_active,
+        .map(|(name, (path, count, running, last_active))| {
+            let git_sync_status = check_git_sync_status(&path);
+            ProjectWorkspace {
+                id: name.clone(),
+                name,
+                path,
+                session_count: count,
+                running_count: running,
+                last_active_at: last_active,
+                git_sync_status,
+            }
         })
         .collect();
 
@@ -603,6 +763,7 @@ pub fn create_new_project(
         session_count: 0,
         running_count: 0,
         last_active_at: Some(Utc::now().to_rfc3339()),
+        git_sync_status: None,
     })
 }
 
@@ -779,6 +940,7 @@ pub fn scan_all_sessions(
         }
     }
 
+    let live_agy_cids = scan_running_agy_conversations();
     let mut sessions = Vec::new();
     for (idx, (id, _)) in selected.iter().enumerate() {
         if let Some(m) = db_meta_map.get(id) {
@@ -794,8 +956,27 @@ pub fn scan_all_sessions(
         let is_active_session = target_active.as_deref() == Some(id.as_str())
             || (target_active.is_none() && idx == 0);
 
+        let is_stream_running = active_streams
+            .get(&parsed.id)
+            .map(|st| st.is_running)
+            .unwrap_or(false);
+        let is_os_agy_running = live_agy_cids.contains(&parsed.id);
+        let is_actually_running = is_stream_running || is_os_agy_running;
+
+        let (effective_status, is_interrupted, interrupted_reason) = if is_actually_running {
+            ("running".to_string(), false, None)
+        } else if parsed.status == "running" || parsed.status == "interrupted" {
+            (
+                "interrupted".to_string(),
+                true,
+                Some("Tiến trình Agent bị gián đoạn do máy chủ khởi động lại hoặc agy CLI dừng đột ngột.".to_string()),
+            )
+        } else {
+            (parsed.status.clone(), false, None)
+        };
+
         let lanes = if is_active_session {
-            build_subagent_lanes(parsed, &raw_sessions)
+            build_subagent_lanes(parsed, &raw_sessions, is_actually_running)
         } else {
             Vec::new()
         };
@@ -826,10 +1007,30 @@ pub fn scan_all_sessions(
             (Vec::new(), Vec::new(), Vec::new())
         };
 
-        let effective_status = match active_streams.get(&parsed.id) {
-            Some(st) if st.is_running => "running".to_string(),
-            _ => parsed.status.clone(),
-        };
+        let mut final_steps = steps;
+        if is_interrupted {
+            if let Some(last) = final_steps.last() {
+                if last.step_type == "PLANNER_RESPONSE" && !last.tool_calls.is_empty() {
+                    final_steps.push(AgentStep {
+                        step_index: last.step_index + 1,
+                        source: "SYSTEM".to_string(),
+                        step_type: "GENERIC".to_string(),
+                        status: "INTERRUPTED".to_string(),
+                        created_at: Utc::now().to_rfc3339(),
+                        content: "⚠️ Tiến trình Agent bị gián đoạn do máy chủ khởi động lại hoặc lệnh CLI bị ngắt đột ngột. Bạn có thể gửi tin nhắn tiếp theo để tiếp tục.".to_string(),
+                        thinking: String::new(),
+                        tool_calls: Vec::new(),
+                        input_tokens: 0,
+                        output_tokens: 0,
+                        cache_read_tokens: 0,
+                        agent_name: "Coordinator".to_string(),
+                        phase: "completed".to_string(),
+                        vietnamese_title: "Tiến trình Agent bị gián đoạn".to_string(),
+                        vietnamese_detail: "Tiến trình xử lý của Agent đã bị ngắt do server restart hoặc dừng đột ngột. Bạn có thể tiếp tục bằng cách gửi tin nhắn tiếp theo.".to_string(),
+                    });
+                }
+            }
+        }
 
         sessions.push(ConversationSession {
             id: parsed.id.clone(),
@@ -837,8 +1038,12 @@ pub fn scan_all_sessions(
             created_at: parsed.created_at.to_rfc3339(),
             updated_at: parsed.updated_at.to_rfc3339(),
             status: effective_status,
-            current_phase: parsed.current_phase.clone(),
-            steps,
+            current_phase: if is_interrupted {
+                "completed".to_string()
+            } else {
+                parsed.current_phase.clone()
+            },
+            steps: final_steps,
             subagent_lanes: lanes,
             files_touched: files,
             commands_run: commands,
@@ -849,6 +1054,13 @@ pub fn scan_all_sessions(
             project_path: parsed.project_path.clone(),
             is_simulated: false,
             pending_plans: scan_pending_plans(&parsed.id),
+            git_sync_status: if is_active_session {
+                check_git_sync_status(&parsed.project_path)
+            } else {
+                None
+            },
+            is_interrupted,
+            interrupted_reason,
         });
     }
 
@@ -938,7 +1150,21 @@ pub fn get_single_session_full(session_id: &str) -> Option<ConversationSession> 
         }
     }
 
-    let lanes = build_subagent_lanes(&parsed, &raw_sessions);
+    let live_agy_cids = scan_running_agy_conversations();
+    let is_actually_running = live_agy_cids.contains(session_id);
+    let (status, is_interrupted, interrupted_reason) = if is_actually_running {
+        ("running".to_string(), false, None)
+    } else if parsed.status == "running" || parsed.status == "interrupted" {
+        (
+            "interrupted".to_string(),
+            true,
+            Some("Tiến trình Agent bị gián đoạn do máy chủ khởi động lại hoặc agy CLI dừng đột ngột.".to_string()),
+        )
+    } else {
+        (parsed.status.clone(), false, None)
+    };
+
+    let lanes = build_subagent_lanes(&parsed, &raw_sessions, is_actually_running);
     let mut files = parsed.files_touched.clone();
     let mut commands = parsed.commands_run.clone();
     for lane in &lanes {
@@ -950,24 +1176,56 @@ pub fn get_single_session_full(session_id: &str) -> Option<ConversationSession> 
     files.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
     commands.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
 
+    let mut final_steps = parsed.steps;
+    if is_interrupted {
+        if let Some(last) = final_steps.last() {
+            if last.step_type == "PLANNER_RESPONSE" && !last.tool_calls.is_empty() {
+                final_steps.push(AgentStep {
+                    step_index: last.step_index + 1,
+                    source: "SYSTEM".to_string(),
+                    step_type: "GENERIC".to_string(),
+                    status: "INTERRUPTED".to_string(),
+                    created_at: Utc::now().to_rfc3339(),
+                    content: "⚠️ Tiến trình Agent bị gián đoạn do máy chủ khởi động lại hoặc lệnh CLI bị ngắt đột ngột. Bạn có thể gửi tin nhắn tiếp theo để tiếp tục.".to_string(),
+                    thinking: String::new(),
+                    tool_calls: Vec::new(),
+                    input_tokens: 0,
+                    output_tokens: 0,
+                    cache_read_tokens: 0,
+                    agent_name: "Coordinator".to_string(),
+                    phase: "completed".to_string(),
+                    vietnamese_title: "Tiến trình Agent bị gián đoạn".to_string(),
+                    vietnamese_detail: "Tiến trình xử lý của Agent đã bị ngắt do server restart hoặc dừng đột ngột. Bạn có thể tiếp tục bằng cách gửi tin nhắn tiếp theo.".to_string(),
+                });
+            }
+        }
+    }
+
     Some(ConversationSession {
         id: parsed.id.clone(),
         title: parsed.title.clone(),
         created_at: parsed.created_at.to_rfc3339(),
         updated_at: parsed.updated_at.to_rfc3339(),
-        status: parsed.status,
-        current_phase: parsed.current_phase,
-        steps: parsed.steps,
+        status,
+        current_phase: if is_interrupted {
+            "completed".to_string()
+        } else {
+            parsed.current_phase
+        },
+        steps: final_steps,
         subagent_lanes: lanes,
         files_touched: files,
         commands_run: commands,
         total_input_tokens: parsed.total_input_tokens,
         total_output_tokens: parsed.total_output_tokens,
         total_cache_tokens: parsed.total_cache_tokens,
+        git_sync_status: check_git_sync_status(&parsed.project_path),
         project_name: parsed.project_name,
         project_path: parsed.project_path,
         is_simulated: false,
         pending_plans: scan_pending_plans(&parsed.id),
+        is_interrupted,
+        interrupted_reason,
     })
 }
 
@@ -1080,10 +1338,11 @@ fn classify_step_agent(
 fn build_subagent_lanes(
     parent: &ParsedTranscript,
     all_parsed: &HashMap<String, ParsedTranscript>,
+    is_session_actually_running: bool,
 ) -> Vec<SubagentLane> {
     let mut lanes = Vec::new();
     let mut added_names = HashSet::new();
-    let is_session_running = parent.status == "running";
+    let is_session_running = is_session_actually_running;
 
     // 0. Coordinator Orchestrator Lane
     let coordinator_steps: Vec<AgentStep> = parent
@@ -1118,6 +1377,8 @@ fn build_subagent_lanes(
                 .unwrap_or_else(|| "Đang điều phối luồng thực thi song song".to_string())
         } else if is_session_running {
             "Đang ủy quyền công việc cho các Subagent song song".to_string()
+        } else if parent.status == "interrupted" || !is_session_actually_running {
+            "Tiến trình đã dừng (Sẵn sàng nhận lệnh mới)".to_string()
         } else {
             "Đã hoàn thành điều phối toàn bộ quy trình".to_string()
         },
@@ -1155,9 +1416,20 @@ fn build_subagent_lanes(
             });
         let last_child_step = child_steps.last();
 
-        let status = child_transcript
-            .map(|c| c.status.clone())
-            .unwrap_or_else(|| spawned.status.clone());
+        let status = if !is_session_actually_running {
+            let st = child_transcript
+                .map(|c| c.status.as_str())
+                .unwrap_or_else(|| spawned.status.as_str());
+            if st == "running" {
+                "interrupted".to_string()
+            } else {
+                st.to_string()
+            }
+        } else {
+            child_transcript
+                .map(|c| c.status.clone())
+                .unwrap_or_else(|| spawned.status.clone())
+        };
 
         let mut modified_files = Vec::new();
         if let Some(ct) = child_transcript {
@@ -1722,8 +1994,15 @@ fn parse_transcript_file(
         if last.step_type == "PLANNER_RESPONSE" && last.tool_calls.is_empty() {
             session_status = "completed".to_string();
         } else if last.status != "DONE" || !last.tool_calls.is_empty() {
-            // Bước cuối chưa DONE hoặc đang gọi tool_call -> đang chạy
-            session_status = "running".to_string();
+            // Bước cuối chưa DONE hoặc đang gọi tool_call:
+            // Chỉ coi là đang chạy nếu file vừa mới được ghi log gần đây (dưới 20 giây).
+            // Nếu đã quá 20 giây không có hoạt động, tiến trình đã dừng hoặc bị ngắt!
+            let age_secs = (Utc::now() - updated_at).num_seconds().abs();
+            if age_secs < 20 {
+                session_status = "running".to_string();
+            } else {
+                session_status = "interrupted".to_string();
+            }
         } else {
             // Bước cuối là GENERIC hoặc USER_INPUT: chỉ coi là đang chạy nếu phát sinh rất gần (dưới 15 giây)
             let age_secs = (Utc::now() - updated_at).num_seconds().abs();
@@ -1910,6 +2189,15 @@ fn determine_step_phase(step_type: &str, tools: &[ToolCallInfo], content: &str) 
                 .and_then(|v| v.as_str())
                 .unwrap_or("")
                 .to_lowercase();
+            let summary = t
+                .args
+                .get("toolSummary")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_lowercase();
+            if cmd.contains("git commit") || summary.contains("commit") {
+                return "gitCommit".to_string();
+            }
             if cmd.contains("go build")
                 || cmd.contains("flutter analyze")
                 || cmd.contains("flutter test")
@@ -1980,6 +2268,28 @@ fn describe_step_vietnamese(
         );
     }
     if !tools.is_empty() {
+        for t in tools {
+            if t.name == "run_command" {
+                let cmd = t.args.get("CommandLine").and_then(|v| v.as_str()).unwrap_or("");
+                let cmd_lower = cmd.to_lowercase();
+                let summary = t.args.get("toolSummary").and_then(|v| v.as_str()).unwrap_or("");
+                if cmd_lower.contains("git commit") || summary.to_lowercase().contains("commit") {
+                    let commit_msg = extract_commit_message(cmd, summary);
+                    let title = if step_type == "PLANNER_RESPONSE" {
+                        "Đang thực hiện Git Commit mã nguồn".to_string()
+                    } else {
+                        "Git Commit mã nguồn".to_string()
+                    };
+                    let detail = if !commit_msg.is_empty() {
+                        format!("Nội dung commit: {}", commit_msg)
+                    } else {
+                        cmd.to_string()
+                    };
+                    return (title, detail);
+                }
+            }
+        }
+
         let labels: Vec<String> = tools.iter().map(|t| t.summary_label.clone()).collect();
         let joined = labels.join(" • ");
         let detail = if !thinking.trim().is_empty() {
@@ -1999,6 +2309,25 @@ fn describe_step_vietnamese(
         "Suy luận chiến lược (Thinking)".to_string(),
         first_lines(thinking, 2),
     )
+}
+
+fn extract_commit_message(cmd: &str, summary: &str) -> String {
+    if let Some(pos) = cmd.find("-m ") {
+        let rest = cmd[pos + 3..].trim_start();
+        if rest.starts_with('"') {
+            if let Some(end) = rest[1..].find('"') {
+                return rest[1..1 + end].to_string();
+            }
+        } else if rest.starts_with('\'') {
+            if let Some(end) = rest[1..].find('\'') {
+                return rest[1..1 + end].to_string();
+            }
+        }
+    }
+    if !summary.trim().is_empty() && summary != "run_command" {
+        return summary.trim().to_string();
+    }
+    cmd.trim().to_string()
 }
 
 fn first_lines(text: &str, max_lines: usize) -> String {
