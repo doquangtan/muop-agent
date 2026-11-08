@@ -42,7 +42,7 @@ impl AppState {
             .lock()
             .map(|g| g.clone())
             .unwrap_or_default();
-        let snapshot = scanner::build_full_snapshot(&streams, None, 100);
+        let snapshot = scanner::build_full_snapshot(&streams, None, 150);
         if let Ok(val) = serde_json::to_value(&snapshot) {
             if let Some(ns) = self.io.of("/") {
                 let _ = ns.emit("snapshot:update", &val);

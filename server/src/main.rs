@@ -43,7 +43,7 @@ fn setup_socket_handlers(io: &SocketIo, state: AppState) {
             .lock()
             .map(|g| g.clone())
             .unwrap_or_default();
-        let snapshot = scanner::build_full_snapshot(&streams, None, 100);
+        let snapshot = scanner::build_full_snapshot(&streams, None, 150);
         if let Ok(val) = serde_json::to_value(&snapshot) {
             let _ = socket.emit("snapshot:update", &val);
         }
@@ -57,7 +57,7 @@ fn setup_socket_handlers(io: &SocketIo, state: AppState) {
                     .lock()
                     .map(|g| g.clone())
                     .unwrap_or_default();
-                let snap = scanner::build_full_snapshot(&active, None, 100);
+                let snap = scanner::build_full_snapshot(&active, None, 150);
                 if let Ok(val) = serde_json::to_value(&snap) {
                     let _ = s.emit("snapshot:update", &val);
                 }
@@ -111,7 +111,7 @@ async fn handle_snapshot(State(state): State<AppState>) -> impl IntoResponse {
         .lock()
         .map(|g| g.clone())
         .unwrap_or_default();
-    let snapshot = scanner::build_full_snapshot(&streams, None, 35);
+    let snapshot = scanner::build_full_snapshot(&streams, None, 150);
     Json(snapshot)
 }
 
@@ -1186,10 +1186,10 @@ async fn main() {
                     .map(|g| g.clone())
                     .unwrap_or_default();
                 let snapshot = tokio::task::spawn_blocking(move || {
-                    scanner::build_full_snapshot(&streams, None, 25)
+                    scanner::build_full_snapshot(&streams, None, 150)
                 })
                 .await
-                .unwrap_or_else(|_| scanner::build_full_snapshot(&HashMap::new(), None, 25));
+                .unwrap_or_else(|_| scanner::build_full_snapshot(&HashMap::new(), None, 150));
 
                 if let Ok(val) = serde_json::to_value(&snapshot) {
                     if let Some(ns) = watcher_state.io.of("/") {

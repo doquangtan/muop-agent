@@ -170,7 +170,30 @@ class _DashboardScreenState extends State<DashboardScreen> {
         }
       }
 
+      // Bảo toàn các session cũ đã có trong _sessions nếu snapshot không chứa (không làm mất lịch sử hội thoại)
+      for (final existing in _sessions) {
+        if (!mergedSessions.any((s) => s.id == existing.id)) {
+          mergedSessions.add(existing);
+        }
+      }
+
+      // Sắp xếp các session theo thời gian cập nhật mới nhất lên đầu
+      mergedSessions.sort((a, b) => b.updatedAt.compareTo(a.updatedAt));
+
       _sessions = mergedSessions;
+
+      // Tự động mở rộng workspace nếu session đang chọn nằm từ vị trí thứ 5 trở đi
+      if (_selectedSessionId != null) {
+        final cur = _sessions.where((s) => s.id == _selectedSessionId).firstOrNull;
+        if (cur != null) {
+          final pSessions = _sessions.where((s) => s.projectName == cur.projectName).toList();
+          final idx = pSessions.indexWhere((s) => s.id == cur.id);
+          if (idx >= 5) {
+            _expandedProjects.add(cur.projectName);
+          }
+        }
+      }
+
       _projects = snapshot.projects;
       if (_activeChatProject != null) {
         _activeChatProject = _projects.firstWhere(
@@ -1934,12 +1957,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
             () {
               final int totalSessions = projectSessions.length;
               final bool hasOverflow = totalSessions > 5;
-              final int selectedIndex =
-                  projectSessions.indexWhere((s) => s.id == _selectedSessionId);
-              final bool isSelectedHidden = selectedIndex >= 5;
               final bool isExpanded =
                   _expandedProjects.contains(project.name) ||
-                      isSelectedHidden ||
                       _searchQuery.isNotEmpty;
               final visibleSessions = (isExpanded || !hasOverflow)
                   ? projectSessions
@@ -2005,8 +2024,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
                               const SizedBox(width: 4),
                               Text(
                                 isExpanded
-                                    ? 'See less (thu gọn)'
-                                    : 'See all (còn $remainingCount cuộc hội thoại)',
+                                    ? 'Thu gọn danh sách'
+                                    : 'Xem thêm ($remainingCount cuộc hội thoại khác)',
                                 style: textTheme.labelSmall?.copyWith(
                                   fontSize: 11,
                                   fontWeight: FontWeight.w600,
@@ -2058,6 +2077,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
             _isNewConversationMode = false;
             _selectedSessionId = session.id;
             _activeChatProject = matchedProj;
+            _expandedProjects.add(session.projectName);
           });
           if (session.steps.isEmpty) {
             _loadFullSessionDetail(session.id);

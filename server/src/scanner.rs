@@ -924,6 +924,15 @@ pub fn scan_all_sessions(
     }
 
     let db_meta_map = load_conversation_summary_meta();
+    let mut child_subagent_ids: HashSet<String> = HashSet::new();
+
+    // 1. Nhận diện trước toàn bộ subagents từ database meta để không chiếm slot của top-level conversations
+    for (id, m) in &db_meta_map {
+        if !m.parent_id.is_empty() {
+            child_subagent_ids.insert(id.clone());
+        }
+    }
+
     let mut entries: Vec<(String, DateTime<Utc>)> = Vec::new();
 
     if let Ok(read_dir) = fs::read_dir(brain_dir) {
@@ -950,22 +959,27 @@ pub fn scan_all_sessions(
     }
 
     entries.sort_by(|a, b| b.1.cmp(&a.1));
-    let selected: Vec<(String, DateTime<Utc>)> = entries.into_iter().take(max_sessions).collect();
+
+    // Lọc ra các conversation top-level (loại bỏ child subagents ngay từ đầu)
+    let mut top_level_entries: Vec<(String, DateTime<Utc>)> = Vec::new();
+    for (id, modified) in entries {
+        if child_subagent_ids.contains(&id) {
+            continue;
+        }
+        top_level_entries.push((id, modified));
+    }
+
+    let selected: Vec<(String, DateTime<Utc>)> =
+        top_level_entries.into_iter().take(max_sessions).collect();
 
     let target_active = active_id
         .map(|s| s.to_string())
         .or_else(|| selected.first().map(|(id, _)| id.clone()));
 
-    let mut child_subagent_ids: HashSet<String> = HashSet::new();
     let mut raw_sessions: HashMap<String, ParsedTranscript> = HashMap::new();
 
     for (id, modified) in &selected {
         let meta = db_meta_map.get(id);
-        if let Some(m) = meta {
-            if !m.parent_id.is_empty() {
-                child_subagent_ids.insert(id.clone());
-            }
-        }
         if let Some(parsed) = parse_transcript_file(id, *modified, meta) {
             for s in &parsed.spawned_subagents {
                 if !s.id.is_empty() {
