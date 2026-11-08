@@ -49,6 +49,7 @@ struct DbConversationMeta {
     #[allow(dead_code)]
     pub status: String,
     pub parent_id: String,
+    pub agent_name: String,
 }
 
 #[derive(Debug, Clone)]
@@ -422,7 +423,7 @@ fn load_conversation_summary_meta() -> HashMap<String, DbConversationMeta> {
     };
 
     let mut stmt = match conn.prepare(
-        "SELECT conversation_id, COALESCE(title, ''), COALESCE(workspace_uris, '[]'), COALESCE(status, ''), COALESCE(parent_conversation_id, '') FROM conversation_summaries",
+        "SELECT conversation_id, COALESCE(title, ''), COALESCE(workspace_uris, '[]'), COALESCE(status, ''), COALESCE(parent_conversation_id, ''), COALESCE(agent_name, '') FROM conversation_summaries",
     ) {
         Ok(s) => s,
         Err(_) => return map,
@@ -434,12 +435,13 @@ fn load_conversation_summary_meta() -> HashMap<String, DbConversationMeta> {
         let uris_raw: String = row.get(2)?;
         let status: String = row.get(3)?;
         let parent_id: String = row.get(4)?;
-        Ok((id, title, uris_raw, status, parent_id))
+        let agent_name: String = row.get(5)?;
+        Ok((id, title, uris_raw, status, parent_id, agent_name))
     });
 
     if let Ok(iter) = rows {
         for item in iter.flatten() {
-            let (id, title, uris_raw, status, parent_id) = item;
+            let (id, title, uris_raw, status, parent_id, agent_name) = item;
             let (project_name, project_path) = resolve_project_from_workspace_uris(&uris_raw);
             map.insert(
                 id,
@@ -449,6 +451,7 @@ fn load_conversation_summary_meta() -> HashMap<String, DbConversationMeta> {
                     project_path,
                     status,
                     parent_id: parent_id.trim().to_string(),
+                    agent_name: agent_name.trim().to_string(),
                 },
             );
         }
@@ -926,10 +929,42 @@ pub fn scan_all_sessions(
     let db_meta_map = load_conversation_summary_meta();
     let mut child_subagent_ids: HashSet<String> = HashSet::new();
 
-    // 1. Nhận diện trước toàn bộ subagents từ database meta để không chiếm slot của top-level conversations
+    // 1. Nhận diện trước toàn bộ subagents từ database meta: nếu có parent_id hoặc agent_name != "" (và != "Coordinator")
     for (id, m) in &db_meta_map {
-        if !m.parent_id.is_empty() {
+        if !m.parent_id.is_empty()
+            || (!m.agent_name.is_empty()
+                && m.agent_name != "Coordinator"
+                && m.agent_name != "user")
+        {
             child_subagent_ids.insert(id.clone());
+        }
+    }
+
+    // 2. Quét nhanh transcript để bổ sung các subagent ID được spawn trong phiên làm việc
+    let conv_id_re = Regex::new(r#""conversationId"\s*:\s*"([^"]+)""#).ok();
+    if let Ok(read_dir) = fs::read_dir(brain_dir) {
+        for entry in read_dir.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                let transcript_path = path.join(".system_generated/logs/transcript.jsonl");
+                if let Ok(file) = fs::File::open(&transcript_path) {
+                    use std::io::{BufRead, BufReader};
+                    let reader = BufReader::new(file);
+                    for line_res in reader.lines() {
+                        if let Ok(line) = line_res {
+                            if line.contains("Created the following subagent:") || line.contains("invoke_subagent") {
+                                if let Some(ref re) = conv_id_re {
+                                    if let Some(caps) = re.captures(&line) {
+                                        if let Some(m) = caps.get(1) {
+                                            child_subagent_ids.insert(m.as_str().to_string());
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 

@@ -41,11 +41,12 @@ class _ParallelAgentFlowScreenState extends State<ParallelAgentFlowScreen>
   ConversationSession? _session;
   ChatTurnStreamState? _activeStream;
   List<SubagentLane> _lanes = [];
+  String _dialogueFilter = 'all';
 
   @override
   void initState() {
     super.initState();
-    _tabController = TabController(length: 3, vsync: this);
+    _tabController = TabController(length: 4, vsync: this);
     _pulseController = AnimationController(
       vsync: this,
       duration: const Duration(milliseconds: 1400),
@@ -269,6 +270,10 @@ class _ParallelAgentFlowScreenState extends State<ParallelAgentFlowScreen>
               text: 'Lanes Chi Tiết',
             ),
             Tab(
+              icon: Icon(Icons.forum_outlined, size: 18),
+              text: 'Hội Thoại Agent',
+            ),
+            Tab(
               icon: Icon(Icons.fact_check_outlined, size: 18),
               text: 'Đối Soát Hợp Đồng',
             ),
@@ -284,7 +289,10 @@ class _ParallelAgentFlowScreenState extends State<ParallelAgentFlowScreen>
           // Tab 2: Swimlanes chi tiết từng Subagent (Clickable xem chi tiết)
           _buildSwimlanesTab(context, isMobile, isRunning, lanes),
 
-          // Tab 3: Bảng đối soát hợp đồng (Contract Verifier)
+          // Tab 3: Hội thoại & Trao đổi giữa các Agent (Coordinator ↔ Subagents)
+          _buildInterAgentDialogueTab(context, isMobile, isRunning, lanes),
+
+          // Tab 4: Bảng đối soát hợp đồng (Contract Verifier)
           _buildContractVerifierTab(context, isMobile, isRunning),
         ],
       ),
@@ -1805,7 +1813,1013 @@ class _ParallelAgentFlowScreenState extends State<ParallelAgentFlowScreen>
     );
   }
 
-  /// [TAB 3] BẢNG ĐỐI SOÁT HỢP ĐỒNG (CONTRACT VERIFIER CHECKLIST)
+  /// [TAB 3] HỘI THOẠI AGENT & TIẾN TRÌNH SUBAGENTS (INTER-AGENT DIALOGUES)
+  Widget _buildInterAgentDialogueTab(
+    BuildContext context,
+    bool isMobile,
+    bool isRunning,
+    List<SubagentLane> lanes,
+  ) {
+    final colorScheme = Theme.of(context).colorScheme;
+    final textTheme = Theme.of(context).textTheme;
+    final session = _session ?? widget.session;
+
+    final dialogues = _extractInterAgentDialogues(session, lanes);
+    final runningLanes = lanes.where((l) => l.status == AgentStatus.running).toList();
+
+    // Lọc danh sách theo filter hiện tại
+    final filteredDialogues = dialogues.where((item) {
+      if (_dialogueFilter == 'all') return true;
+      if (_dialogueFilter == 'running') return item.status == AgentStatus.running;
+      if (_dialogueFilter == 'dispatch') return item.type == 'dispatch';
+      if (_dialogueFilter == 'report') return item.type == 'report';
+      if (_dialogueFilter == 'message') return item.type == 'message';
+      return item.sender == _dialogueFilter || item.receiver == _dialogueFilter;
+    }).toList();
+
+    // Danh sách các agent có mặt để tạo filter chips
+    final agentNames = <String>{'Coordinator'};
+    for (final l in lanes) {
+      if (l.name.isNotEmpty) agentNames.add(l.name);
+    }
+
+    return ListView(
+      padding: EdgeInsets.all(isMobile ? 12 : 20),
+      children: [
+        Center(
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 960),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                // 1. Khối Giám Sát Subagents Đang Chạy (Running Subagents Overview)
+                _buildRunningSubagentsCard(context, isMobile, runningLanes),
+
+                const SizedBox(height: 16),
+
+                // 2. Thanh Filter Chips
+                SingleChildScrollView(
+                  scrollDirection: Axis.horizontal,
+                  child: Row(
+                    children: [
+                      _buildDialogueFilterChip('all', 'Tất cả (${dialogues.length})', Icons.filter_list_rounded),
+                      const SizedBox(width: 8),
+                      if (runningLanes.isNotEmpty) ...[
+                        _buildDialogueFilterChip('running', 'Đang chạy (${runningLanes.length})', Icons.directions_run_rounded, isOrange: true),
+                        const SizedBox(width: 8),
+                      ],
+                      _buildDialogueFilterChip('dispatch', 'Giao việc (${dialogues.where((d) => d.type == 'dispatch').length})', Icons.assignment_outlined),
+                      const SizedBox(width: 8),
+                      _buildDialogueFilterChip('report', 'Báo cáo (${dialogues.where((d) => d.type == 'report').length})', Icons.assignment_turned_in_outlined),
+                      const SizedBox(width: 8),
+                      _buildDialogueFilterChip('message', 'Trao đổi (${dialogues.where((d) => d.type == 'message').length})', Icons.chat_bubble_outline_rounded),
+                      const SizedBox(width: 8),
+                      for (final name in agentNames) ...[
+                        _buildDialogueFilterChip(name, name, Icons.person_outline_rounded),
+                        const SizedBox(width: 8),
+                      ],
+                    ],
+                  ),
+                ),
+
+                const SizedBox(height: 16),
+
+                // 3. Danh sách Hội thoại hoặc Trạng thái trống
+                if (filteredDialogues.isEmpty)
+                  Container(
+                    padding: const EdgeInsets.symmetric(vertical: 40, horizontal: 20),
+                    alignment: Alignment.center,
+                    decoration: BoxDecoration(
+                      color: colorScheme.surfaceContainerHigh,
+                      borderRadius: BorderRadius.circular(16),
+                      border: Border.all(color: colorScheme.outlineVariant),
+                    ),
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(
+                          Icons.forum_outlined,
+                          size: 48,
+                          color: colorScheme.onSurfaceVariant.withAlpha(120),
+                        ),
+                        const SizedBox(height: 12),
+                        Text(
+                          _dialogueFilter == 'all'
+                              ? 'Chưa có thông điệp trao đổi giữa các Agent'
+                              : 'Không tìm thấy thông điệp cho bộ lọc này',
+                          style: textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w700),
+                        ),
+                        const SizedBox(height: 6),
+                        Text(
+                          'Khi Coordinator điều phối Subagent song song, các lượt giao task, báo cáo và trao đổi sẽ xuất hiện tại đây theo thời gian thực.',
+                          textAlign: TextAlign.center,
+                          style: textTheme.bodySmall?.copyWith(color: colorScheme.onSurfaceVariant),
+                        ),
+                      ],
+                    ),
+                  )
+                else
+                  for (final item in filteredDialogues) ...[
+                    _buildDialogueCard(context, isMobile, item),
+                    const SizedBox(height: 12),
+                  ],
+              ],
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  /// Khối giám sát các Subagents đang chạy trực tiếp
+  Widget _buildRunningSubagentsCard(
+    BuildContext context,
+    bool isMobile,
+    List<SubagentLane> runningLanes,
+  ) {
+    final colorScheme = Theme.of(context).colorScheme;
+    final textTheme = Theme.of(context).textTheme;
+
+    if (runningLanes.isEmpty) {
+      return Container(
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+        decoration: BoxDecoration(
+          color: Colors.teal.withAlpha(18),
+          borderRadius: BorderRadius.circular(14),
+          border: Border.all(color: Colors.teal.withAlpha(80)),
+        ),
+        child: Row(
+          children: [
+            const Icon(Icons.check_circle_rounded, color: Colors.teal, size: 20),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    'Subagents ở chế độ Chờ / Đã hoàn thành',
+                    style: textTheme.labelLarge?.copyWith(
+                      fontWeight: FontWeight.w700,
+                      color: Colors.teal,
+                    ),
+                  ),
+                  Text(
+                    'Hiện tại không có subagent song song nào đang chạy. Các tác vụ đã đồng bộ ổn định.',
+                    style: textTheme.bodySmall?.copyWith(
+                      color: colorScheme.onSurfaceVariant,
+                      fontSize: 11,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      );
+    }
+
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: Colors.orange.withAlpha(20),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: Colors.orange.withAlpha(130), width: 1.5),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              AnimatedBuilder(
+                animation: _pulseController,
+                builder: (context, _) {
+                  return Container(
+                    width: 10,
+                    height: 10,
+                    decoration: BoxDecoration(
+                      color: Colors.orange,
+                      shape: BoxShape.circle,
+                      boxShadow: [
+                        BoxShadow(
+                          color: Colors.orange.withAlpha((140 * _pulseController.value).toInt()),
+                          blurRadius: 6,
+                          spreadRadius: 2,
+                        ),
+                      ],
+                    ),
+                  );
+                },
+              ),
+              const SizedBox(width: 10),
+              Text(
+                '${runningLanes.length} Subagent đang chạy song song',
+                style: textTheme.titleSmall?.copyWith(
+                  fontWeight: FontWeight.w800,
+                  color: Colors.orange,
+                ),
+              ),
+              const Spacer(),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                decoration: BoxDecoration(
+                  color: Colors.orange.withAlpha(40),
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(color: Colors.orange.withAlpha(160)),
+                ),
+                child: const Text(
+                  'REALTIME EXECUTING',
+                  style: TextStyle(
+                    fontSize: 9.5,
+                    fontWeight: FontWeight.w900,
+                    letterSpacing: 0.5,
+                    color: Colors.orange,
+                  ),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          Column(
+            children: runningLanes.map((lane) {
+              return Container(
+                margin: const EdgeInsets.only(bottom: 8),
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: colorScheme.surfaceContainerHigh,
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(color: Colors.orange.withAlpha(90)),
+                ),
+                child: Row(
+                  children: [
+                    _buildAgentAvatar(lane.name, size: 28),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Row(
+                            children: [
+                              Text(
+                                lane.name,
+                                style: textTheme.labelLarge?.copyWith(fontWeight: FontWeight.w800),
+                              ),
+                              const SizedBox(width: 6),
+                              Container(
+                                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
+                                decoration: BoxDecoration(
+                                  color: colorScheme.surfaceContainerHighest,
+                                  borderRadius: BorderRadius.circular(4),
+                                ),
+                                child: Text(
+                                  lane.targetRepo,
+                                  style: const TextStyle(fontSize: 10, fontWeight: FontWeight.w600),
+                                ),
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 2),
+                          Text(
+                            lane.currentActionText.isNotEmpty
+                                ? lane.currentActionText
+                                : 'Đang xử lý công cụ: ${lane.currentToolName}',
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: textTheme.bodySmall?.copyWith(
+                              color: colorScheme.onSurfaceVariant,
+                              fontSize: 11,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    OutlinedButton.icon(
+                      style: OutlinedButton.styleFrom(
+                        visualDensity: VisualDensity.compact,
+                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                        side: BorderSide(color: Colors.orange.withAlpha(150)),
+                      ),
+                      onPressed: () => _showAgentDetailModal(context, lane),
+                      icon: const Icon(Icons.tune_rounded, size: 14, color: Colors.orange),
+                      label: const Text('Xem Lane', style: TextStyle(fontSize: 11, color: Colors.orange)),
+                    ),
+                  ],
+                ),
+              );
+            }).toList(),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// Chip bộ lọc loại trao đổi
+  Widget _buildDialogueFilterChip(
+    String filterKey,
+    String label,
+    IconData icon, {
+    bool isOrange = false,
+  }) {
+    final colorScheme = Theme.of(context).colorScheme;
+    final isSelected = _dialogueFilter == filterKey;
+
+    return FilterChip(
+      selected: isSelected,
+      showCheckmark: false,
+      avatar: Icon(
+        icon,
+        size: 14,
+        color: isSelected
+            ? (isOrange ? Colors.orange : colorScheme.primary)
+            : colorScheme.onSurfaceVariant,
+      ),
+      label: Text(
+        label,
+        style: TextStyle(
+          fontSize: 12,
+          fontWeight: isSelected ? FontWeight.w700 : FontWeight.w500,
+          color: isSelected
+              ? (isOrange ? Colors.orange : colorScheme.primary)
+              : colorScheme.onSurfaceVariant,
+        ),
+      ),
+      backgroundColor: colorScheme.surfaceContainer,
+      selectedColor: (isOrange ? Colors.orange : colorScheme.primary).withAlpha(35),
+      side: BorderSide(
+        color: isSelected
+            ? (isOrange ? Colors.orange : colorScheme.primary)
+            : colorScheme.outlineVariant,
+      ),
+      onSelected: (_) {
+        setState(() {
+          _dialogueFilter = filterKey;
+        });
+      },
+    );
+  }
+
+  /// Thẻ hiển thị một cuộc trao đổi / chỉ đạo / báo cáo
+  Widget _buildDialogueCard(
+    BuildContext context,
+    bool isMobile,
+    _InterAgentDialogueItem item,
+  ) {
+    final colorScheme = Theme.of(context).colorScheme;
+    final textTheme = Theme.of(context).textTheme;
+
+    Color badgeColor;
+    String badgeText;
+    IconData typeIcon;
+    switch (item.type) {
+      case 'dispatch':
+        badgeColor = Colors.deepPurpleAccent;
+        badgeText = 'GIAO VIỆC';
+        typeIcon = Icons.assignment_outlined;
+        break;
+      case 'report':
+        badgeColor = Colors.teal;
+        badgeText = 'BÁO CÁO';
+        typeIcon = Icons.assignment_turned_in_outlined;
+        break;
+      case 'message':
+        badgeColor = Colors.blueAccent;
+        badgeText = 'TRAO ĐỔI';
+        typeIcon = Icons.chat_bubble_outline_rounded;
+        break;
+      case 'action':
+      default:
+        badgeColor = Colors.orange;
+        badgeText = 'ĐANG XỬ LÝ';
+        typeIcon = Icons.bolt_rounded;
+        break;
+    }
+
+    final timeStr =
+        '${item.timestamp.hour.toString().padLeft(2, '0')}:${item.timestamp.minute.toString().padLeft(2, '0')}:${item.timestamp.second.toString().padLeft(2, '0')}';
+
+    return Card(
+      elevation: 0,
+      color: colorScheme.surfaceContainerHigh,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(14),
+        side: BorderSide(
+          color: item.status == AgentStatus.running
+              ? Colors.orange.withAlpha(140)
+              : colorScheme.outlineVariant,
+          width: item.status == AgentStatus.running ? 1.5 : 1.0,
+        ),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.all(14),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            // Row Tiêu đề & Hướng trao đổi
+            Row(
+              children: [
+                _buildAgentAvatar(item.sender, size: 24),
+                const SizedBox(width: 6),
+                Text(
+                  item.sender,
+                  style: textTheme.labelMedium?.copyWith(
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+                const SizedBox(width: 6),
+                Icon(
+                  Icons.arrow_forward_rounded,
+                  size: 14,
+                  color: colorScheme.onSurfaceVariant,
+                ),
+                const SizedBox(width: 6),
+                _buildAgentAvatar(item.receiver, size: 24),
+                const SizedBox(width: 6),
+                Flexible(
+                  child: Text(
+                    item.receiver,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: textTheme.labelMedium?.copyWith(
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                ),
+                const Spacer(),
+                // Badge Loại hội thoại
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2.5),
+                  decoration: BoxDecoration(
+                    color: badgeColor.withAlpha(30),
+                    borderRadius: BorderRadius.circular(6),
+                    border: Border.all(color: badgeColor.withAlpha(120)),
+                  ),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(typeIcon, size: 11, color: badgeColor),
+                      const SizedBox(width: 4),
+                      Text(
+                        badgeText,
+                        style: TextStyle(
+                          fontSize: 9.5,
+                          fontWeight: FontWeight.w800,
+                          color: badgeColor,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Text(
+                  timeStr,
+                  style: textTheme.labelSmall?.copyWith(
+                    fontSize: 10,
+                    color: colorScheme.onSurfaceVariant,
+                  ),
+                ),
+              ],
+            ),
+
+            const SizedBox(height: 10),
+
+            // Tiêu đề nội dung trao đổi
+            Text(
+              item.title,
+              style: textTheme.titleSmall?.copyWith(
+                fontWeight: FontWeight.w700,
+                letterSpacing: -0.1,
+              ),
+            ),
+
+            const SizedBox(height: 6),
+
+            // Hộp nội dung trao đổi (Prompt / Tin nhắn / Báo cáo)
+            Container(
+              padding: const EdgeInsets.all(10),
+              decoration: BoxDecoration(
+                color: colorScheme.surfaceContainer,
+                borderRadius: BorderRadius.circular(10),
+                border: Border.all(color: colorScheme.outlineVariant.withAlpha(80)),
+              ),
+              child: Text(
+                item.content.trim(),
+                maxLines: 4,
+                overflow: TextOverflow.ellipsis,
+                style: textTheme.bodySmall?.copyWith(
+                  fontFamily: item.toolArgs != null ? 'monospace' : null,
+                  fontSize: 11.5,
+                  height: 1.4,
+                  color: colorScheme.onSurface,
+                ),
+              ),
+            ),
+
+            // Tool Call Args preview (nếu có)
+            if (item.toolName != null) ...[
+              const SizedBox(height: 8),
+              Row(
+                children: [
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                    decoration: BoxDecoration(
+                      color: colorScheme.surfaceContainerHighest,
+                      borderRadius: BorderRadius.circular(4),
+                    ),
+                    child: Text(
+                      item.toolName!,
+                      style: const TextStyle(
+                        fontFamily: 'monospace',
+                        fontSize: 10,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                  ),
+                  if (item.targetRepo != null && item.targetRepo!.isNotEmpty) ...[
+                    const SizedBox(width: 6),
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                      decoration: BoxDecoration(
+                        color: Colors.blueAccent.withAlpha(25),
+                        borderRadius: BorderRadius.circular(4),
+                      ),
+                      child: Text(
+                        item.targetRepo!,
+                        style: const TextStyle(
+                          fontSize: 10,
+                          fontWeight: FontWeight.w600,
+                          color: Colors.blueAccent,
+                        ),
+                      ),
+                    ),
+                  ],
+                ],
+              ),
+            ],
+
+            const SizedBox(height: 10),
+
+            // Action footer
+            Row(
+              mainAxisAlignment: MainAxisAlignment.end,
+              children: [
+                if (item.lane != null) ...[
+                  TextButton.icon(
+                    style: TextButton.styleFrom(
+                      visualDensity: VisualDensity.compact,
+                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                    ),
+                    onPressed: () => _showAgentDetailModal(context, item.lane!),
+                    icon: const Icon(Icons.tune_rounded, size: 14),
+                    label: const Text('Xem Lane tác vụ', style: TextStyle(fontSize: 11)),
+                  ),
+                  const SizedBox(width: 8),
+                ],
+                FilledButton.tonalIcon(
+                  style: FilledButton.styleFrom(
+                    visualDensity: VisualDensity.compact,
+                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                  ),
+                  onPressed: () => _showDialogueDetailModal(context, item),
+                  icon: const Icon(Icons.fullscreen_rounded, size: 14),
+                  label: const Text('Chi tiết trao đổi', style: TextStyle(fontSize: 11)),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// Modal xem toàn bộ thông điệp trao đổi giữa các Agent
+  void _showDialogueDetailModal(BuildContext context, _InterAgentDialogueItem item) {
+    showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (ctx) {
+        final colorScheme = Theme.of(ctx).colorScheme;
+        final textTheme = Theme.of(ctx).textTheme;
+
+        final timeStr =
+            '${item.timestamp.hour.toString().padLeft(2, '0')}:${item.timestamp.minute.toString().padLeft(2, '0')}:${item.timestamp.second.toString().padLeft(2, '0')}';
+
+        return DraggableScrollableSheet(
+          initialChildSize: 0.75,
+          minChildSize: 0.45,
+          maxChildSize: 0.95,
+          builder: (_, scrollController) {
+            return Container(
+              decoration: BoxDecoration(
+                color: colorScheme.surfaceContainerLow,
+                borderRadius: const BorderRadius.vertical(top: Radius.circular(20)),
+              ),
+              child: Column(
+                children: [
+                  // Handle
+                  Container(
+                    margin: const EdgeInsets.only(top: 10, bottom: 6),
+                    width: 36,
+                    height: 4,
+                    decoration: BoxDecoration(
+                      color: colorScheme.outlineVariant,
+                      borderRadius: BorderRadius.circular(2),
+                    ),
+                  ),
+
+                  // Header
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(16, 6, 16, 12),
+                    child: Row(
+                      children: [
+                        _buildAgentAvatar(item.sender, size: 28),
+                        const SizedBox(width: 8),
+                        Text(
+                          item.sender,
+                          style: textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w700),
+                        ),
+                        const SizedBox(width: 8),
+                        const Icon(Icons.arrow_forward_rounded, size: 16),
+                        const SizedBox(width: 8),
+                        _buildAgentAvatar(item.receiver, size: 28),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: Text(
+                            item.receiver,
+                            style: textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w700),
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ),
+                        IconButton(
+                          icon: const Icon(Icons.close_rounded, size: 20),
+                          onPressed: () => Navigator.of(ctx).pop(),
+                        ),
+                      ],
+                    ),
+                  ),
+
+                  const Divider(height: 1),
+
+                  // Body
+                  Expanded(
+                    child: ListView(
+                      controller: scrollController,
+                      padding: const EdgeInsets.all(16),
+                      children: [
+                        // Meta Box
+                        Container(
+                          padding: const EdgeInsets.all(12),
+                          decoration: BoxDecoration(
+                            color: colorScheme.surfaceContainerHigh,
+                            borderRadius: BorderRadius.circular(12),
+                          ),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                item.title,
+                                style: textTheme.titleMedium?.copyWith(
+                                  fontWeight: FontWeight.w700,
+                                ),
+                              ),
+                              const SizedBox(height: 6),
+                              Row(
+                                children: [
+                                  Icon(Icons.access_time_rounded, size: 14, color: colorScheme.onSurfaceVariant),
+                                  const SizedBox(width: 4),
+                                  Text(
+                                    'Thời gian: $timeStr',
+                                    style: textTheme.labelSmall?.copyWith(color: colorScheme.onSurfaceVariant),
+                                  ),
+                                  if (item.stepIndex != null) ...[
+                                    const SizedBox(width: 12),
+                                    Text(
+                                      'Bước: #${item.stepIndex}',
+                                      style: textTheme.labelSmall?.copyWith(color: colorScheme.onSurfaceVariant),
+                                    ),
+                                  ],
+                                ],
+                              ),
+                            ],
+                          ),
+                        ),
+
+                        const SizedBox(height: 14),
+
+                        // Nội dung chi tiết
+                        Text(
+                          'Nội dung trao đổi / Chỉ thị:',
+                          style: textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w700),
+                        ),
+                        const SizedBox(height: 8),
+                        Container(
+                          padding: const EdgeInsets.all(14),
+                          decoration: BoxDecoration(
+                            color: colorScheme.surfaceContainer,
+                            borderRadius: BorderRadius.circular(12),
+                            border: Border.all(color: colorScheme.outlineVariant),
+                          ),
+                          child: SelectableText(
+                            item.content.trim(),
+                            style: textTheme.bodyMedium?.copyWith(
+                              height: 1.45,
+                              fontFamily: item.toolArgs != null ? 'monospace' : null,
+                            ),
+                          ),
+                        ),
+
+                        // Tool args nếu có
+                        if (item.toolArgs != null && item.toolArgs!.isNotEmpty) ...[
+                          const SizedBox(height: 14),
+                          Text(
+                            'Tham số công cụ (${item.toolName ?? "tool_call"}):',
+                            style: textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w700),
+                          ),
+                          const SizedBox(height: 8),
+                          Container(
+                            padding: const EdgeInsets.all(12),
+                            decoration: BoxDecoration(
+                              color: colorScheme.surfaceContainerHighest.withAlpha(120),
+                              borderRadius: BorderRadius.circular(10),
+                            ),
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: item.toolArgs!.entries.map((entry) {
+                                return Padding(
+                                  padding: const EdgeInsets.symmetric(vertical: 3),
+                                  child: Row(
+                                    crossAxisAlignment: CrossAxisAlignment.start,
+                                    children: [
+                                      Text(
+                                        '${entry.key}: ',
+                                        style: const TextStyle(
+                                          fontFamily: 'monospace',
+                                          fontSize: 11,
+                                          fontWeight: FontWeight.w700,
+                                        ),
+                                      ),
+                                      Expanded(
+                                        child: SelectableText(
+                                          '${entry.value}',
+                                          style: const TextStyle(
+                                            fontFamily: 'monospace',
+                                            fontSize: 11,
+                                          ),
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                );
+                              }).toList(),
+                            ),
+                          ),
+                        ],
+
+                        if (item.lane != null) ...[
+                          const SizedBox(height: 20),
+                          FilledButton.icon(
+                            onPressed: () {
+                              Navigator.of(ctx).pop();
+                              _showAgentDetailModal(context, item.lane!);
+                            },
+                            icon: const Icon(Icons.tune_rounded, size: 16),
+                            label: Text('Mở toàn bộ Lane của ${item.lane!.name}'),
+                          ),
+                        ],
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            );
+          },
+        );
+      },
+    );
+  }
+
+  /// Trích xuất danh sách các tương tác trao đổi giữa các Agent
+  List<_InterAgentDialogueItem> _extractInterAgentDialogues(
+    ConversationSession? session,
+    List<SubagentLane> lanes,
+  ) {
+    final items = <_InterAgentDialogueItem>[];
+    final seenIds = <String>{};
+
+    // 1. Quét các steps của Coordinator / parent session
+    final steps = session?.steps ?? const <AgentStep>[];
+    for (final step in steps) {
+      // 1.1 Kiểm tra toolCalls invoke_subagent & send_message
+      for (final tc in step.toolCalls) {
+        if (tc.name == 'invoke_subagent') {
+          final role = tc.args['Role']?.toString() ?? 'Subagent Worker';
+          final typeName = tc.args['TypeName']?.toString() ?? '';
+          final prompt = tc.args['Prompt']?.toString() ?? '';
+          final receiverName = typeName.isNotEmpty ? typeName : role;
+
+          final lane = lanes.cast<SubagentLane?>().firstWhere(
+                (l) => l?.name == receiverName || l?.role == role,
+                orElse: () => null,
+              );
+
+          final id = 'dispatch_${step.stepIndex}_${tc.name}';
+          if (seenIds.add(id)) {
+            items.add(_InterAgentDialogueItem(
+              id: id,
+              sender: 'Coordinator',
+              receiver: receiverName,
+              type: 'dispatch',
+              title: 'Coordinator giao nhiệm vụ cho $receiverName',
+              content: prompt,
+              timestamp: step.createdAt,
+              status: lane?.status ?? AgentStatus.completed,
+              toolName: 'invoke_subagent',
+              toolArgs: tc.args,
+              targetRepo: lane?.targetRepo,
+              lane: lane,
+              stepIndex: step.stepIndex,
+            ));
+          }
+        } else if (tc.name == 'send_message') {
+          final recipient = tc.args['Recipient']?.toString() ?? 'Subagent';
+          final message = tc.args['Message']?.toString() ?? '';
+          final sender = step.agentName.isNotEmpty ? step.agentName : 'Coordinator';
+
+          final id = 'msg_${step.stepIndex}_${tc.name}';
+          if (seenIds.add(id)) {
+            items.add(_InterAgentDialogueItem(
+              id: id,
+              sender: sender,
+              receiver: recipient,
+              type: 'message',
+              title: '$sender trao đổi với $recipient',
+              content: message,
+              timestamp: step.createdAt,
+              status: AgentStatus.completed,
+              toolName: 'send_message',
+              toolArgs: tc.args,
+              stepIndex: step.stepIndex,
+            ));
+          }
+        }
+      }
+
+      // 1.2 Báo cáo từ subagent qua SYSTEM_MESSAGE
+      if (step.content.contains('<SYSTEM_MESSAGE>') && step.content.contains('sender=')) {
+        final senderMatch = RegExp(r'sender=([a-zA-Z0-9_-]+)').firstMatch(step.content);
+        final rawSender = senderMatch?.group(1) ?? 'Subagent';
+        final matchedLane = lanes.cast<SubagentLane?>().firstWhere(
+              (l) => l?.id == rawSender || l?.name == rawSender,
+              orElse: () => null,
+            );
+        final senderName = matchedLane?.name ?? rawSender;
+
+        var messageBody = step.content;
+        const startTag = '<SYSTEM_MESSAGE>';
+        const endTag = '</SYSTEM_MESSAGE>';
+        final sIdx = messageBody.indexOf(startTag);
+        final eIdx = messageBody.indexOf(endTag);
+        if (sIdx != -1 && eIdx != -1 && eIdx > sIdx) {
+          messageBody = messageBody.substring(sIdx + startTag.length, eIdx).trim();
+        }
+
+        final id = 'report_${step.stepIndex}';
+        if (seenIds.add(id)) {
+          items.add(_InterAgentDialogueItem(
+            id: id,
+            sender: senderName,
+            receiver: 'Coordinator',
+            type: 'report',
+            title: '$senderName báo cáo tiến độ/kết quả',
+            content: messageBody,
+            timestamp: step.createdAt,
+            status: matchedLane?.status ?? AgentStatus.completed,
+            targetRepo: matchedLane?.targetRepo,
+            lane: matchedLane,
+            stepIndex: step.stepIndex,
+          ));
+        }
+      }
+    }
+
+    // 2. Quét từ danh sách lanes (Bổ sung nhiệm vụ nếu session steps chưa tải hết do phân trang)
+    for (final lane in lanes) {
+      if (lane.name == 'Coordinator') continue;
+
+      final hasDispatch = items.any((it) => it.type == 'dispatch' && (it.receiver == lane.name || it.receiver == lane.role));
+      if (!hasDispatch && (lane.promptBrief.isNotEmpty || lane.role.isNotEmpty)) {
+        final id = 'lane_prompt_${lane.id}_${lane.name}';
+        if (seenIds.add(id)) {
+          items.add(_InterAgentDialogueItem(
+            id: id,
+            sender: 'Coordinator',
+            receiver: lane.name,
+            type: 'dispatch',
+            title: 'Chỉ đạo phân bổ nhiệm vụ: ${lane.role.isNotEmpty ? lane.role : lane.name}',
+            content: lane.promptBrief.isNotEmpty
+                ? lane.promptBrief
+                : 'Thực thi mã nguồn repo ${lane.targetRepo} theo kiến trúc song song.',
+            timestamp: lane.lastUpdated ?? DateTime.now(),
+            status: lane.status,
+            targetRepo: lane.targetRepo,
+            lane: lane,
+          ));
+        }
+      }
+
+      // Các bước gửi tin nhắn trong lane.steps
+      for (final s in lane.steps) {
+        if (s.toolCalls.any((t) => t.name == 'send_message')) {
+          for (final tc in s.toolCalls.where((t) => t.name == 'send_message')) {
+            final id = 'subagent_msg_${s.stepIndex}_${lane.id}';
+            if (seenIds.add(id)) {
+              items.add(_InterAgentDialogueItem(
+                id: id,
+                sender: lane.name,
+                receiver: tc.args['Recipient']?.toString() ?? 'Coordinator',
+                type: 'message',
+                title: '${lane.name} gửi thông điệp',
+                content: tc.args['Message']?.toString() ?? '',
+                timestamp: s.createdAt,
+                status: lane.status,
+                toolName: 'send_message',
+                toolArgs: tc.args,
+                lane: lane,
+                stepIndex: s.stepIndex,
+              ));
+            }
+          }
+        }
+      }
+
+      // Nếu lane đang chạy, bổ sung live status action card
+      if (lane.status == AgentStatus.running) {
+        final id = 'running_action_${lane.id}';
+        if (seenIds.add(id)) {
+          items.add(_InterAgentDialogueItem(
+            id: id,
+            sender: lane.name,
+            receiver: 'Coordinator',
+            type: 'action',
+            title: '${lane.name} đang trực tiếp xử lý',
+            content: lane.currentActionText.isNotEmpty
+                ? lane.currentActionText
+                : 'Đang chạy công cụ ${lane.currentToolName}',
+            timestamp: lane.lastUpdated ?? DateTime.now(),
+            status: AgentStatus.running,
+            toolName: lane.currentToolName,
+            targetRepo: lane.targetRepo,
+            lane: lane,
+          ));
+        }
+      }
+    }
+
+    // Sắp xếp theo thời gian mới nhất lên đầu
+    items.sort((a, b) => b.timestamp.compareTo(a.timestamp));
+    return items;
+  }
+
+  /// Avatar đại diện cho từng loại Agent
+  Widget _buildAgentAvatar(String agentName, {double size = 24}) {
+    Color bg;
+    IconData icon;
+    final lower = agentName.toLowerCase();
+    if (lower.contains('coordinator')) {
+      bg = Colors.deepPurple;
+      icon = Icons.hub_rounded;
+    } else if (lower.contains('server')) {
+      bg = Colors.blue;
+      icon = Icons.dns_rounded;
+    } else if (lower.contains('app')) {
+      bg = Colors.teal;
+      icon = Icons.phone_android_rounded;
+    } else if (lower.contains('verifier')) {
+      bg = Colors.green;
+      icon = Icons.verified_user_rounded;
+    } else if (lower.contains('research')) {
+      bg = Colors.amber;
+      icon = Icons.travel_explore_rounded;
+    } else {
+      bg = Colors.indigo;
+      icon = Icons.smart_toy_rounded;
+    }
+    return Container(
+      width: size,
+      height: size,
+      decoration: BoxDecoration(
+        color: bg.withAlpha(40),
+        shape: BoxShape.circle,
+        border: Border.all(color: bg.withAlpha(120), width: 1),
+      ),
+      child: Center(
+        child: Icon(icon, size: size * 0.6, color: bg),
+      ),
+    );
+  }
+
+  /// [TAB 4] BẢNG ĐỐI SOÁT HỢP ĐỒNG (CONTRACT VERIFIER CHECKLIST)
   Widget _buildContractVerifierTab(
     BuildContext context,
     bool isMobile,
@@ -2061,4 +3075,37 @@ class _ParallelAgentFlowScreenState extends State<ParallelAgentFlowScreen>
       ),
     );
   }
+}
+
+/// DTO biểu diễn một lượt trao đổi, giao việc, báo cáo giữa các Agent
+class _InterAgentDialogueItem {
+  const _InterAgentDialogueItem({
+    required this.id,
+    required this.sender,
+    required this.receiver,
+    required this.type,
+    required this.title,
+    required this.content,
+    required this.timestamp,
+    this.status = AgentStatus.idle,
+    this.toolName,
+    this.toolArgs,
+    this.targetRepo,
+    this.lane,
+    this.stepIndex,
+  });
+
+  final String id;
+  final String sender;
+  final String receiver;
+  final String type; // 'dispatch', 'report', 'message', 'action'
+  final String title;
+  final String content;
+  final DateTime timestamp;
+  final AgentStatus status;
+  final String? toolName;
+  final Map<String, dynamic>? toolArgs;
+  final String? targetRepo;
+  final SubagentLane? lane;
+  final int? stepIndex;
 }
