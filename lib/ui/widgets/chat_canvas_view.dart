@@ -2357,68 +2357,104 @@ class _ChatCanvasViewState extends State<ChatCanvasView> {
                       // Danh sách các bước gần nhất của Agent này
                       if (lane.steps.isNotEmpty) ...[
                         const SizedBox(height: 18),
-                        Text(
-                          'Nhật ký các bước xử lý gần nhất (${lane.steps.length})',
-                          style: textTheme.titleSmall?.copyWith(
-                            fontWeight: FontWeight.w700,
-                          ),
-                        ),
-                        const SizedBox(height: 8),
-                        ...lane.steps.reversed.take(10).map((st) {
-                          return Container(
-                            margin: const EdgeInsets.only(bottom: 6),
-                            padding: const EdgeInsets.all(10),
-                            decoration: BoxDecoration(
-                              color: colorScheme.surfaceContainerHigh,
-                              borderRadius: BorderRadius.circular(8),
-                              border: Border.all(
-                                color: colorScheme.outlineVariant.withAlpha(60),
+                        Row(
+                          children: [
+                            Text(
+                              'Nhật ký các bước xử lý gần nhất (${lane.steps.length})',
+                              style: textTheme.titleSmall?.copyWith(
+                                fontWeight: FontWeight.w700,
                               ),
                             ),
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                Row(
-                                  children: [
-                                    Icon(
+                            const Spacer(),
+                            Text(
+                              '(Chạm để xem chi tiết)',
+                              style: textTheme.labelSmall?.copyWith(
+                                fontSize: 10,
+                                color: Colors.orange,
+                                fontStyle: FontStyle.italic,
+                              ),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 8),
+                        ...lane.steps.reversed.take(15).map((st) {
+                          return InkWell(
+                            borderRadius: BorderRadius.circular(8),
+                            onTap: () => _showStepDetailModal(context, st),
+                            child: Container(
+                              margin: const EdgeInsets.only(bottom: 6),
+                              padding: const EdgeInsets.all(10),
+                              decoration: BoxDecoration(
+                                color: colorScheme.surfaceContainerHigh,
+                                borderRadius: BorderRadius.circular(8),
+                                border: Border.all(
+                                  color: colorScheme.outlineVariant.withAlpha(60),
+                                ),
+                              ),
+                              child: Row(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Padding(
+                                    padding: const EdgeInsets.only(top: 2),
+                                    child: Icon(
                                       st.toolCalls.isNotEmpty
                                           ? Icons.build_circle_outlined
                                           : Icons.chat_bubble_outline_rounded,
                                       size: 14,
                                       color: Colors.orange,
                                     ),
-                                    const SizedBox(width: 6),
-                                    Text(
-                                      st.vietnameseTitle.isNotEmpty
-                                          ? st.vietnameseTitle
-                                          : (st.toolCalls.isNotEmpty
-                                              ? st.toolCalls.first.name
-                                              : st.type),
-                                      style: textTheme.labelMedium?.copyWith(
-                                        fontWeight: FontWeight.w700,
-                                      ),
-                                    ),
-                                    const Spacer(),
-                                    Text(
-                                      '#${st.stepIndex}',
-                                      style: TextStyle(
-                                        fontFamily: 'monospace',
-                                        fontSize: 10,
-                                        color: colorScheme.onSurfaceVariant,
-                                      ),
-                                    ),
-                                  ],
-                                ),
-                                if (st.vietnameseDetail.isNotEmpty) ...[
-                                  const SizedBox(height: 4),
-                                  Text(
-                                    st.vietnameseDetail,
-                                    style: textTheme.bodySmall?.copyWith(
-                                      color: colorScheme.onSurfaceVariant,
+                                  ),
+                                  const SizedBox(width: 8),
+                                  Expanded(
+                                    child: Column(
+                                      crossAxisAlignment: CrossAxisAlignment.start,
+                                      children: [
+                                        Row(
+                                          children: [
+                                            Expanded(
+                                              child: Text(
+                                                st.vietnameseTitle.isNotEmpty
+                                                    ? st.vietnameseTitle
+                                                    : (st.toolCalls.isNotEmpty
+                                                        ? st.toolCalls.first.name
+                                                        : st.type),
+                                                style: textTheme.labelMedium?.copyWith(
+                                                  fontWeight: FontWeight.w700,
+                                                ),
+                                              ),
+                                            ),
+                                            Text(
+                                              '#${st.stepIndex}',
+                                              style: TextStyle(
+                                                fontFamily: 'monospace',
+                                                fontSize: 10,
+                                                color: colorScheme.onSurfaceVariant,
+                                              ),
+                                            ),
+                                          ],
+                                        ),
+                                        if (st.vietnameseDetail.isNotEmpty) ...[
+                                          const SizedBox(height: 3),
+                                          Text(
+                                            st.vietnameseDetail,
+                                            maxLines: 2,
+                                            overflow: TextOverflow.ellipsis,
+                                            style: textTheme.bodySmall?.copyWith(
+                                              color: colorScheme.onSurfaceVariant,
+                                            ),
+                                          ),
+                                        ],
+                                      ],
                                     ),
                                   ),
+                                  const SizedBox(width: 6),
+                                  Icon(
+                                    Icons.chevron_right_rounded,
+                                    size: 16,
+                                    color: colorScheme.onSurfaceVariant.withAlpha(120),
+                                  ),
                                 ],
-                              ],
+                              ),
                             ),
                           );
                         }),
@@ -2668,6 +2704,126 @@ class _ChatCanvasViewState extends State<ChatCanvasView> {
                         ),
                         const SizedBox(height: 16),
                       ],
+
+                      // Danh sách các bước gần nhất của Coordinator
+                      () {
+                        final allSteps = session?.steps ?? const <AgentStep>[];
+                        final coordSteps = allSteps.where((s) => s.agentName == 'Coordinator').toList();
+                        final displaySteps = coordSteps.isNotEmpty ? coordSteps : allSteps;
+
+                        if (displaySteps.isEmpty) {
+                          return const SizedBox.shrink();
+                        }
+
+                        return Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Row(
+                              children: [
+                                Text(
+                                  'Nhật ký các bước xử lý gần nhất (${displaySteps.length})',
+                                  style: textTheme.titleSmall?.copyWith(
+                                    fontWeight: FontWeight.w700,
+                                  ),
+                                ),
+                                const Spacer(),
+                                Text(
+                                  '(Chạm để xem chi tiết)',
+                                  style: textTheme.labelSmall?.copyWith(
+                                    fontSize: 10,
+                                    color: colorScheme.primary,
+                                    fontStyle: FontStyle.italic,
+                                  ),
+                                ),
+                              ],
+                            ),
+                            const SizedBox(height: 8),
+                            ...displaySteps.reversed.take(15).map((st) {
+                              return InkWell(
+                                borderRadius: BorderRadius.circular(8),
+                                onTap: () => _showStepDetailModal(context, st),
+                                child: Container(
+                                  margin: const EdgeInsets.only(bottom: 6),
+                                  padding: const EdgeInsets.all(10),
+                                  decoration: BoxDecoration(
+                                    color: colorScheme.surfaceContainerHigh,
+                                    borderRadius: BorderRadius.circular(8),
+                                    border: Border.all(
+                                      color: colorScheme.outlineVariant.withAlpha(60),
+                                    ),
+                                  ),
+                                  child: Row(
+                                    crossAxisAlignment: CrossAxisAlignment.start,
+                                    children: [
+                                      Padding(
+                                        padding: const EdgeInsets.only(top: 2),
+                                        child: Icon(
+                                          st.toolCalls.isNotEmpty
+                                              ? Icons.build_circle_outlined
+                                              : Icons.chat_bubble_outline_rounded,
+                                          size: 14,
+                                          color: colorScheme.primary,
+                                        ),
+                                      ),
+                                      const SizedBox(width: 8),
+                                      Expanded(
+                                        child: Column(
+                                          crossAxisAlignment: CrossAxisAlignment.start,
+                                          children: [
+                                            Row(
+                                              children: [
+                                                Expanded(
+                                                  child: Text(
+                                                    st.vietnameseTitle.isNotEmpty
+                                                        ? st.vietnameseTitle
+                                                        : (st.toolCalls.isNotEmpty
+                                                            ? st.toolCalls.first.name
+                                                            : st.type),
+                                                    style: textTheme.labelMedium?.copyWith(
+                                                      fontWeight: FontWeight.w700,
+                                                    ),
+                                                  ),
+                                                ),
+                                                Text(
+                                                  '#${st.stepIndex}',
+                                                  style: TextStyle(
+                                                    fontFamily: 'monospace',
+                                                    fontSize: 10,
+                                                    color: colorScheme.onSurfaceVariant,
+                                                  ),
+                                                ),
+                                              ],
+                                            ),
+                                            if (st.vietnameseDetail.isNotEmpty) ...[
+                                              const SizedBox(height: 3),
+                                              Text(
+                                                st.vietnameseDetail,
+                                                maxLines: 2,
+                                                overflow: TextOverflow.ellipsis,
+                                                style: textTheme.bodySmall?.copyWith(
+                                                  color: colorScheme.onSurfaceVariant,
+                                                ),
+                                              ),
+                                            ],
+                                          ],
+                                        ),
+                                      ),
+                                      const SizedBox(width: 6),
+                                      Icon(
+                                        Icons.chevron_right_rounded,
+                                        size: 16,
+                                        color: colorScheme.onSurfaceVariant.withAlpha(120),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              );
+                            }),
+                            const SizedBox(height: 16),
+                          ],
+                        );
+                      }(),
+
                       FilledButton.icon(
                         onPressed: () {
                           Navigator.of(ctx).pop();
@@ -2881,6 +3037,107 @@ class _ChatCanvasViewState extends State<ChatCanvasView> {
     String gitCommitDetail = '';
     if (isGitCommitTask && lastStep != null && lastStep.vietnameseDetail.isNotEmpty) {
       gitCommitDetail = lastStep.vietnameseDetail;
+    }
+
+    // Xác định trạng thái tác vụ cụ thể của Coordinator
+    String coordinatorToolBadge = '';
+    Color coordinatorBadgeColor = colorScheme.primary;
+    IconData coordinatorActionIcon = Icons.psychology_rounded;
+    String coordinatorActionTitle = 'Đang suy nghĩ & phân tích';
+    String coordinatorActionDetail = '';
+
+    if (isGitCommitTask) {
+      coordinatorToolBadge = 'git commit';
+      coordinatorBadgeColor = Colors.teal;
+      coordinatorActionIcon = Icons.commit_rounded;
+      coordinatorActionTitle = 'Đang tạo Git Commit';
+      coordinatorActionDetail = gitCommitDetail.isNotEmpty
+          ? gitCommitDetail
+          : 'Tạo git commit cho các thay đổi trong phiên làm việc';
+    } else if (lastStep != null && lastStep.toolCalls.isNotEmpty) {
+      final lastTool = lastStep.toolCalls.last;
+      final toolName = lastTool.name;
+      coordinatorToolBadge = toolName;
+      switch (toolName) {
+        case 'run_command':
+          coordinatorBadgeColor = Colors.blueAccent;
+          coordinatorActionIcon = Icons.terminal_rounded;
+          final summary = lastTool.args['toolSummary']?.toString() ?? '';
+          final cmd = lastTool.args['CommandLine']?.toString() ?? '';
+          coordinatorActionTitle = summary.isNotEmpty
+              ? summary
+              : (lastStep.vietnameseTitle.isNotEmpty
+                  ? lastStep.vietnameseTitle
+                  : 'Thực thi lệnh terminal');
+          coordinatorActionDetail = cmd.isNotEmpty ? cmd : lastStep.vietnameseDetail;
+          break;
+        case 'edit_file':
+          coordinatorBadgeColor = Colors.orange;
+          coordinatorActionIcon = Icons.edit_note_rounded;
+          final path = lastTool.args['Path']?.toString() ?? '';
+          coordinatorActionTitle = lastStep.vietnameseTitle.isNotEmpty
+              ? lastStep.vietnameseTitle
+              : 'Chỉnh sửa tệp nguồn';
+          coordinatorActionDetail = path.isNotEmpty ? path.split('/').last : lastStep.vietnameseDetail;
+          break;
+        case 'write_file':
+          coordinatorBadgeColor = Colors.teal;
+          coordinatorActionIcon = Icons.note_add_rounded;
+          final path = lastTool.args['Path']?.toString() ?? '';
+          coordinatorActionTitle = lastStep.vietnameseTitle.isNotEmpty
+              ? lastStep.vietnameseTitle
+              : 'Tạo mới tệp tin';
+          coordinatorActionDetail = path.isNotEmpty ? path.split('/').last : lastStep.vietnameseDetail;
+          break;
+        case 'read_file':
+          coordinatorBadgeColor = Colors.amber.shade700;
+          coordinatorActionIcon = Icons.search_rounded;
+          final path = lastTool.args['Path']?.toString() ?? '';
+          coordinatorActionTitle = lastStep.vietnameseTitle.isNotEmpty
+              ? lastStep.vietnameseTitle
+              : 'Đọc nội dung tệp tin';
+          coordinatorActionDetail = path.isNotEmpty ? path.split('/').last : lastStep.vietnameseDetail;
+          break;
+        case 'invoke_subagent':
+          coordinatorBadgeColor = Colors.purpleAccent;
+          coordinatorActionIcon = Icons.alt_route_rounded;
+          final role = lastTool.args['Role']?.toString() ?? '';
+          coordinatorActionTitle = role.isNotEmpty
+              ? 'Phân quyền: $role'
+              : 'Điều phối Subagent song song';
+          coordinatorActionDetail = lastTool.args['Prompt']?.toString() ?? lastStep.vietnameseDetail;
+          break;
+        default:
+          coordinatorBadgeColor = Colors.deepPurpleAccent;
+          coordinatorActionIcon = Icons.build_circle_outlined;
+          coordinatorActionTitle = lastStep.vietnameseTitle.isNotEmpty
+              ? lastStep.vietnameseTitle
+              : 'Công cụ: $toolName';
+          coordinatorActionDetail = lastStep.vietnameseDetail;
+      }
+    } else if (stream != null && stream.streamingText.isNotEmpty) {
+      coordinatorToolBadge = 'Thinking';
+      coordinatorBadgeColor = Colors.purpleAccent;
+      coordinatorActionIcon = Icons.psychology_rounded;
+      coordinatorActionTitle = 'Đang suy nghĩ & phân tích giải pháp';
+      final cleanText = stream.streamingText.replaceAll('\n', ' ').trim();
+      coordinatorActionDetail = cleanText.length > 80
+          ? '${cleanText.substring(0, 80)}...'
+          : cleanText;
+    } else if (lastStep != null) {
+      coordinatorToolBadge = lastStep.type == 'PLANNER_RESPONSE' ? 'Thinking' : lastStep.type;
+      coordinatorBadgeColor = colorScheme.primary;
+      coordinatorActionIcon = Icons.psychology_rounded;
+      coordinatorActionTitle = lastStep.vietnameseTitle.isNotEmpty
+          ? lastStep.vietnameseTitle
+          : 'Đang xử lý yêu cầu';
+      coordinatorActionDetail = lastStep.vietnameseDetail;
+    } else {
+      coordinatorToolBadge = 'Running';
+      coordinatorBadgeColor = colorScheme.primary;
+      coordinatorActionIcon = Icons.bolt_rounded;
+      coordinatorActionTitle = 'Đang thực thi nhiệm vụ';
+      coordinatorActionDetail = stream?.userPrompt ?? '';
     }
 
     final taskPath = (stream != null && stream.projectPath.isNotEmpty)
@@ -3109,7 +3366,7 @@ class _ChatCanvasViewState extends State<ChatCanvasView> {
                                   color: colorScheme.primary,
                                 ),
                               ),
-                              if (isGitCommitTask) ...[
+                              if (coordinatorToolBadge.isNotEmpty) ...[
                                 const SizedBox(width: 6),
                                 Container(
                                   padding: const EdgeInsets.symmetric(
@@ -3117,28 +3374,27 @@ class _ChatCanvasViewState extends State<ChatCanvasView> {
                                     vertical: 1,
                                   ),
                                   decoration: BoxDecoration(
-                                    color: Colors.amber.withAlpha(40),
+                                    color: coordinatorBadgeColor.withAlpha(35),
                                     borderRadius: BorderRadius.circular(4),
                                     border: Border.all(
-                                      color: Colors.amber.shade700
-                                          .withAlpha(120),
+                                      color: coordinatorBadgeColor.withAlpha(120),
                                     ),
                                   ),
                                   child: Row(
                                     mainAxisSize: MainAxisSize.min,
                                     children: [
                                       Icon(
-                                        Icons.commit_rounded,
+                                        coordinatorActionIcon,
                                         size: 10,
-                                        color: Colors.amber.shade700,
+                                        color: coordinatorBadgeColor,
                                       ),
-                                      const SizedBox(width: 2),
+                                      const SizedBox(width: 3),
                                       Text(
-                                        'Git Commit',
+                                        coordinatorToolBadge,
                                         style: TextStyle(
                                           fontSize: 9.5,
                                           fontWeight: FontWeight.bold,
-                                          color: Colors.amber.shade700,
+                                          color: coordinatorBadgeColor,
                                         ),
                                       ),
                                     ],
@@ -3170,33 +3426,31 @@ class _ChatCanvasViewState extends State<ChatCanvasView> {
                               ),
                             ],
                           ),
-                          if (isGitCommitTask) ...[
-                            const SizedBox(height: 2),
-                            Text(
-                              gitCommitDetail.isNotEmpty
-                                  ? gitCommitDetail
-                                  : 'Đang thực hiện Git Commit mã nguồn...',
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                              style: TextStyle(
-                                fontSize: 11,
-                                fontWeight: FontWeight.w500,
-                                color: Colors.amber.shade700,
+                          const SizedBox(height: 2),
+                          Row(
+                            children: [
+                              Icon(
+                                coordinatorActionIcon,
+                                size: 12,
+                                color: coordinatorBadgeColor,
                               ),
-                            ),
-                          ] else if (stream != null &&
-                              stream.streamingText.trim().isNotEmpty) ...[
-                            const SizedBox(height: 2),
-                            Text(
-                              stream.streamingText.trim().split('\n').last,
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                              style: TextStyle(
-                                fontSize: 11,
-                                color: colorScheme.onSurface.withAlpha(200),
+                              const SizedBox(width: 5),
+                              Expanded(
+                                child: Text(
+                                  coordinatorActionDetail.isNotEmpty
+                                      ? '$coordinatorActionTitle — $coordinatorActionDetail'
+                                      : coordinatorActionTitle,
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: TextStyle(
+                                    fontSize: 11,
+                                    fontWeight: FontWeight.w500,
+                                    color: coordinatorBadgeColor,
+                                  ),
+                                ),
                               ),
-                            ),
-                          ],
+                            ],
+                          ),
                         ],
                       ),
                     ),
@@ -3934,87 +4188,9 @@ class _ChatCanvasViewState extends State<ChatCanvasView> {
                     scrollDirection: Axis.horizontal,
                     child: Row(
                       children: [
-                        PopupMenuButton<String>(
-                          tooltip: 'Slash Workflows & /skill',
-                          onSelected: (cmd) {
-                            _promptController.text =
-                                '$cmd${_promptController.text}';
-                            _promptController.selection =
-                                TextSelection.fromPosition(
-                              TextPosition(
-                                offset: _promptController.text.length,
-                              ),
-                            );
-                            _inputFocusNode.requestFocus();
-                          },
-                          itemBuilder: (ctx) {
-                            final projectSkills = (widget.session?.customAgents ??
-                                    widget.selectedProject?.customAgents ??
-                                    [])
-                                .where((s) => s.kind == 'skill')
-                                .toList();
-
-                            return [
-                              for (final s in projectSkills)
-                                PopupMenuItem<String>(
-                                  value: '/${s.name} ',
-                                  child: Row(
-                                    children: [
-                                      const Icon(
-                                        Icons.auto_awesome_rounded,
-                                        size: 15,
-                                        color: Colors.deepPurpleAccent,
-                                      ),
-                                      const SizedBox(width: 8),
-                                      Expanded(
-                                        child: Column(
-                                          crossAxisAlignment:
-                                              CrossAxisAlignment.start,
-                                          mainAxisSize: MainAxisSize.min,
-                                          children: [
-                                            Text(
-                                              '/${s.name}',
-                                              style: const TextStyle(
-                                                fontWeight: FontWeight.w700,
-                                                color: Colors.deepPurpleAccent,
-                                              ),
-                                            ),
-                                            if (s.description.isNotEmpty)
-                                              Text(
-                                                s.description,
-                                                maxLines: 1,
-                                                overflow: TextOverflow.ellipsis,
-                                                style: TextStyle(
-                                                  fontSize: 10.5,
-                                                  color: colorScheme.onSurfaceVariant,
-                                                ),
-                                              ),
-                                          ],
-                                        ),
-                                      ),
-                                    ],
-                                  ),
-                                ),
-                              if (projectSkills.isNotEmpty)
-                                const PopupMenuDivider(),
-                              const PopupMenuItem(
-                                value: '/plan ',
-                                child: Text('/plan — Lập kế hoạch chi tiết'),
-                              ),
-                              const PopupMenuItem(
-                                value: '/boost ',
-                                child: Text('/boost — Phân tích chuyên sâu'),
-                              ),
-                              const PopupMenuItem(
-                                value: '/goal ',
-                                child: Text('/goal — Tự chủ hoàn thành mục tiêu'),
-                              ),
-                              const PopupMenuItem(
-                                value: '/compact ',
-                                child: Text('/compact — Thu gọn ngữ cảnh trò chuyện'),
-                              ),
-                            ];
-                          },
+                        InkWell(
+                          borderRadius: BorderRadius.circular(8),
+                          onTap: () => _showSlashCommandsPicker(context),
                           child: _ComposerPill(
                             icon: Icons.terminal_rounded,
                             label: '/',
@@ -4171,6 +4347,377 @@ class _ChatCanvasViewState extends State<ChatCanvasView> {
         ],
       ),
     );
+  }
+
+  void _showSlashCommandsPicker(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+    final textTheme = Theme.of(context).textTheme;
+
+    final allCustom = widget.session?.customAgents ??
+        widget.selectedProject?.customAgents ??
+        [];
+    final projectSkills = allCustom.where((s) => s.kind == 'skill').toList();
+
+    final coreCommands = const [
+      (cmd: '/plan', label: 'Lập kế hoạch chi tiết', desc: 'Thiết kế Shared Contract, phân chia tác vụ & chờ duyệt', icon: Icons.architecture_rounded),
+      (cmd: '/boost', label: 'Phân tích chuyên sâu', desc: 'Kích hoạt suy luận đa góc nhìn và giải quyết vấn đề phức tạp', icon: Icons.bolt_rounded),
+      (cmd: '/goal', label: 'Tự chủ hoàn thành mục tiêu', desc: 'Thực thi không dừng cho đến khi hoàn tất 100% mục tiêu', icon: Icons.flag_rounded),
+      (cmd: '/compact', label: 'Thu gọn ngữ cảnh', desc: 'Nén và giải phóng context window cho cuộc hội thoại dài', icon: Icons.compress_rounded),
+      (cmd: '/learn', label: 'Ghi nhớ kinh nghiệm', desc: 'Lưu trữ kinh nghiệm và quy tắc xử lý cho các lần sau', icon: Icons.menu_book_rounded),
+    ];
+
+    showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      useSafeArea: true,
+      backgroundColor: colorScheme.surfaceContainer,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (ctx) {
+        String searchQuery = '';
+        return StatefulBuilder(
+          builder: (modalCtx, setModalState) {
+            final query = searchQuery.trim().toLowerCase();
+
+            final filteredCore = coreCommands.where((c) {
+              if (query.isEmpty) return true;
+              return c.cmd.toLowerCase().contains(query) ||
+                  c.label.toLowerCase().contains(query) ||
+                  c.desc.toLowerCase().contains(query);
+            }).toList();
+
+            final filteredSkills = projectSkills.where((s) {
+              if (query.isEmpty) return true;
+              return s.name.toLowerCase().contains(query) ||
+                  s.description.toLowerCase().contains(query);
+            }).toList();
+
+            return DraggableScrollableSheet(
+              initialChildSize: 0.65,
+              minChildSize: 0.40,
+              maxChildSize: 0.90,
+              expand: false,
+              builder: (context, scrollController) {
+                return Column(
+                  children: [
+                    Center(
+                      child: Container(
+                        margin: const EdgeInsets.only(top: 10, bottom: 6),
+                        width: 36,
+                        height: 4,
+                        decoration: BoxDecoration(
+                          color: colorScheme.outlineVariant,
+                          borderRadius: BorderRadius.circular(2),
+                        ),
+                      ),
+                    ),
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(16, 4, 16, 8),
+                      child: Row(
+                        children: [
+                          const Icon(
+                            Icons.terminal_rounded,
+                            size: 20,
+                            color: Colors.deepPurpleAccent,
+                          ),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: Text(
+                              'Slash Workflows & Kỹ Năng (/skill)',
+                              style: textTheme.titleMedium?.copyWith(
+                                fontWeight: FontWeight.w700,
+                              ),
+                            ),
+                          ),
+                          IconButton(
+                            icon: const Icon(Icons.close_rounded),
+                            onPressed: () => Navigator.of(ctx).pop(),
+                            tooltip: 'Đóng',
+                          ),
+                        ],
+                      ),
+                    ),
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(16, 0, 16, 10),
+                      child: TextField(
+                        onChanged: (val) {
+                          setModalState(() {
+                            searchQuery = val;
+                          });
+                        },
+                        style: textTheme.bodyMedium,
+                        decoration: InputDecoration(
+                          hintText: 'Tìm kiếm lệnh hoặc kỹ năng...',
+                          prefixIcon: const Icon(Icons.search_rounded, size: 18),
+                          isDense: true,
+                          filled: true,
+                          fillColor: colorScheme.surfaceContainerHighest.withAlpha(120),
+                          contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                          border: OutlineInputBorder(
+                            borderRadius: BorderRadius.circular(12),
+                            borderSide: BorderSide(color: colorScheme.outlineVariant.withAlpha(60)),
+                          ),
+                          enabledBorder: OutlineInputBorder(
+                            borderRadius: BorderRadius.circular(12),
+                            borderSide: BorderSide(color: colorScheme.outlineVariant.withAlpha(60)),
+                          ),
+                        ),
+                      ),
+                    ),
+                    const Divider(height: 1),
+                    Expanded(
+                      child: ListView(
+                        controller: scrollController,
+                        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                        children: [
+                          if (filteredSkills.isNotEmpty) ...[
+                            Padding(
+                              padding: const EdgeInsets.only(top: 6, bottom: 6),
+                              child: Row(
+                                children: [
+                                  const Icon(
+                                    Icons.auto_awesome_rounded,
+                                    size: 14,
+                                    color: Colors.deepPurpleAccent,
+                                  ),
+                                  const SizedBox(width: 6),
+                                  Text(
+                                    'Kỹ năng Dự án & Ecosystem (.agents)',
+                                    style: textTheme.labelSmall?.copyWith(
+                                      fontWeight: FontWeight.w800,
+                                      color: Colors.deepPurpleAccent,
+                                    ),
+                                  ),
+                                  const SizedBox(width: 6),
+                                  Container(
+                                    padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
+                                    decoration: BoxDecoration(
+                                      color: Colors.deepPurple.withAlpha(30),
+                                      borderRadius: BorderRadius.circular(4),
+                                    ),
+                                    child: Text(
+                                      '${filteredSkills.length}',
+                                      style: const TextStyle(
+                                        fontSize: 9.5,
+                                        fontWeight: FontWeight.w700,
+                                        color: Colors.deepPurpleAccent,
+                                      ),
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                            for (final s in filteredSkills)
+                              InkWell(
+                                borderRadius: BorderRadius.circular(10),
+                                onTap: () {
+                                  Navigator.of(ctx).pop();
+                                  _insertSlashCommand('/${s.name} ');
+                                },
+                                child: Container(
+                                  margin: const EdgeInsets.only(bottom: 6),
+                                  padding: const EdgeInsets.all(10),
+                                  decoration: BoxDecoration(
+                                    color: colorScheme.surfaceContainerHigh,
+                                    borderRadius: BorderRadius.circular(10),
+                                    border: Border.all(
+                                      color: colorScheme.outlineVariant.withAlpha(60),
+                                    ),
+                                  ),
+                                  child: Row(
+                                    children: [
+                                      Container(
+                                        padding: const EdgeInsets.all(6),
+                                        decoration: BoxDecoration(
+                                          color: Colors.deepPurple.withAlpha(25),
+                                          borderRadius: BorderRadius.circular(8),
+                                        ),
+                                        child: const Icon(
+                                          Icons.auto_awesome_rounded,
+                                          size: 16,
+                                          color: Colors.deepPurpleAccent,
+                                        ),
+                                      ),
+                                      const SizedBox(width: 10),
+                                      Expanded(
+                                        child: Column(
+                                          crossAxisAlignment: CrossAxisAlignment.start,
+                                          children: [
+                                            Text(
+                                              '/${s.name}',
+                                              style: textTheme.labelLarge?.copyWith(
+                                                fontWeight: FontWeight.w700,
+                                                color: Colors.deepPurpleAccent,
+                                              ),
+                                            ),
+                                            if (s.description.isNotEmpty) ...[
+                                              const SizedBox(height: 2),
+                                              Text(
+                                                s.description,
+                                                maxLines: 2,
+                                                overflow: TextOverflow.ellipsis,
+                                                style: textTheme.bodySmall?.copyWith(
+                                                  color: colorScheme.onSurfaceVariant,
+                                                  fontSize: 11,
+                                                ),
+                                              ),
+                                            ],
+                                          ],
+                                        ),
+                                      ),
+                                      const SizedBox(width: 6),
+                                      Icon(
+                                        Icons.add_rounded,
+                                        size: 16,
+                                        color: colorScheme.onSurfaceVariant.withAlpha(140),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              ),
+                            const SizedBox(height: 8),
+                          ],
+                          if (filteredCore.isNotEmpty) ...[
+                            Padding(
+                              padding: const EdgeInsets.only(top: 6, bottom: 6),
+                              child: Row(
+                                children: [
+                                  Icon(
+                                    Icons.tune_rounded,
+                                    size: 14,
+                                    color: colorScheme.primary,
+                                  ),
+                                  const SizedBox(width: 6),
+                                  Text(
+                                    'Workflows Điều Phối (Core)',
+                                    style: textTheme.labelSmall?.copyWith(
+                                      fontWeight: FontWeight.w800,
+                                      color: colorScheme.primary,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                            for (final c in filteredCore)
+                              InkWell(
+                                borderRadius: BorderRadius.circular(10),
+                                onTap: () {
+                                  Navigator.of(ctx).pop();
+                                  _insertSlashCommand('${c.cmd} ');
+                                },
+                                child: Container(
+                                  margin: const EdgeInsets.only(bottom: 6),
+                                  padding: const EdgeInsets.all(10),
+                                  decoration: BoxDecoration(
+                                    color: colorScheme.surfaceContainerHigh,
+                                    borderRadius: BorderRadius.circular(10),
+                                    border: Border.all(
+                                      color: colorScheme.outlineVariant.withAlpha(60),
+                                    ),
+                                  ),
+                                  child: Row(
+                                    children: [
+                                      Container(
+                                        padding: const EdgeInsets.all(6),
+                                        decoration: BoxDecoration(
+                                          color: colorScheme.primary.withAlpha(25),
+                                          borderRadius: BorderRadius.circular(8),
+                                        ),
+                                        child: Icon(
+                                          c.icon,
+                                          size: 16,
+                                          color: colorScheme.primary,
+                                        ),
+                                      ),
+                                      const SizedBox(width: 10),
+                                      Expanded(
+                                        child: Column(
+                                          crossAxisAlignment: CrossAxisAlignment.start,
+                                          children: [
+                                            Row(
+                                              children: [
+                                                Text(
+                                                  c.cmd,
+                                                  style: textTheme.labelLarge?.copyWith(
+                                                    fontWeight: FontWeight.w700,
+                                                    color: colorScheme.primary,
+                                                  ),
+                                                ),
+                                                const SizedBox(width: 6),
+                                                Text(
+                                                  '— ${c.label}',
+                                                  style: textTheme.labelMedium?.copyWith(
+                                                    fontWeight: FontWeight.w600,
+                                                  ),
+                                                ),
+                                              ],
+                                            ),
+                                            const SizedBox(height: 2),
+                                            Text(
+                                              c.desc,
+                                              maxLines: 2,
+                                              overflow: TextOverflow.ellipsis,
+                                              style: textTheme.bodySmall?.copyWith(
+                                                color: colorScheme.onSurfaceVariant,
+                                                fontSize: 11,
+                                              ),
+                                            ),
+                                          ],
+                                        ),
+                                      ),
+                                      const SizedBox(width: 6),
+                                      Icon(
+                                        Icons.add_rounded,
+                                        size: 16,
+                                        color: colorScheme.onSurfaceVariant.withAlpha(140),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              ),
+                          ],
+                          if (filteredSkills.isEmpty && filteredCore.isEmpty)
+                            Padding(
+                              padding: const EdgeInsets.all(32),
+                              child: Center(
+                                child: Text(
+                                  'Không tìm thấy lệnh hoặc kỹ năng phù hợp với "$searchQuery"',
+                                  style: textTheme.bodySmall?.copyWith(
+                                    color: colorScheme.onSurfaceVariant,
+                                  ),
+                                ),
+                              ),
+                            ),
+                        ],
+                      ),
+                    ),
+                  ],
+                );
+              },
+            );
+          },
+        );
+      },
+    );
+  }
+
+  void _insertSlashCommand(String cmd) {
+    final text = _promptController.text;
+    if (text.startsWith('/')) {
+      final firstSpace = text.indexOf(' ');
+      if (firstSpace != -1) {
+        _promptController.text = '$cmd${text.substring(firstSpace + 1)}';
+      } else {
+        _promptController.text = cmd;
+      }
+    } else {
+      _promptController.text = '$cmd$text';
+    }
+    _promptController.selection = TextSelection.fromPosition(
+      TextPosition(offset: _promptController.text.length),
+    );
+    _inputFocusNode.requestFocus();
   }
 
   Widget _buildLoadMoreOlderTurnsBanner(

@@ -1,6 +1,5 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
-import '../models/agent_core_models.dart';
 import '../models/agent_models.dart';
 import '../services/brain_scanner_service.dart';
 import 'widgets/server_file_browser_sheet.dart';
@@ -1514,80 +1513,289 @@ class _ParallelAgentFlowScreenState extends State<ParallelAgentFlowScreen>
     final hasTool = step.toolCalls.isNotEmpty;
     final tool = hasTool ? step.toolCalls.first : null;
 
-    return Container(
-      margin: const EdgeInsets.only(bottom: 8),
-      padding: const EdgeInsets.all(10),
-      decoration: BoxDecoration(
-        color: colorScheme.surfaceContainer,
-        borderRadius: BorderRadius.circular(10),
-        border: Border.all(color: colorScheme.outlineVariant.withAlpha(90)),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                decoration: BoxDecoration(
-                  color: colorScheme.primaryContainer.withAlpha(120),
-                  borderRadius: BorderRadius.circular(4),
-                ),
-                child: Text(
-                  '#${step.stepIndex}',
-                  style: TextStyle(
-                    fontFamily: 'monospace',
-                    fontSize: 10,
-                    fontWeight: FontWeight.w800,
-                    color: colorScheme.primary,
+    return InkWell(
+      borderRadius: BorderRadius.circular(10),
+      onTap: () => _showStepDetailModal(context, step),
+      child: Container(
+        margin: const EdgeInsets.only(bottom: 8),
+        padding: const EdgeInsets.all(10),
+        decoration: BoxDecoration(
+          color: colorScheme.surfaceContainer,
+          borderRadius: BorderRadius.circular(10),
+          border: Border.all(color: colorScheme.outlineVariant.withAlpha(90)),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                  decoration: BoxDecoration(
+                    color: colorScheme.primaryContainer.withAlpha(120),
+                  ),
+                  child: Text(
+                    '#${step.stepIndex}',
+                    style: TextStyle(
+                      fontFamily: 'monospace',
+                      fontSize: 10,
+                      fontWeight: FontWeight.w800,
+                      color: colorScheme.primary,
+                    ),
                   ),
                 ),
-              ),
-              const SizedBox(width: 8),
-              if (tool != null) ...[
-                Icon(Icons.build_circle_outlined, size: 13, color: colorScheme.primary),
-                const SizedBox(width: 4),
+                const SizedBox(width: 8),
+                if (tool != null) ...[
+                  Icon(Icons.build_circle_outlined, size: 13, color: colorScheme.primary),
+                  const SizedBox(width: 4),
+                  Text(
+                    tool.name,
+                    style: const TextStyle(
+                      fontFamily: 'monospace',
+                      fontWeight: FontWeight.w700,
+                      fontSize: 11,
+                    ),
+                  ),
+                ],
+                const Spacer(),
                 Text(
-                  tool.name,
-                  style: const TextStyle(
-                    fontFamily: 'monospace',
-                    fontWeight: FontWeight.w700,
-                    fontSize: 11,
+                  '${step.createdAt.hour.toString().padLeft(2, '0')}:${step.createdAt.minute.toString().padLeft(2, '0')}:${step.createdAt.second.toString().padLeft(2, '0')}',
+                  style: textTheme.labelSmall?.copyWith(
+                    fontSize: 10,
+                    color: colorScheme.onSurfaceVariant,
                   ),
+                ),
+                const SizedBox(width: 4),
+                Icon(
+                  Icons.chevron_right_rounded,
+                  size: 14,
+                  color: colorScheme.onSurfaceVariant.withAlpha(140),
                 ),
               ],
-              const Spacer(),
+            ),
+            const SizedBox(height: 6),
+            Text(
+              step.vietnameseTitle.isNotEmpty
+                  ? step.vietnameseTitle
+                  : (tool != null ? tool.summaryLabel : step.content),
+              style: textTheme.bodySmall?.copyWith(
+                fontSize: 11.5,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+            if (step.thinking.isNotEmpty) ...[
+              const SizedBox(height: 4),
               Text(
-                '${step.createdAt.hour.toString().padLeft(2, '0')}:${step.createdAt.minute.toString().padLeft(2, '0')}:${step.createdAt.second.toString().padLeft(2, '0')}',
+                'Suy nghĩ: ${step.thinking.length > 160 ? "${step.thinking.substring(0, 160)}..." : step.thinking}',
                 style: textTheme.labelSmall?.copyWith(
-                  fontSize: 10,
-                  color: colorScheme.onSurfaceVariant,
+                  fontStyle: FontStyle.italic,
+                  color: colorScheme.onSurfaceVariant.withAlpha(190),
                 ),
               ),
             ],
-          ),
-          const SizedBox(height: 6),
-          Text(
-            step.vietnameseTitle.isNotEmpty
-                ? step.vietnameseTitle
-                : (tool != null ? tool.summaryLabel : step.content),
-            style: textTheme.bodySmall?.copyWith(
-              fontSize: 11.5,
-              fontWeight: FontWeight.w600,
-            ),
-          ),
-          if (step.thinking.isNotEmpty) ...[
-            const SizedBox(height: 4),
-            Text(
-              'Suy nghĩ: ${step.thinking.length > 160 ? "${step.thinking.substring(0, 160)}..." : step.thinking}',
-              style: textTheme.labelSmall?.copyWith(
-                fontStyle: FontStyle.italic,
-                color: colorScheme.onSurfaceVariant.withAlpha(190),
-              ),
-            ),
           ],
-        ],
+        ),
       ),
+    );
+  }
+
+  void _showStepDetailModal(BuildContext context, AgentStep step) {
+    final colorScheme = Theme.of(context).colorScheme;
+    final textTheme = Theme.of(context).textTheme;
+
+    showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      useSafeArea: true,
+      backgroundColor: colorScheme.surfaceContainer,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (ctx) {
+        return DraggableScrollableSheet(
+          expand: false,
+          initialChildSize: 0.65,
+          minChildSize: 0.40,
+          maxChildSize: 0.92,
+          builder: (context, scrollController) {
+            return ListView(
+              controller: scrollController,
+              padding: const EdgeInsets.all(20),
+              children: [
+                Row(
+                  children: [
+                    Icon(step.icon, size: 20, color: colorScheme.primary),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: Text(
+                        'Step #${step.stepIndex} • ${step.vietnameseTitle}',
+                        style: textTheme.titleSmall?.copyWith(
+                          fontWeight: FontWeight.w800,
+                        ),
+                      ),
+                    ),
+                    IconButton(
+                      icon: const Icon(Icons.close_rounded),
+                      onPressed: () => Navigator.of(ctx).pop(),
+                    ),
+                  ],
+                ),
+                const Divider(height: 20),
+                if (step.vietnameseDetail.isNotEmpty) ...[
+                  Text(
+                    'Chi tiết bước thực thi',
+                    style: textTheme.labelMedium?.copyWith(
+                      fontWeight: FontWeight.w800,
+                      color: colorScheme.primary,
+                    ),
+                  ),
+                  const SizedBox(height: 6),
+                  Container(
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      color: colorScheme.surfaceContainerLow,
+                      borderRadius: BorderRadius.circular(10),
+                      border: Border.all(color: colorScheme.outlineVariant),
+                    ),
+                    child: SelectableText(
+                      step.vietnameseDetail,
+                      style: textTheme.bodySmall?.copyWith(height: 1.45),
+                    ),
+                  ),
+                  const SizedBox(height: 14),
+                ],
+                if (step.thinking.trim().isNotEmpty) ...[
+                  Text(
+                    'Thought Process (Suy luận chiến lược)',
+                    style: textTheme.labelMedium?.copyWith(
+                      fontWeight: FontWeight.w800,
+                      color: colorScheme.primary,
+                    ),
+                  ),
+                  const SizedBox(height: 6),
+                  Container(
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      color: colorScheme.surfaceContainerLow,
+                      borderRadius: BorderRadius.circular(10),
+                      border: Border.all(color: colorScheme.outlineVariant),
+                    ),
+                    child: SelectableText(
+                      step.thinking.trim(),
+                      style: textTheme.bodySmall?.copyWith(height: 1.45),
+                    ),
+                  ),
+                  const SizedBox(height: 14),
+                ],
+                if (step.toolCalls.isNotEmpty) ...[
+                  Text(
+                    'Tool Calls (${step.toolCalls.length})',
+                    style: textTheme.labelMedium?.copyWith(
+                      fontWeight: FontWeight.w800,
+                      color: colorScheme.primary,
+                    ),
+                  ),
+                  const SizedBox(height: 6),
+                  for (final tool in step.toolCalls) ...[
+                    Container(
+                      margin: const EdgeInsets.only(bottom: 8),
+                      padding: const EdgeInsets.all(12),
+                      decoration: BoxDecoration(
+                        color: colorScheme.surfaceContainerLow,
+                        borderRadius: BorderRadius.circular(10),
+                        border: Border.all(color: colorScheme.outlineVariant),
+                      ),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Row(
+                            children: [
+                              Text(
+                                tool.name,
+                                style: textTheme.labelLarge?.copyWith(
+                                  fontWeight: FontWeight.w800,
+                                  color: colorScheme.primary,
+                                ),
+                              ),
+                              const Spacer(),
+                              Container(
+                                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                                decoration: BoxDecoration(
+                                  color: colorScheme.primaryContainer,
+                                  borderRadius: BorderRadius.circular(4),
+                                ),
+                                child: Text(
+                                  tool.repoTag,
+                                  style: TextStyle(
+                                    fontSize: 10,
+                                    fontWeight: FontWeight.w700,
+                                    color: colorScheme.onPrimaryContainer,
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                          if (tool.summaryLabel.isNotEmpty) ...[
+                            const SizedBox(height: 4),
+                            Text(
+                              tool.summaryLabel,
+                              style: textTheme.bodySmall?.copyWith(
+                                color: colorScheme.onSurfaceVariant,
+                              ),
+                            ),
+                          ],
+                          if (tool.args.isNotEmpty) ...[
+                            const SizedBox(height: 8),
+                            Container(
+                              width: double.infinity,
+                              padding: const EdgeInsets.all(8),
+                              decoration: BoxDecoration(
+                                color: colorScheme.surfaceContainerLowest,
+                                borderRadius: BorderRadius.circular(6),
+                              ),
+                              child: SelectableText(
+                                tool.args.entries.map((e) => '${e.key}: ${e.value}').join('\n'),
+                                style: const TextStyle(
+                                  fontFamily: 'monospace',
+                                  fontSize: 11,
+                                  height: 1.35,
+                                ),
+                              ),
+                            ),
+                          ],
+                        ],
+                      ),
+                    ),
+                  ],
+                  const SizedBox(height: 14),
+                ],
+                if (step.content.trim().isNotEmpty) ...[
+                  Text(
+                    'Output / Content',
+                    style: textTheme.labelMedium?.copyWith(
+                      fontWeight: FontWeight.w800,
+                      color: colorScheme.primary,
+                    ),
+                  ),
+                  const SizedBox(height: 6),
+                  Container(
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      color: colorScheme.surfaceContainerLow,
+                      borderRadius: BorderRadius.circular(10),
+                      border: Border.all(color: colorScheme.outlineVariant),
+                    ),
+                    child: SelectableText(
+                      step.content.trim(),
+                      style: textTheme.bodySmall?.copyWith(height: 1.45),
+                    ),
+                  ),
+                ],
+              ],
+            );
+          },
+        );
+      },
     );
   }
 
