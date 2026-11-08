@@ -28,7 +28,7 @@ use std::net::SocketAddr;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::time::SystemTime;
+use std::time::{Instant, SystemTime};
 use tokio::time::{interval, Duration};
 use tower_http::cors::CorsLayer;
 
@@ -471,7 +471,17 @@ async fn handle_git_history(Query(params): Query<GitHistoryQuery>) -> impl IntoR
 
     let res = tokio::task::spawn_blocking(move || {
         let p = PathBuf::from(&project_path);
-        let canonical = fs::canonicalize(&p).unwrap_or(p);
+        let mut canonical = fs::canonicalize(&p).unwrap_or(p);
+
+        // Tự động tìm kiếm ngược lên thư mục cha nếu path truyền vào là thư mục con bên trong Git repo
+        while !canonical.join(".git").exists() {
+            if let Some(parent) = canonical.parent() {
+                canonical = parent.to_path_buf();
+            } else {
+                break;
+            }
+        }
+
         let project_name = canonical.file_name().and_then(|n| n.to_str()).unwrap_or("project").to_string();
 
         if !canonical.exists() || !canonical.is_dir() {
@@ -663,7 +673,16 @@ async fn handle_git_commit(Query(params): Query<GitCommitQuery>) -> impl IntoRes
 
     let res = tokio::task::spawn_blocking(move || {
         let p = PathBuf::from(&project_path);
-        let canonical = fs::canonicalize(&p).unwrap_or(p);
+        let mut canonical = fs::canonicalize(&p).unwrap_or(p);
+
+        // Tự động tìm kiếm ngược lên thư mục cha nếu path truyền vào là thư mục con bên trong Git repo
+        while !canonical.join(".git").exists() {
+            if let Some(parent) = canonical.parent() {
+                canonical = parent.to_path_buf();
+            } else {
+                break;
+            }
+        }
 
         if !canonical.exists() || !canonical.join(".git").exists() {
             return models::GitCommitDetailResponse {
@@ -1143,26 +1162,34 @@ async fn main() {
 
     setup_socket_handlers(&io, app_state.clone());
 
-    // Watcher ngầm theo dõi sự thay đổi của transcript.jsonl & conversation_summaries.db (chu kỳ 1s)
+    // Watcher ngầm theo dõi sự thay đổi của transcript.jsonl & conversation_summaries.db (chu kỳ 1.5s, debounce 1.2s)
     let watcher_state = app_state.clone();
     tokio::spawn(async move {
-        let mut ticker = interval(Duration::from_millis(1000));
+        let mut ticker = interval(Duration::from_millis(1500));
         let mut last_fp = scanner::compute_filesystem_fingerprint();
+        let mut last_emit = Instant::now();
         loop {
             ticker.tick().await;
             let current_fp = scanner::compute_filesystem_fingerprint();
             if current_fp != last_fp {
                 last_fp = current_fp;
+
+                // Debounce tối thiểu 1.2s để tránh spam client khi agent đang stream liên tục
+                if last_emit.elapsed() < Duration::from_millis(1200) {
+                    tokio::time::sleep(Duration::from_millis(600)).await;
+                }
+                last_emit = Instant::now();
+
                 let streams = watcher_state
                     .active_streams
                     .lock()
                     .map(|g| g.clone())
                     .unwrap_or_default();
                 let snapshot = tokio::task::spawn_blocking(move || {
-                    scanner::build_full_snapshot(&streams, None, 100)
+                    scanner::build_full_snapshot(&streams, None, 25)
                 })
                 .await
-                .unwrap_or_else(|_| scanner::build_full_snapshot(&HashMap::new(), None, 100));
+                .unwrap_or_else(|_| scanner::build_full_snapshot(&HashMap::new(), None, 25));
 
                 if let Ok(val) = serde_json::to_value(&snapshot) {
                     if let Some(ns) = watcher_state.io.of("/") {

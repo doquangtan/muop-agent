@@ -1372,12 +1372,18 @@ class _ParallelAgentFlowScreenState extends State<ParallelAgentFlowScreen>
                             borderRadius: BorderRadius.circular(12),
                             border: Border.all(color: colorScheme.outlineVariant),
                           ),
-                          child: Text(
-                            lane.promptBrief.isNotEmpty
-                                ? lane.promptBrief
-                                : 'Chuyên trách thực thi các tác vụ được Coordinator phân bổ.',
-                            style: textTheme.bodySmall?.copyWith(
-                              height: 1.45,
+                          child: ConstrainedBox(
+                            constraints: const BoxConstraints(maxHeight: 140),
+                            child: SingleChildScrollView(
+                              physics: const ClampingScrollPhysics(),
+                              child: Text(
+                                lane.promptBrief.isNotEmpty
+                                    ? lane.promptBrief
+                                    : 'Chuyên trách thực thi các tác vụ được Coordinator phân bổ.',
+                                style: textTheme.bodySmall?.copyWith(
+                                  height: 1.45,
+                                ),
+                              ),
                             ),
                           ),
                         ),

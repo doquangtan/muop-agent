@@ -203,8 +203,28 @@ class _ChatCanvasViewState extends State<ChatCanvasView> {
   /// Lưu trạng thái mở rộng (show full) của từng đoạn response theo turnIndex
   final Set<int> _expandedResponseTurns = {};
 
+  /// Lưu trạng thái mở rộng (show full) của prompt người dùng theo turnIndex
+  final Set<int> _expandedPromptTurns = {};
+
   /// Cache danh sách các đoạn văn/code đã tách để không phải regex lại khi cuộn
   final Map<String, List<_ParsedResponseSegment>> _segmentCache = {};
+
+  /// Cache tính toán turns & flat blocks để không bị lag giật mỗi khi gõ phím hoặc rebuild
+  String? _lastSessionId;
+  int _lastStepsCount = -1;
+  int _lastFilesTouchedCount = -1;
+  int _lastLoadedTurnCount = -1;
+  int _lastExpandedResponseTurnsHash = 0;
+  int _lastExpandedPromptTurnsHash = 0;
+  List<_ChatTurnGroup> _cachedAllTurns = const [];
+  List<_ChatFlatBlock> _cachedFlatBlocks = const [];
+
+  /// Cache danh sách files thay đổi để tránh groupRecords lặp lại trên mỗi frame render
+  int _lastGroupedFilesRecordCount = -1;
+  String? _lastGroupedFilesSessionId;
+  List<GroupedFileChange> _cachedGroupedSessionFiles = const [];
+  int _cachedTotalAdded = 0;
+  int _cachedTotalRemoved = 0;
 
   @override
   void initState() {
@@ -226,6 +246,11 @@ class _ChatCanvasViewState extends State<ChatCanvasView> {
       _isLoadingMoreTurns = false;
       _hasLoadedAllServerHistory = false;
       _expandedResponseTurns.clear();
+      _expandedPromptTurns.clear();
+      _lastSessionId = null;
+      _lastStepsCount = -1;
+      _lastFilesTouchedCount = -1;
+      _lastLoadedTurnCount = -1;
       WidgetsBinding.instance.addPostFrameCallback((_) {
         _scrollToBottom(animated: false);
       });
@@ -635,84 +660,117 @@ class _ChatCanvasViewState extends State<ChatCanvasView> {
                 widget.activeStream!.activeStepType != 'interrupted') ||
             (session != null && session.status == AgentStatus.running));
 
-    final allTurns = (!widget.isNewConversationMode && session != null)
-        ? _buildTurnGroups(session.steps, session.filesTouched)
-        : const <_ChatTurnGroup>[];
+    final currentSessionId = session?.id;
+    final currentStepsCount = session?.steps.length ?? 0;
+    final currentFilesTouchedCount = session?.filesTouched.length ?? 0;
+    final currentResponseTurnsHash =
+        _expandedResponseTurns.fold<int>(0, (prev, e) => prev ^ e);
+    final currentPromptTurnsHash =
+        _expandedPromptTurns.fold<int>(0, (prev, e) => prev ^ e);
 
-    final int startIdx = math.max(0, allTurns.length - _loadedTurnCount);
-    final visibleTurns = allTurns.sublist(startIdx);
-    final int remainingOlderTurns = startIdx;
+    final bool shouldRecomputeBlocks = widget.isNewConversationMode ||
+        session == null ||
+        _lastSessionId != currentSessionId ||
+        _lastStepsCount != currentStepsCount ||
+        _lastFilesTouchedCount != currentFilesTouchedCount ||
+        _lastLoadedTurnCount != _loadedTurnCount ||
+        _lastExpandedResponseTurnsHash != currentResponseTurnsHash ||
+        _lastExpandedPromptTurnsHash != currentPromptTurnsHash;
 
-    final flatBlocks = _buildFlatBlocks(
-      visibleTurns: visibleTurns,
-      remainingOlderTurns: remainingOlderTurns,
-      totalTurnsCount: allTurns.length,
-    );
+    if (shouldRecomputeBlocks) {
+      _lastSessionId = currentSessionId;
+      _lastStepsCount = currentStepsCount;
+      _lastFilesTouchedCount = currentFilesTouchedCount;
+      _lastLoadedTurnCount = _loadedTurnCount;
+      _lastExpandedResponseTurnsHash = currentResponseTurnsHash;
+      _lastExpandedPromptTurnsHash = currentPromptTurnsHash;
+
+      _cachedAllTurns = (!widget.isNewConversationMode && session != null)
+          ? _buildTurnGroups(session.steps, session.filesTouched)
+          : const <_ChatTurnGroup>[];
+
+      final int startIdx =
+          math.max(0, _cachedAllTurns.length - _loadedTurnCount);
+      final visibleTurns = _cachedAllTurns.sublist(startIdx);
+      final int remainingOlderTurns = startIdx;
+
+      _cachedFlatBlocks = _buildFlatBlocks(
+        visibleTurns: visibleTurns,
+        remainingOlderTurns: remainingOlderTurns,
+        totalTurnsCount: _cachedAllTurns.length,
+      );
+    }
+
+    final flatBlocks = _cachedFlatBlocks;
 
     return Column(
       children: [
         // 1. Luồng tin nhắn đã được làm phẳng (flattened) & ảo hóa bằng ListView.builder
         Expanded(
-          child: flatBlocks.isEmpty
-              ? _buildEmptyAntigravityWelcome(context, isMobile)
-              : Stack(
-                  children: [
-                    SelectionArea(
-                      child: ListView.builder(
-                        controller: _scrollController,
-                        reverse: true,
-                        addAutomaticKeepAlives: false,
-                        padding: EdgeInsets.fromLTRB(
-                          isMobile ? 10 : 28,
-                          16,
-                          isMobile ? 10 : 28,
-                          12,
-                        ),
-                        itemCount: flatBlocks.length,
-                        itemBuilder: (context, index) {
-                          final block = flatBlocks[index];
-                          return RepaintBoundary(
-                            key: ValueKey(block.keyId),
-                            child: Center(
-                              child: ConstrainedBox(
-                                constraints:
-                                    const BoxConstraints(maxWidth: 840),
-                                child: _buildFlatBlockItem(
-                                  context,
-                                  block,
-                                  isMobile: isMobile,
+          child: RepaintBoundary(
+            child: flatBlocks.isEmpty
+                ? _buildEmptyAntigravityWelcome(context, isMobile)
+                : Stack(
+                    children: [
+                      SelectionArea(
+                        child: ListView.builder(
+                          controller: _scrollController,
+                          reverse: true,
+                          addAutomaticKeepAlives: false,
+                          padding: EdgeInsets.fromLTRB(
+                            isMobile ? 10 : 28,
+                            16,
+                            isMobile ? 10 : 28,
+                            12,
+                          ),
+                          itemCount: flatBlocks.length,
+                          itemBuilder: (context, index) {
+                            final block = flatBlocks[index];
+                            return RepaintBoundary(
+                              key: ValueKey(block.keyId),
+                              child: Center(
+                                child: ConstrainedBox(
+                                  constraints:
+                                      const BoxConstraints(maxWidth: 840),
+                                  child: _buildFlatBlockItem(
+                                    context,
+                                    block,
+                                    isMobile: isMobile,
+                                  ),
                                 ),
                               ),
-                            ),
-                          );
-                        },
-                      ),
-                    ),
-
-                    if (_showScrollToBottomBtn)
-                      Positioned(
-                        right: isMobile ? 14 : 28,
-                        bottom: 10,
-                        child: FloatingActionButton.small(
-                          tooltip: 'Cuộn xuống đoạn chat mới nhất',
-                          backgroundColor: colorScheme.primaryContainer,
-                          foregroundColor: colorScheme.onPrimaryContainer,
-                          onPressed: () => _scrollToBottom(animated: true),
-                          child: const Icon(
-                            Icons.arrow_downward_rounded,
-                            size: 18,
-                          ),
+                            );
+                          },
                         ),
                       ),
-                  ],
-                ),
+
+                      if (_showScrollToBottomBtn)
+                        Positioned(
+                          right: isMobile ? 14 : 28,
+                          bottom: 10,
+                          child: FloatingActionButton.small(
+                            tooltip: 'Cuộn xuống đoạn chat mới nhất',
+                            backgroundColor: colorScheme.primaryContainer,
+                            foregroundColor: colorScheme.onPrimaryContainer,
+                            onPressed: () => _scrollToBottom(animated: true),
+                            child: const Icon(
+                              Icons.arrow_downward_rounded,
+                              size: 18,
+                            ),
+                          ),
+                        ),
+                    ],
+                  ),
+          ),
         ),
 
         // 2. BOTTOM DOCK:
         //    [Trên]   Task Running Panel (nằm phía trên khung chat)
         //    [Giữa]   Thanh % Usage (Limit Tuần / Limit Giờ chuẩn Antigravity)
         //    [Dưới]   Khung nhập Chat (Composer Box)
-        _buildBottomDockStack(context, isMobile, isTurnRunning),
+        RepaintBoundary(
+          child: _buildBottomDockStack(context, isMobile, isTurnRunning),
+        ),
       ],
     );
   }
@@ -734,6 +792,10 @@ class _ChatCanvasViewState extends State<ChatCanvasView> {
 
       case _ChatBlockKind.userPromptBubble:
         final userStep = block.turn!.userStep!;
+        final turnIndex = block.turn!.turnIndex;
+        final isExpanded = _expandedPromptTurns.contains(turnIndex);
+        final promptContent = userStep.content;
+
         return Padding(
           padding: const EdgeInsets.only(top: 8, bottom: 14),
           child: Align(
@@ -758,14 +820,87 @@ class _ChatCanvasViewState extends State<ChatCanvasView> {
                     width: 0.8,
                   ),
                 ),
-                child: Text(
-                  userStep.content,
-                  style: TextStyle(
-                    fontSize: isMobile ? 13.5 : 14,
-                    height: 1.45,
-                    color: const Color(0xFFF4F4F5),
-                    fontWeight: FontWeight.w500,
-                  ),
+                child: LayoutBuilder(
+                  builder: (context, boxConstraints) {
+                    final textStyle = TextStyle(
+                      fontSize: isMobile ? 13.5 : 14,
+                      height: 1.45,
+                      color: const Color(0xFFF4F4F5),
+                      fontWeight: FontWeight.w500,
+                    );
+
+                    final textSpan = TextSpan(
+                      text: promptContent,
+                      style: textStyle,
+                    );
+                    final textPainter = TextPainter(
+                      text: textSpan,
+                      maxLines: 5,
+                      textDirection: Directionality.of(context),
+                    )..layout(maxWidth: boxConstraints.maxWidth);
+
+                    final exceedsFiveLines = textPainter.didExceedMaxLines;
+
+                    return Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Text(
+                          promptContent,
+                          maxLines: (exceedsFiveLines && !isExpanded) ? 5 : null,
+                          overflow: (exceedsFiveLines && !isExpanded)
+                              ? TextOverflow.ellipsis
+                              : TextOverflow.visible,
+                          style: textStyle,
+                        ),
+                        if (exceedsFiveLines) ...[
+                          const SizedBox(height: 6),
+                          Align(
+                            alignment: Alignment.centerRight,
+                            child: InkWell(
+                              onTap: () {
+                                setState(() {
+                                  if (isExpanded) {
+                                    _expandedPromptTurns.remove(turnIndex);
+                                  } else {
+                                    _expandedPromptTurns.add(turnIndex);
+                                  }
+                                });
+                              },
+                              borderRadius: BorderRadius.circular(4),
+                              child: Padding(
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 6,
+                                  vertical: 3,
+                                ),
+                                child: Row(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    Text(
+                                      isExpanded ? 'Thu gọn' : '... More',
+                                      style: TextStyle(
+                                        fontSize: 12,
+                                        fontWeight: FontWeight.w600,
+                                        color: colorScheme.primary,
+                                      ),
+                                    ),
+                                    const SizedBox(width: 2),
+                                    Icon(
+                                      isExpanded
+                                          ? Icons.keyboard_arrow_up_rounded
+                                          : Icons.keyboard_arrow_down_rounded,
+                                      size: 16,
+                                      color: colorScheme.primary,
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            ),
+                          ),
+                        ],
+                      ],
+                    );
+                  },
                 ),
               ),
             ),
@@ -2533,6 +2668,7 @@ class _ChatCanvasViewState extends State<ChatCanvasView> {
           maxChildSize: 0.95,
           expand: false,
           builder: (context, scrollController) {
+            final isMobile = MediaQuery.sizeOf(context).width < 720;
             return Column(
               children: [
                 Center(
@@ -2645,34 +2781,9 @@ class _ChatCanvasViewState extends State<ChatCanvasView> {
                     padding: const EdgeInsets.all(16),
                     children: [
                       if (stream != null && stream.userPrompt.isNotEmpty) ...[
-                        Container(
-                          padding: const EdgeInsets.all(12),
-                          decoration: BoxDecoration(
-                            color: colorScheme.surfaceContainerHigh,
-                            borderRadius: BorderRadius.circular(10),
-                            border: Border.all(
-                              color: colorScheme.outlineVariant.withAlpha(60),
-                            ),
-                          ),
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Text(
-                                'Yêu cầu của bạn (Prompt):',
-                                style: textTheme.labelSmall?.copyWith(
-                                  color: colorScheme.onSurfaceVariant,
-                                  fontWeight: FontWeight.w700,
-                                ),
-                              ),
-                              const SizedBox(height: 6),
-                              Text(
-                                stream.userPrompt,
-                                style: textTheme.bodyMedium?.copyWith(
-                                  fontWeight: FontWeight.w600,
-                                ),
-                              ),
-                            ],
-                          ),
+                        _ScrollablePromptBox(
+                          prompt: stream.userPrompt,
+                          maxHeight: isMobile ? 130 : 180,
                         ),
                         const SizedBox(height: 14),
                       ],
@@ -2867,17 +2978,29 @@ class _ChatCanvasViewState extends State<ChatCanvasView> {
     final stream = widget.activeStream;
     final lastDownloaded = widget.lastDownloadedFilePath;
 
-    final groupedSessionFiles =
-        (!widget.isNewConversationMode && session != null)
-            ? GroupedFileChange.groupRecords(session.filesTouched)
-            : const <GroupedFileChange>[];
-
-    int totalAdded = 0;
-    int totalRemoved = 0;
-    for (final f in groupedSessionFiles) {
-      totalAdded += f.addedLines;
-      totalRemoved += f.removedLines;
+    final currentFilesCount = session?.filesTouched.length ?? 0;
+    final currentSessId = session?.id;
+    if (_lastGroupedFilesRecordCount != currentFilesCount ||
+        _lastGroupedFilesSessionId != currentSessId) {
+      _lastGroupedFilesRecordCount = currentFilesCount;
+      _lastGroupedFilesSessionId = currentSessId;
+      _cachedGroupedSessionFiles =
+          (!widget.isNewConversationMode && session != null)
+              ? GroupedFileChange.groupRecords(session.filesTouched)
+              : const <GroupedFileChange>[];
+      int added = 0;
+      int removed = 0;
+      for (final f in _cachedGroupedSessionFiles) {
+        added += f.addedLines;
+        removed += f.removedLines;
+      }
+      _cachedTotalAdded = added;
+      _cachedTotalRemoved = removed;
     }
+
+    final groupedSessionFiles = _cachedGroupedSessionFiles;
+    final totalAdded = _cachedTotalAdded;
+    final totalRemoved = _cachedTotalRemoved;
 
     final runningSubagents = (!widget.isNewConversationMode && session != null && !session.isInterrupted)
         ? session.subagentLanes
@@ -4201,29 +4324,34 @@ class _ChatCanvasViewState extends State<ChatCanvasView> {
               isMobile ? 12 : 16,
               2,
             ),
-            child: TextField(
-              controller: _promptController,
-              focusNode: _inputFocusNode,
-              minLines: 1,
-              maxLines: isMobile ? 3 : 5,
-              textInputAction: TextInputAction.send,
-              onSubmitted: (_) => _handleSend(),
-              style: textTheme.bodyMedium?.copyWith(
-                height: 1.38,
-                fontSize: isMobile ? 13.5 : 14,
-                color: colorScheme.onSurface,
-              ),
-              decoration: InputDecoration(
-                hintText: isMobile
-                    ? 'Nhập tin nhắn cho Agent ($activeProjectName)...'
-                    : 'Ask anything in $activeProjectName, or type / for workflows...',
-                hintStyle: textTheme.bodyMedium?.copyWith(
-                  fontSize: isMobile ? 13 : 13.5,
-                  color: colorScheme.onSurfaceVariant.withAlpha(155),
+            child: RepaintBoundary(
+              child: TextField(
+                controller: _promptController,
+                focusNode: _inputFocusNode,
+                minLines: 1,
+                maxLines: isMobile ? 3 : 5,
+                keyboardType: TextInputType.multiline,
+                autocorrect: false,
+                enableSuggestions: true,
+                textInputAction: TextInputAction.send,
+                onSubmitted: (_) => _handleSend(),
+                style: textTheme.bodyMedium?.copyWith(
+                  height: 1.38,
+                  fontSize: isMobile ? 13.5 : 14,
+                  color: colorScheme.onSurface,
                 ),
-                border: InputBorder.none,
-                isDense: true,
-                contentPadding: const EdgeInsets.symmetric(vertical: 5),
+                decoration: InputDecoration(
+                  hintText: isMobile
+                      ? 'Nhập tin nhắn cho Agent ($activeProjectName)...'
+                      : 'Ask anything in $activeProjectName, or type / for workflows...',
+                  hintStyle: textTheme.bodyMedium?.copyWith(
+                    fontSize: isMobile ? 13 : 13.5,
+                    color: colorScheme.onSurfaceVariant.withAlpha(155),
+                  ),
+                  border: InputBorder.none,
+                  isDense: true,
+                  contentPadding: const EdgeInsets.symmetric(vertical: 5),
+                ),
               ),
             ),
           ),
@@ -5757,6 +5885,7 @@ class _GroupedFilesChangedCard extends StatefulWidget {
 
 class _GroupedFilesChangedCardState extends State<_GroupedFilesChangedCard> {
   bool _isExpanded = true;
+  bool _showAllFiles = false;
 
   @override
   Widget build(BuildContext context) {
@@ -5771,6 +5900,13 @@ class _GroupedFilesChangedCardState extends State<_GroupedFilesChangedCard> {
       totalRemoved += f.removedLines;
       if (f.hasChanges) modifiedCount++;
     }
+
+    final int totalFilesCount = widget.groupedFiles.length;
+    final bool hasOverflow = totalFilesCount > 5;
+    final visibleFiles = (_showAllFiles || !hasOverflow)
+        ? widget.groupedFiles
+        : widget.groupedFiles.take(5).toList();
+    final int hiddenCount = totalFilesCount - 5;
 
     return Container(
       decoration: BoxDecoration(
@@ -5865,115 +6001,167 @@ class _GroupedFilesChangedCardState extends State<_GroupedFilesChangedCard> {
               padding: const EdgeInsets.all(8),
               child: Column(
                 children: [
-                  for (final f in widget.groupedFiles)
-                    Padding(
-                      padding: const EdgeInsets.only(bottom: 4),
-                      child: InkWell(
-                        borderRadius: BorderRadius.circular(8),
-                        onTap: () => widget.onInspectFileChange(f.path, f),
-                        child: Container(
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 10,
-                            vertical: 6,
-                          ),
-                          decoration: BoxDecoration(
-                            color: colorScheme.surfaceContainer,
-                            borderRadius: BorderRadius.circular(8),
-                          ),
-                          child: Row(
-                            children: [
-                              _buildActionMiniBadge(f.action, textTheme),
-                              const SizedBox(width: 8),
-                              Expanded(
-                                child: Column(
-                                  crossAxisAlignment: CrossAxisAlignment.start,
-                                  children: [
-                                    Text(
-                                      f.basename,
-                                      maxLines: 1,
-                                      overflow: TextOverflow.ellipsis,
-                                      style: textTheme.labelMedium?.copyWith(
-                                        fontFamily: 'monospace',
-                                        fontWeight: FontWeight.w700,
-                                      ),
-                                    ),
-                                    if (!widget.isMobile)
+                  for (final f in visibleFiles)
+                    RepaintBoundary(
+                      child: Padding(
+                        padding: const EdgeInsets.only(bottom: 4),
+                        child: InkWell(
+                          borderRadius: BorderRadius.circular(8),
+                          onTap: () => widget.onInspectFileChange(f.path, f),
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 10,
+                              vertical: 6,
+                            ),
+                            decoration: BoxDecoration(
+                              color: colorScheme.surfaceContainer,
+                              borderRadius: BorderRadius.circular(8),
+                            ),
+                            child: Row(
+                              children: [
+                                _buildActionMiniBadge(f.action, textTheme),
+                                const SizedBox(width: 8),
+                                Expanded(
+                                  child: Column(
+                                    crossAxisAlignment:
+                                        CrossAxisAlignment.start,
+                                    children: [
                                       Text(
-                                        f.path,
+                                        f.basename,
                                         maxLines: 1,
                                         overflow: TextOverflow.ellipsis,
-                                        style: textTheme.labelSmall?.copyWith(
+                                        style: textTheme.labelMedium?.copyWith(
                                           fontFamily: 'monospace',
-                                          fontSize: 9.5,
-                                          color: colorScheme.onSurfaceVariant,
+                                          fontWeight: FontWeight.w700,
                                         ),
                                       ),
-                                  ],
+                                      if (!widget.isMobile)
+                                        Text(
+                                          f.path,
+                                          maxLines: 1,
+                                          overflow: TextOverflow.ellipsis,
+                                          style: textTheme.labelSmall?.copyWith(
+                                            fontFamily: 'monospace',
+                                            fontSize: 9.5,
+                                            color: colorScheme.onSurfaceVariant,
+                                          ),
+                                        ),
+                                    ],
+                                  ),
                                 ),
-                              ),
-                              if (f.addedLines > 0) ...[
-                                Text(
-                                  '+${f.addedLines}',
-                                  style: textTheme.labelSmall?.copyWith(
-                                    fontFamily: 'monospace',
-                                    fontWeight: FontWeight.w800,
-                                    color: Colors.teal,
+                                if (f.addedLines > 0) ...[
+                                  Text(
+                                    '+${f.addedLines}',
+                                    style: textTheme.labelSmall?.copyWith(
+                                      fontFamily: 'monospace',
+                                      fontWeight: FontWeight.w800,
+                                      color: Colors.teal,
+                                    ),
+                                  ),
+                                  const SizedBox(width: 4),
+                                ],
+                                if (f.removedLines > 0) ...[
+                                  Text(
+                                    '-${f.removedLines}',
+                                    style: textTheme.labelSmall?.copyWith(
+                                      fontFamily: 'monospace',
+                                      fontWeight: FontWeight.w800,
+                                      color: Colors.redAccent,
+                                    ),
+                                  ),
+                                  const SizedBox(width: 6),
+                                ],
+                                Tooltip(
+                                  message: 'Xem Change (Diff) & Nội dung',
+                                  child: InkWell(
+                                    borderRadius: BorderRadius.circular(6),
+                                    onTap: () =>
+                                        widget.onInspectFileChange(f.path, f),
+                                    child: Container(
+                                      padding: const EdgeInsets.symmetric(
+                                        horizontal: 7,
+                                        vertical: 3,
+                                      ),
+                                      decoration: BoxDecoration(
+                                        color:
+                                            colorScheme.surfaceContainerHighest,
+                                        borderRadius: BorderRadius.circular(6),
+                                      ),
+                                      child: Text(
+                                        'Diff',
+                                        style: textTheme.labelSmall?.copyWith(
+                                          fontSize: 10,
+                                          fontWeight: FontWeight.w700,
+                                          color: colorScheme.primary,
+                                        ),
+                                      ),
+                                    ),
                                   ),
                                 ),
                                 const SizedBox(width: 4),
-                              ],
-                              if (f.removedLines > 0) ...[
-                                Text(
-                                  '-${f.removedLines}',
-                                  style: textTheme.labelSmall?.copyWith(
-                                    fontFamily: 'monospace',
-                                    fontWeight: FontWeight.w800,
-                                    color: Colors.redAccent,
-                                  ),
-                                ),
-                                const SizedBox(width: 6),
-                              ],
-                              Tooltip(
-                                message: 'Xem Change (Diff) & Nội dung',
-                                child: InkWell(
-                                  borderRadius: BorderRadius.circular(6),
-                                  onTap: () =>
-                                      widget.onInspectFileChange(f.path, f),
-                                  child: Container(
-                                    padding: const EdgeInsets.symmetric(
-                                      horizontal: 7,
-                                      vertical: 3,
-                                    ),
-                                    decoration: BoxDecoration(
-                                      color:
-                                          colorScheme.surfaceContainerHighest,
-                                      borderRadius: BorderRadius.circular(6),
-                                    ),
-                                    child: Text(
-                                      'Diff',
-                                      style: textTheme.labelSmall?.copyWith(
-                                        fontSize: 10,
-                                        fontWeight: FontWeight.w700,
+                                Tooltip(
+                                  message: 'Tải tệp từ Server về máy',
+                                  child: InkWell(
+                                    borderRadius: BorderRadius.circular(6),
+                                    onTap: () => widget.onDownloadFile(f.path),
+                                    child: Padding(
+                                      padding: const EdgeInsets.all(4),
+                                      child: Icon(
+                                        Icons.download_rounded,
+                                        size: 15,
                                         color: colorScheme.primary,
                                       ),
                                     ),
                                   ),
                                 ),
+                              ],
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                  if (hasOverflow)
+                    Padding(
+                      padding: const EdgeInsets.only(top: 2),
+                      child: InkWell(
+                        borderRadius: BorderRadius.circular(8),
+                        onTap: () {
+                          setState(() {
+                            _showAllFiles = !_showAllFiles;
+                          });
+                        },
+                        child: Container(
+                          width: double.infinity,
+                          padding: const EdgeInsets.symmetric(
+                            vertical: 6,
+                            horizontal: 10,
+                          ),
+                          decoration: BoxDecoration(
+                            color: colorScheme.surfaceContainerHighest
+                                .withAlpha(120),
+                            borderRadius: BorderRadius.circular(8),
+                            border: Border.all(
+                              color: colorScheme.outlineVariant.withAlpha(80),
+                            ),
+                          ),
+                          child: Row(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: [
+                              Icon(
+                                _showAllFiles
+                                    ? Icons.keyboard_arrow_up_rounded
+                                    : Icons.keyboard_arrow_down_rounded,
+                                size: 16,
+                                color: colorScheme.primary,
                               ),
-                              const SizedBox(width: 4),
-                              Tooltip(
-                                message: 'Tải tệp từ Server về máy',
-                                child: InkWell(
-                                  borderRadius: BorderRadius.circular(6),
-                                  onTap: () => widget.onDownloadFile(f.path),
-                                  child: Padding(
-                                    padding: const EdgeInsets.all(4),
-                                    child: Icon(
-                                      Icons.download_rounded,
-                                      size: 15,
-                                      color: colorScheme.primary,
-                                    ),
-                                  ),
+                              const SizedBox(width: 6),
+                              Text(
+                                _showAllFiles
+                                    ? 'Thu gọn (chỉ hiện 5 tệp đầu)'
+                                    : 'Xem tất cả $totalFilesCount tệp (còn +$hiddenCount tệp)',
+                                style: textTheme.labelSmall?.copyWith(
+                                  fontWeight: FontWeight.w700,
+                                  color: colorScheme.primary,
                                 ),
                               ),
                             ],
@@ -7252,6 +7440,91 @@ class _AnimatedThinkingRobotCardState extends State<_AnimatedThinkingRobotCard>
           ),
         );
       },
+    );
+  }
+}
+
+/// Khung hiển thị Prompt người dùng có thể cuộn độc lập (khi prompt dài)
+class _ScrollablePromptBox extends StatefulWidget {
+  const _ScrollablePromptBox({
+    required this.prompt,
+    required this.maxHeight,
+  });
+
+  final String prompt;
+  final double maxHeight;
+
+  @override
+  State<_ScrollablePromptBox> createState() => _ScrollablePromptBoxState();
+}
+
+class _ScrollablePromptBoxState extends State<_ScrollablePromptBox> {
+  final ScrollController _scrollController = ScrollController();
+
+  @override
+  void dispose() {
+    _scrollController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+    final textTheme = Theme.of(context).textTheme;
+
+    return Container(
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: colorScheme.surfaceContainerHigh,
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(
+          color: colorScheme.outlineVariant.withAlpha(60),
+        ),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Text(
+                'Yêu cầu của bạn (Prompt):',
+                style: textTheme.labelSmall?.copyWith(
+                  color: colorScheme.onSurfaceVariant,
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+              const Spacer(),
+              Icon(
+                Icons.unfold_more_rounded,
+                size: 14,
+                color: colorScheme.onSurfaceVariant.withAlpha(160),
+              ),
+            ],
+          ),
+          const SizedBox(height: 6),
+          ConstrainedBox(
+            constraints: BoxConstraints(maxHeight: widget.maxHeight),
+            child: Scrollbar(
+              controller: _scrollController,
+              thumbVisibility: true,
+              child: SingleChildScrollView(
+                controller: _scrollController,
+                physics: const ClampingScrollPhysics(),
+                child: Padding(
+                  padding: const EdgeInsets.only(right: 8),
+                  child: SelectableText(
+                    widget.prompt,
+                    style: textTheme.bodyMedium?.copyWith(
+                      fontWeight: FontWeight.w600,
+                      height: 1.45,
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ],
+      ),
     );
   }
 }

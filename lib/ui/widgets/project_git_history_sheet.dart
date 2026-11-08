@@ -1188,17 +1188,498 @@ class _ProjectGitHistorySheetState extends State<ProjectGitHistorySheet> {
       context: context,
       isScrollControlled: true,
       backgroundColor: Colors.transparent,
-      builder: (ctx) => DraggableScrollableSheet(
-        initialChildSize: 0.85,
-        minChildSize: 0.4,
-        maxChildSize: 0.95,
-        builder: (ctx, scroll) => ClipRRect(
-          borderRadius: const BorderRadius.vertical(top: Radius.circular(20)),
-          child: Scaffold(
-            backgroundColor: Theme.of(context).colorScheme.surface,
-            body: _buildCommitDetailPanel(context, isDesktop: false),
+      builder: (ctx) => _MobileCommitDetailSheet(
+        commit: commit,
+        scanner: widget.scanner,
+        serverAddress: widget.serverAddress,
+        projectPath: widget.projectPath,
+      ),
+    );
+  }
+}
+
+/// Modal Bottom Sheet độc lập hiển thị chi tiết Commit & Unified Diff trên Mobile
+/// Tự quản lý vòng đời tải chi tiết để tắt animation loading ngay lập tức khi API phản hồi.
+class _MobileCommitDetailSheet extends StatefulWidget {
+  const _MobileCommitDetailSheet({
+    required this.commit,
+    required this.scanner,
+    required this.serverAddress,
+    required this.projectPath,
+  });
+
+  final GitCommitSummary commit;
+  final BrainScannerService scanner;
+  final String serverAddress;
+  final String projectPath;
+
+  @override
+  State<_MobileCommitDetailSheet> createState() =>
+      _MobileCommitDetailSheetState();
+}
+
+class _MobileCommitDetailSheetState extends State<_MobileCommitDetailSheet> {
+  bool _isLoading = true;
+  GitCommitDetailResponse? _detail;
+  String? _errorMessage;
+
+  @override
+  void initState() {
+    super.initState();
+    _fetchDetail();
+  }
+
+  Future<void> _fetchDetail() async {
+    setState(() {
+      _isLoading = true;
+      _errorMessage = null;
+    });
+
+    final res = await widget.scanner.fetchGitCommitDetail(
+      address: widget.serverAddress,
+      projectPath: widget.projectPath,
+      hash: widget.commit.hash,
+    );
+
+    if (!mounted) return;
+
+    setState(() {
+      _isLoading = false;
+      if (res.ok) {
+        _detail = res;
+      } else {
+        _errorMessage = res.error ?? 'Không thể tải chi tiết commit';
+      }
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+    final textTheme = Theme.of(context).textTheme;
+
+    return DraggableScrollableSheet(
+      initialChildSize: 0.88,
+      minChildSize: 0.45,
+      maxChildSize: 0.96,
+      builder: (ctx, scroll) => ClipRRect(
+        borderRadius: const BorderRadius.vertical(top: Radius.circular(20)),
+        child: Scaffold(
+          backgroundColor: colorScheme.surface,
+          appBar: AppBar(
+            backgroundColor: colorScheme.surfaceContainerHigh,
+            elevation: 0,
+            leading: IconButton(
+              icon: const Icon(Icons.keyboard_arrow_down_rounded, size: 28),
+              onPressed: () => Navigator.of(context).pop(),
+              tooltip: 'Đóng',
+            ),
+            title: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'Chi tiết Commit',
+                  style: textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w700),
+                ),
+                Text(
+                  widget.commit.shortHash,
+                  style: TextStyle(
+                    fontFamily: 'monospace',
+                    fontSize: 11,
+                    color: colorScheme.primary,
+                  ),
+                ),
+              ],
+            ),
+            actions: [
+              IconButton(
+                icon: const Icon(Icons.refresh_rounded, size: 20),
+                tooltip: 'Tải lại',
+                onPressed: _isLoading ? null : _fetchDetail,
+              ),
+              const SizedBox(width: 8),
+            ],
+          ),
+          body: _buildBody(context),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildBody(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+    final textTheme = Theme.of(context).textTheme;
+
+    if (_isLoading) {
+      return const Center(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            CircularProgressIndicator(),
+            SizedBox(height: 14),
+            Text('Đang nạp chi tiết commit và git diff...'),
+          ],
+        ),
+      );
+    }
+
+    if (_errorMessage != null) {
+      return Center(
+        child: Padding(
+          padding: const EdgeInsets.all(24),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Icon(Icons.error_outline_rounded, size: 40, color: Colors.redAccent),
+              const SizedBox(height: 10),
+              Text(
+                _errorMessage!,
+                textAlign: TextAlign.center,
+                style: const TextStyle(color: Colors.redAccent),
+              ),
+              const SizedBox(height: 14),
+              FilledButton.icon(
+                onPressed: _fetchDetail,
+                icon: const Icon(Icons.refresh_rounded),
+                label: const Text('Thử lại'),
+              ),
+            ],
           ),
         ),
+      );
+    }
+
+    final detail = _detail;
+    if (detail == null) {
+      return const SizedBox.shrink();
+    }
+
+    final diffLines = detail.diff.isNotEmpty ? detail.diff.split('\n') : <String>[];
+
+    return DefaultTabController(
+      length: 2,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          // Header chi tiết commit
+          Container(
+            padding: const EdgeInsets.all(14),
+            decoration: BoxDecoration(
+              color: colorScheme.surfaceContainerLow,
+              border: Border(
+                bottom: BorderSide(color: colorScheme.outlineVariant.withAlpha(60)),
+              ),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Expanded(
+                      child: Text(
+                        detail.subject,
+                        style: textTheme.titleSmall?.copyWith(
+                          fontWeight: FontWeight.w800,
+                          height: 1.3,
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    // Nút Copy Full Hash
+                    OutlinedButton.icon(
+                      style: OutlinedButton.styleFrom(
+                        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                        visualDensity: VisualDensity.compact,
+                      ),
+                      onPressed: () {
+                        Clipboard.setData(ClipboardData(text: detail.hash));
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          SnackBar(
+                            content: Text('Đã sao chép hash: ${detail.hash}'),
+                            duration: const Duration(seconds: 1),
+                            behavior: SnackBarBehavior.floating,
+                          ),
+                        );
+                      },
+                      icon: const Icon(Icons.copy_rounded, size: 12),
+                      label: Text(detail.shortHash, style: const TextStyle(fontFamily: 'monospace', fontSize: 11)),
+                    ),
+                  ],
+                ),
+                if (detail.body.trim().isNotEmpty) ...[
+                  const SizedBox(height: 8),
+                  Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.all(8),
+                    decoration: BoxDecoration(
+                      color: colorScheme.surface,
+                      borderRadius: BorderRadius.circular(6),
+                      border: Border.all(color: colorScheme.outlineVariant.withAlpha(60)),
+                    ),
+                    child: SelectableText(
+                      detail.body.trim(),
+                      style: textTheme.bodySmall?.copyWith(height: 1.35),
+                    ),
+                  ),
+                ],
+                const SizedBox(height: 8),
+                Row(
+                  children: [
+                    Icon(Icons.person_outline_rounded, size: 13, color: colorScheme.primary),
+                    const SizedBox(width: 4),
+                    Expanded(
+                      child: Text(
+                        '${detail.authorName} <${detail.authorEmail}>',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          fontSize: 11,
+                          fontWeight: FontWeight.w600,
+                          color: colorScheme.onSurfaceVariant,
+                        ),
+                      ),
+                    ),
+                    Icon(Icons.access_time_rounded, size: 13, color: colorScheme.onSurfaceVariant),
+                    const SizedBox(width: 4),
+                    Text(
+                      detail.committedAt.isNotEmpty
+                          ? detail.committedAt.split('+').first.replaceAll('T', ' ')
+                          : detail.relativeTime,
+                      style: TextStyle(fontSize: 10.5, color: colorScheme.onSurfaceVariant),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+          // Tab bar: Files changed vs Unified Diff
+          TabBar(
+            labelColor: colorScheme.primary,
+            unselectedLabelColor: colorScheme.onSurfaceVariant,
+            indicatorColor: colorScheme.primary,
+            tabs: [
+              Tab(
+                text: 'Tệp thay đổi (${detail.files.length})',
+                icon: const Icon(Icons.folder_open_outlined, size: 15),
+              ),
+              Tab(
+                text: 'Unified Git Diff',
+                icon: const Icon(Icons.difference_outlined, size: 15),
+              ),
+            ],
+          ),
+          Expanded(
+            child: TabBarView(
+              children: [
+                // Tab 1: Danh sách Files
+                detail.files.isEmpty
+                    ? Center(
+                        child: Text(
+                          'Không có tệp nào thay đổi trong commit này',
+                          style: TextStyle(color: colorScheme.onSurfaceVariant),
+                        ),
+                      )
+                    : ListView.builder(
+                        itemCount: detail.files.length,
+                        padding: const EdgeInsets.all(10),
+                        itemBuilder: (ctx, i) {
+                          final f = detail.files[i];
+                          Color statusColor;
+                          String statusLabel;
+                          switch (f.status) {
+                            case 'A':
+                              statusColor = Colors.teal;
+                              statusLabel = 'A';
+                              break;
+                            case 'D':
+                              statusColor = Colors.redAccent;
+                              statusLabel = 'D';
+                              break;
+                            case 'R':
+                              statusColor = Colors.deepPurpleAccent;
+                              statusLabel = 'R';
+                              break;
+                            default:
+                              statusColor = Colors.amber.shade700;
+                              statusLabel = 'M';
+                          }
+
+                          return Container(
+                            margin: const EdgeInsets.only(bottom: 6),
+                            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
+                            decoration: BoxDecoration(
+                              color: colorScheme.surfaceContainerHigh,
+                              borderRadius: BorderRadius.circular(8),
+                              border: Border.all(color: colorScheme.outlineVariant.withAlpha(60)),
+                            ),
+                            child: Row(
+                              children: [
+                                Container(
+                                  width: 18,
+                                  height: 18,
+                                  alignment: Alignment.center,
+                                  decoration: BoxDecoration(
+                                    color: statusColor.withAlpha(35),
+                                    borderRadius: BorderRadius.circular(4),
+                                    border: Border.all(color: statusColor, width: 0.8),
+                                  ),
+                                  child: Text(
+                                    statusLabel,
+                                    style: TextStyle(
+                                      fontSize: 9.5,
+                                      fontWeight: FontWeight.w800,
+                                      color: statusColor,
+                                    ),
+                                  ),
+                                ),
+                                const SizedBox(width: 8),
+                                Expanded(
+                                  child: Text(
+                                    f.path,
+                                    style: const TextStyle(
+                                      fontFamily: 'monospace',
+                                      fontSize: 11.5,
+                                      fontWeight: FontWeight.w600,
+                                    ),
+                                  ),
+                                ),
+                                if (f.additions > 0) ...[
+                                  Text(
+                                    '+${f.additions}',
+                                    style: const TextStyle(
+                                      fontFamily: 'monospace',
+                                      fontSize: 10.5,
+                                      fontWeight: FontWeight.bold,
+                                      color: Colors.teal,
+                                    ),
+                                  ),
+                                  const SizedBox(width: 4),
+                                ],
+                                if (f.deletions > 0) ...[
+                                  Text(
+                                    '-${f.deletions}',
+                                    style: const TextStyle(
+                                      fontFamily: 'monospace',
+                                      fontSize: 10.5,
+                                      fontWeight: FontWeight.bold,
+                                      color: Colors.redAccent,
+                                    ),
+                                  ),
+                                ],
+                              ],
+                            ),
+                          );
+                        },
+                      ),
+
+                // Tab 2: Unified Diff Viewer
+                detail.diff.trim().isEmpty
+                    ? Center(
+                        child: Text(
+                          'Không có nội dung diff cho commit này',
+                          style: TextStyle(color: colorScheme.onSurfaceVariant),
+                        ),
+                      )
+                    : Column(
+                        children: [
+                          Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                            color: colorScheme.surfaceContainerLow,
+                            child: Row(
+                              children: [
+                                Text(
+                                  '${diffLines.length} dòng diff',
+                                  style: TextStyle(fontSize: 11, color: colorScheme.onSurfaceVariant),
+                                ),
+                                const Spacer(),
+                                TextButton.icon(
+                                  style: TextButton.styleFrom(visualDensity: VisualDensity.compact),
+                                  onPressed: () {
+                                    Clipboard.setData(ClipboardData(text: detail.diff));
+                                    ScaffoldMessenger.of(context).showSnackBar(
+                                      const SnackBar(
+                                        content: Text('Đã sao chép toàn bộ Git diff'),
+                                        duration: Duration(seconds: 1),
+                                        behavior: SnackBarBehavior.floating,
+                                      ),
+                                    );
+                                  },
+                                  icon: const Icon(Icons.copy_rounded, size: 13),
+                                  label: const Text('Sao chép Diff', style: TextStyle(fontSize: 11)),
+                                ),
+                              ],
+                            ),
+                          ),
+                          Expanded(
+                            child: SingleChildScrollView(
+                              scrollDirection: Axis.horizontal,
+                              child: SizedBox(
+                                width: 900,
+                                child: ListView.builder(
+                                  itemCount: diffLines.length,
+                                  padding: const EdgeInsets.symmetric(vertical: 4),
+                                  itemBuilder: (ctx, idx) {
+                                    final line = diffLines[idx];
+                                    Color? bgColor;
+                                    Color textColor = colorScheme.onSurface;
+
+                                    if (line.startsWith('+') && !line.startsWith('+++')) {
+                                      bgColor = Colors.green.withAlpha(35);
+                                      textColor = Colors.green.shade700;
+                                    } else if (line.startsWith('-') && !line.startsWith('---')) {
+                                      bgColor = Colors.red.withAlpha(35);
+                                      textColor = Colors.redAccent;
+                                    } else if (line.startsWith('@@')) {
+                                      bgColor = Colors.blue.withAlpha(30);
+                                      textColor = Colors.blueAccent;
+                                    } else if (line.startsWith('diff --git')) {
+                                      bgColor = colorScheme.surfaceContainerHighest;
+                                      textColor = colorScheme.primary;
+                                    }
+
+                                    return Container(
+                                      color: bgColor,
+                                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 1.5),
+                                      child: Row(
+                                        crossAxisAlignment: CrossAxisAlignment.start,
+                                        children: [
+                                          SizedBox(
+                                            width: 38,
+                                            child: Text(
+                                              '${idx + 1}',
+                                              style: TextStyle(
+                                                fontFamily: 'monospace',
+                                                fontSize: 10,
+                                                color: colorScheme.outlineVariant,
+                                              ),
+                                            ),
+                                          ),
+                                          Expanded(
+                                            child: SelectableText(
+                                              line,
+                                              style: TextStyle(
+                                                fontFamily: 'monospace',
+                                                fontSize: 11,
+                                                color: textColor,
+                                                height: 1.3,
+                                              ),
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+                                    );
+                                  },
+                                ),
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+              ],
+            ),
+          ),
+        ],
       ),
     );
   }

@@ -80,6 +80,7 @@ struct ParsedTranscript {
     pub total_cache_tokens: u64,
     pub project_name: String,
     pub project_path: String,
+    pub total_steps: usize,
 }
 
 pub fn detect_hostname() -> String {
@@ -788,13 +789,13 @@ pub fn scan_project_agents_and_skills(project_path: &Path) -> (Vec<CustomAgentSp
                     .file_stem()
                     .and_then(|s| s.to_str())
                     .unwrap_or("agent");
-                let (name, desc, body) = parse_markdown_frontmatter(&raw, stem, "agent");
+                let (name, desc, _) = parse_markdown_frontmatter(&raw, stem, "agent");
                 specs.push(CustomAgentSpec {
                     name,
                     description: desc,
                     kind: "agent".to_string(),
                     file_path: agents_dir.to_string_lossy().to_string(),
-                    body_content: body,
+                    body_content: String::new(),
                 });
             }
         }
@@ -848,14 +849,14 @@ fn scan_agent_subdir(dir: &Path, kind: &str, specs: &mut Vec<CustomAgentSpec>) {
                     } else {
                         &file_stem
                     };
-                    let (name, desc, body) = parse_markdown_frontmatter(&raw, default_name, kind);
+                    let (name, desc, _) = parse_markdown_frontmatter(&raw, default_name, kind);
                     if !specs.iter().any(|s| s.name == name && s.kind == kind) {
                         specs.push(CustomAgentSpec {
                             name,
                             description: desc,
                             kind: kind.to_string(),
                             file_path: path.to_string_lossy().to_string(),
-                            body_content: body,
+                            body_content: String::new(),
                         });
                     }
                 }
@@ -1004,6 +1005,9 @@ pub fn scan_all_sessions(
                 continue;
             }
         }
+        if child_subagent_ids.contains(id) {
+            continue;
+        }
         let parsed = match raw_sessions.get(id) {
             Some(p) => p,
             None => continue,
@@ -1031,36 +1035,82 @@ pub fn scan_all_sessions(
             (parsed.status.clone(), false, None)
         };
 
-        let lanes = if is_active_session {
+        // Khi có 2 hay nhiều conversation cùng chạy, tất cả các conversation đang chạy
+        // hoặc conversation active đều phải được nạp đầy đủ lanes và 150 steps gần nhất.
+        let should_load_full = is_active_session || is_actually_running;
+
+        let lanes = if should_load_full {
             build_subagent_lanes(parsed, &raw_sessions, is_actually_running)
         } else {
             Vec::new()
         };
 
-        let (files, commands, steps) = if is_active_session {
-            let mut files = parsed.files_touched.clone();
-            let mut commands = parsed.commands_run.clone();
+        let sub_to_parent_step: HashMap<String, usize> = parsed
+            .spawned_subagents
+            .iter()
+            .filter(|s| !s.id.is_empty())
+            .map(|s| (s.id.clone(), s.step_index))
+            .collect();
+
+        // Tối ưu Payload Snapshot:
+        // CHỈ nạp files, commands và steps cho session đang active hoặc đang chạy!
+        // Các session inactive trong snapshot chỉ cần metadata gọn nhẹ để sidebar hiển thị.
+        // Khi người dùng bấm vào session bất kỳ, client sẽ fetch full detail qua /api/session.
+        let (files, commands) = if should_load_full {
+            let mut f_list = parsed.files_touched.clone();
+            let mut c_list = parsed.commands_run.clone();
 
             for lane in &lanes {
                 if let Some(sub_parsed) = raw_sessions.get(&lane.id) {
-                    files.extend(sub_parsed.files_touched.clone());
-                    commands.extend(sub_parsed.commands_run.clone());
+                    let parent_step = sub_to_parent_step.get(&lane.id).cloned().unwrap_or(0);
+                    for mut f in sub_parsed.files_touched.clone() {
+                        if parent_step > 0 {
+                            f.step_index = parent_step;
+                        }
+                        f_list.push(f);
+                    }
+                    for mut c in sub_parsed.commands_run.clone() {
+                        if parent_step > 0 {
+                            c.step_index = parent_step;
+                        }
+                        c_list.push(c);
+                    }
                 }
             }
 
-            files.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
-            commands.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+            f_list.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+            c_list.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
 
-            // Với session active: Giữ 150 steps gần nhất để payload cực nhẹ, mượt và không giật
-            let kept_steps = if parsed.steps.len() > 150 {
-                parsed.steps[parsed.steps.len() - 150..].to_vec()
+            if f_list.len() > 80 {
+                f_list.truncate(80);
+            }
+            for f in &mut f_list {
+                if f.diff_preview.len() > 200 {
+                    f.diff_preview = format!("{}...", safe_truncate(&f.diff_preview, 200));
+                }
+            }
+            if c_list.len() > 40 {
+                c_list.truncate(40);
+            }
+            for c in &mut c_list {
+                if c.output_preview.len() > 200 {
+                    c.output_preview = format!("{}...", safe_truncate(&c.output_preview, 200));
+                }
+            }
+            (f_list, c_list)
+        } else {
+            (Vec::new(), Vec::new())
+        };
+
+        // Chỉ nạp 100 steps gần nhất cho session active/running, rỗng cho session inactive
+        let steps = if should_load_full {
+            if parsed.steps.len() > 100 {
+                parsed.steps[parsed.steps.len() - 100..].to_vec()
             } else {
                 parsed.steps.clone()
-            };
-            (files, commands, kept_steps)
+            }
         } else {
-            // Với các session cũ không mở: Để rỗng steps để giảm từ 62MB xuống 200KB!
-            (Vec::new(), Vec::new(), Vec::new())
+            Vec::new()
         };
 
         let mut final_steps = steps;
@@ -1126,7 +1176,11 @@ pub fn scan_all_sessions(
                 .clone(),
             is_interrupted,
             interrupted_reason,
-            custom_agents: p_custom_agents,
+            custom_agents: if should_load_full {
+                p_custom_agents
+            } else {
+                Vec::new()
+            },
             available_agents: p_available_agents,
             has_parallel_flow,
         });
@@ -1233,18 +1287,47 @@ pub fn get_single_session_full(session_id: &str) -> Option<ConversationSession> 
     };
 
     let lanes = build_subagent_lanes(&parsed, &raw_sessions, is_actually_running);
+    let sub_to_parent_step: HashMap<String, usize> = parsed
+        .spawned_subagents
+        .iter()
+        .filter(|s| !s.id.is_empty())
+        .map(|s| (s.id.clone(), s.step_index))
+        .collect();
+
     let mut files = parsed.files_touched.clone();
     let mut commands = parsed.commands_run.clone();
     for lane in &lanes {
         if let Some(sub_parsed) = raw_sessions.get(&lane.id) {
-            files.extend(sub_parsed.files_touched.clone());
-            commands.extend(sub_parsed.commands_run.clone());
+            let parent_step = sub_to_parent_step.get(&lane.id).cloned().unwrap_or(0);
+            for mut f in sub_parsed.files_touched.clone() {
+                if parent_step > 0 {
+                    f.step_index = parent_step;
+                }
+                files.push(f);
+            }
+            for mut c in sub_parsed.commands_run.clone() {
+                if parent_step > 0 {
+                    c.step_index = parent_step;
+                }
+                commands.push(c);
+            }
         }
     }
     files.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
     commands.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
 
-    let mut final_steps = parsed.steps;
+    if files.len() > 100 {
+        files.truncate(100);
+    }
+    if commands.len() > 50 {
+        commands.truncate(50);
+    }
+
+    let mut final_steps = if parsed.steps.len() > 100 {
+        parsed.steps[parsed.steps.len() - 100..].to_vec()
+    } else {
+        parsed.steps
+    };
     if is_interrupted {
         if let Some(last) = final_steps.last() {
             if last.step_type == "PLANNER_RESPONSE" && !last.tool_calls.is_empty() {
@@ -1327,24 +1410,93 @@ pub fn get_session_steps_page(
     let db_meta = db_meta_map.get(session_id);
 
     let parsed = parse_transcript_file(session_id, modified, db_meta)?;
-    let total_steps = parsed.steps.len();
+    let total_steps = parsed.total_steps;
 
-    let candidate_steps: Vec<&AgentStep> = if let Some(target) = before_step {
-        parsed.steps.iter().filter(|s| s.step_index < target).collect()
-    } else {
-        parsed.steps.iter().collect()
+    let earliest_in_cache = parsed.steps.first().map(|s| s.step_index).unwrap_or(0);
+    let can_use_cache = match before_step {
+        None => true,
+        Some(target) => target > earliest_in_cache,
     };
 
-    let count = candidate_steps.len();
-    let take_count = limit.min(count);
-    let start_idx = count.saturating_sub(take_count);
-    let page_steps: Vec<AgentStep> = candidate_steps[start_idx..count]
-        .iter()
-        .map(|&s| s.clone())
-        .collect();
+    if can_use_cache {
+        let candidate_steps: Vec<&AgentStep> = if let Some(target) = before_step {
+            parsed.steps.iter().filter(|s| s.step_index < target).collect()
+        } else {
+            parsed.steps.iter().collect()
+        };
 
+        let count = candidate_steps.len();
+        let take_count = limit.min(count);
+        let start_idx = count.saturating_sub(take_count);
+        let page_steps: Vec<AgentStep> = candidate_steps[start_idx..count]
+            .iter()
+            .map(|&s| s.clone())
+            .collect();
+
+        let earliest_step_index = page_steps.first().map(|s| s.step_index).unwrap_or(0);
+        let has_more = earliest_step_index > 0;
+
+        return Some(SessionStepsPageResponse {
+            session_id: session_id.to_string(),
+            steps: page_steps,
+            has_more,
+            earliest_step_index,
+            total_steps,
+        });
+    }
+
+    read_steps_page_from_file(&transcript_path, session_id, before_step, limit, total_steps, modified)
+}
+
+fn read_steps_page_from_file(
+    path: &Path,
+    session_id: &str,
+    before_step: Option<usize>,
+    limit: usize,
+    total_steps: usize,
+    file_modified: DateTime<Utc>,
+) -> Option<SessionStepsPageResponse> {
+    use std::collections::VecDeque;
+    use std::io::{BufRead, BufReader};
+    let file = fs::File::open(path).ok()?;
+    let reader = BufReader::new(file);
+
+    let target_step = before_step.unwrap_or(usize::MAX);
+    let mut candidate_deque: VecDeque<AgentStep> = VecDeque::new();
+
+    for line_res in reader.lines() {
+        let line = match line_res {
+            Ok(l) => l,
+            Err(_) => continue,
+        };
+        if line.trim().is_empty() {
+            continue;
+        }
+        let map: Value = match serde_json::from_str(&line) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+
+        let step_index = map
+            .get("step_index")
+            .and_then(|v| v.as_u64())
+            .map(|v| v as usize)
+            .unwrap_or(0);
+
+        if step_index >= target_step {
+            continue;
+        }
+
+        let step = parse_single_agent_step(&map, step_index, file_modified);
+        candidate_deque.push_back(step);
+        if candidate_deque.len() > limit {
+            candidate_deque.pop_front();
+        }
+    }
+
+    let page_steps: Vec<AgentStep> = candidate_deque.into_iter().collect();
     let earliest_step_index = page_steps.first().map(|s| s.step_index).unwrap_or(0);
-    let has_more = start_idx > 0;
+    let has_more = earliest_step_index > 0;
 
     Some(SessionStepsPageResponse {
         session_id: session_id.to_string(),
@@ -1423,12 +1575,15 @@ fn build_subagent_lanes(
     let is_session_running = is_session_actually_running;
 
     // 0. Coordinator Orchestrator Lane
-    let coordinator_steps: Vec<AgentStep> = parent
+    let mut coordinator_steps: Vec<AgentStep> = parent
         .steps
         .iter()
         .filter(|s| s.agent_name == "Coordinator" || s.step_type == "USER_INPUT")
         .cloned()
         .collect();
+    if coordinator_steps.len() > 25 {
+        coordinator_steps = coordinator_steps[coordinator_steps.len() - 25..].to_vec();
+    }
     let last_parent_step = parent.steps.last();
     let is_coordinator_active = is_session_running
         && last_parent_step
@@ -1482,7 +1637,7 @@ fn build_subagent_lanes(
         } else {
             None
         };
-        let child_steps = child_transcript
+        let mut child_steps = child_transcript
             .map(|c| c.steps.clone())
             .unwrap_or_else(|| {
                 parent
@@ -1492,6 +1647,9 @@ fn build_subagent_lanes(
                     .cloned()
                     .collect()
             });
+        if child_steps.len() > 25 {
+            child_steps = child_steps[child_steps.len() - 25..].to_vec();
+        }
         let last_child_step = child_steps.last();
 
         let status = if !is_session_actually_running {
@@ -1605,7 +1763,7 @@ fn build_subagent_lanes(
                 }
 
                 // Lọc các steps thuộc về agent này
-                let agent_steps: Vec<AgentStep> = parent
+                let mut agent_steps: Vec<AgentStep> = parent
                     .steps
                     .iter()
                     .filter(|s| {
@@ -1647,6 +1805,9 @@ fn build_subagent_lanes(
                     .cloned()
                     .collect();
 
+                if agent_steps.len() > 25 {
+                    agent_steps = agent_steps[agent_steps.len() - 25..].to_vec();
+                }
                 let last_step = agent_steps.last();
                 let is_this_agent_active = is_session_running
                     && last_parent_step
@@ -1727,7 +1888,7 @@ fn build_subagent_lanes(
                                 .unwrap_or("agent");
                             let (name, desc, _) = parse_markdown_frontmatter(&raw, stem, "agent");
                             if !added_names.contains(&name) {
-                                let agent_steps: Vec<AgentStep> = parent
+                                let mut agent_steps: Vec<AgentStep> = parent
                                     .steps
                                     .iter()
                                     .filter(|s| s.agent_name == name)
@@ -1738,6 +1899,9 @@ fn build_subagent_lanes(
                                 } else {
                                     "completed".to_string()
                                 };
+                                if agent_steps.len() > 25 {
+                                    agent_steps = agent_steps[agent_steps.len() - 25..].to_vec();
+                                }
                                 lanes.push(SubagentLane {
                                     id: name.clone(),
                                     name: name.clone(),
@@ -1787,6 +1951,141 @@ fn infer_target_repo(name: &str, role: &str, prompt: &str) -> String {
     "muop-ecosystem".to_string()
 }
 
+#[derive(Clone)]
+struct CachedTranscript {
+    modified: DateTime<Utc>,
+    len: u64,
+    parsed: std::sync::Arc<ParsedTranscript>,
+}
+
+static TRANSCRIPT_CACHE: OnceLock<Mutex<HashMap<String, CachedTranscript>>> = OnceLock::new();
+
+fn get_transcript_cache() -> &'static Mutex<HashMap<String, CachedTranscript>> {
+    TRANSCRIPT_CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn parse_single_agent_step(
+    map: &Value,
+    step_index: usize,
+    file_modified: DateTime<Utc>,
+) -> AgentStep {
+    let source = map
+        .get("source")
+        .and_then(|v| v.as_str())
+        .unwrap_or("MODEL")
+        .to_string();
+    let step_type = map
+        .get("type")
+        .and_then(|v| v.as_str())
+        .unwrap_or("GENERIC")
+        .to_string();
+    let status = map
+        .get("status")
+        .and_then(|v| v.as_str())
+        .unwrap_or("DONE")
+        .to_string();
+    let content = map
+        .get("content")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let thinking = map
+        .get("thinking")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+
+    let step_time = map
+        .get("created_at")
+        .and_then(|v| v.as_str())
+        .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
+        .map(|dt| dt.with_timezone(&Utc))
+        .unwrap_or(file_modified);
+
+    let mut in_tok = map
+        .get("input_tokens")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    let mut out_tok = map
+        .get("output_tokens")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    let mut cache_tok = map
+        .get("cache_read_tokens")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+
+    if in_tok == 0 && out_tok == 0 {
+        let char_len = (content.len() + thinking.len()) as u64;
+        if step_type == "PLANNER_RESPONSE" {
+            out_tok = (char_len / 4).max(48);
+            in_tok = 950 + (step_index as u64) * 210;
+            cache_tok = (step_index as u64) * 640;
+        } else {
+            in_tok = (char_len / 4).max(32);
+        }
+    }
+
+    let mut tool_calls = Vec::new();
+    if let Some(Value::Array(raw_calls)) = map.get("tool_calls") {
+        for item in raw_calls {
+            let t_name = item
+                .get("name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let mut args_map: HashMap<String, Value> = HashMap::new();
+            if let Some(Value::Object(raw_args)) = item.get("args") {
+                for (k, v) in raw_args {
+                    let str_val = match v {
+                        Value::String(s) => clean_quoted_string(s),
+                        other => clean_quoted_string(&other.to_string()),
+                    };
+                    args_map.insert(k.clone(), Value::String(str_val));
+                }
+            }
+
+            let path_arg = args_map
+                .get("Path")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
+            let repo_tag = classify_repo_from_path(path_arg.as_deref().unwrap_or(""));
+            let summary_label = build_tool_summary_label(&t_name, &args_map);
+
+            tool_calls.push(ToolCallInfo {
+                name: t_name,
+                args: args_map,
+                summary_label,
+                target_path: path_arg,
+                repo_tag,
+            });
+        }
+    }
+
+    let phase = determine_step_phase(&step_type, &tool_calls, &content);
+    let (vn_title, vn_detail) =
+        describe_step_vietnamese(&step_type, &tool_calls, &content, &thinking);
+    let step_agent = classify_step_agent(&step_type, &tool_calls, &content, &thinking);
+
+    AgentStep {
+        step_index,
+        source,
+        step_type: step_type.clone(),
+        status,
+        created_at: step_time.to_rfc3339(),
+        content: clean_user_request_envelope(&step_type, &content),
+        thinking,
+        tool_calls,
+        input_tokens: in_tok,
+        output_tokens: out_tok,
+        cache_read_tokens: cache_tok,
+        agent_name: step_agent,
+        phase,
+        vietnamese_title: vn_title,
+        vietnamese_detail: vn_detail,
+    }
+}
+
 fn parse_transcript_file(
     id: &str,
     file_modified: DateTime<Utc>,
@@ -1795,11 +2094,24 @@ fn parse_transcript_file(
     let path = PathBuf::from(BRAIN_DIR_PATH)
         .join(id)
         .join(".system_generated/logs/transcript.jsonl");
-    let raw_content = fs::read_to_string(&path).ok()?;
-    let lines: Vec<&str> = raw_content.lines().collect();
-    if lines.is_empty() {
-        return None;
+
+    let meta = fs::metadata(&path).ok()?;
+    let file_len = meta.len();
+
+    // 1. Kiểm tra cache trong bộ nhớ RAM (tránh đọc đĩa và parse JSON lặp đi lặp lại)
+    if let Ok(cache) = get_transcript_cache().lock() {
+        if let Some(entry) = cache.get(id) {
+            if entry.modified == file_modified && entry.len == file_len {
+                return Some((*entry.parsed).clone());
+            }
+        }
     }
+
+    use std::collections::VecDeque;
+    use std::io::{BufRead, BufReader};
+
+    let file = fs::File::open(&path).ok()?;
+    let reader = BufReader::new(file);
 
     let mut title = db_meta
         .filter(|m| !m.title.is_empty())
@@ -1812,19 +2124,26 @@ fn parse_transcript_file(
     let mut total_output: u64 = 0;
     let mut total_cache: u64 = 0;
 
-    let mut steps = Vec::new();
-    let mut files_touched = Vec::new();
-    let mut commands_run = Vec::new();
+    let mut steps_deque: VecDeque<AgentStep> = VecDeque::new();
+    let mut files_deque: VecDeque<FileTouchRecord> = VecDeque::new();
+    let mut commands_deque: VecDeque<CommandExecutionRecord> = VecDeque::new();
     let mut spawned_subagents: Vec<SpawnedSubagentMeta> = Vec::new();
     let mut pending_subagent_indices: Vec<usize> = Vec::new();
 
     let conv_id_re = Regex::new(r#""conversationId"\s*:\s*"([^"]+)""#).ok()?;
+    let mut total_step_count: usize = 0;
+    let mut has_verify = false;
+    let mut has_edit_or_parallel = false;
 
-    for line in lines {
+    for line_res in reader.lines() {
+        let line = match line_res {
+            Ok(l) => l,
+            Err(_) => continue,
+        };
         if line.trim().is_empty() {
             continue;
         }
-        let map: Value = match serde_json::from_str(line) {
+        let map: Value = match serde_json::from_str(&line) {
             Ok(v) => v,
             Err(_) => continue,
         };
@@ -1833,39 +2152,15 @@ fn parse_transcript_file(
             .get("step_index")
             .and_then(|v| v.as_u64())
             .map(|v| v as usize)
-            .unwrap_or(steps.len());
-        let source = map
-            .get("source")
-            .and_then(|v| v.as_str())
-            .unwrap_or("MODEL")
-            .to_string();
-        let step_type = map
-            .get("type")
-            .and_then(|v| v.as_str())
-            .unwrap_or("GENERIC")
-            .to_string();
-        let status = map
-            .get("status")
-            .and_then(|v| v.as_str())
-            .unwrap_or("DONE")
-            .to_string();
-        let content = map
-            .get("content")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string();
-        let thinking = map
-            .get("thinking")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string();
+            .unwrap_or(total_step_count);
 
-        let step_time = map
-            .get("created_at")
-            .and_then(|v| v.as_str())
-            .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
-            .map(|dt| dt.with_timezone(&Utc))
-            .unwrap_or(file_modified);
+        total_step_count += 1;
+
+        let step = parse_single_agent_step(&map, step_index, file_modified);
+        let step_time = match DateTime::parse_from_rfc3339(&step.created_at) {
+            Ok(dt) => dt.with_timezone(&Utc),
+            Err(_) => file_modified,
+        };
 
         if created_at.is_none() {
             created_at = Some(step_time);
@@ -1874,184 +2169,137 @@ fn parse_transcript_file(
             updated_at = step_time;
         }
 
-        let mut in_tok = map
-            .get("input_tokens")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(0);
-        let mut out_tok = map
-            .get("output_tokens")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(0);
-        let mut cache_tok = map
-            .get("cache_read_tokens")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(0);
+        total_input += step.input_tokens;
+        total_output += step.output_tokens;
+        total_cache += step.cache_read_tokens;
 
-        if in_tok == 0 && out_tok == 0 {
-            let char_len = (content.len() + thinking.len()) as u64;
-            if step_type == "PLANNER_RESPONSE" {
-                out_tok = (char_len / 4).max(48);
-                in_tok = 950 + (step_index as u64) * 210;
-                cache_tok = (step_index as u64) * 640;
-            } else {
-                in_tok = (char_len / 4).max(32);
-            }
-        }
-
-        total_input += in_tok;
-        total_output += out_tok;
-        total_cache += cache_tok;
-
-        if step_type == "USER_INPUT" && !content.is_empty() && first_user_prompt_title.is_empty() {
-            let extracted = extract_user_request(&content);
+        if step.step_type == "USER_INPUT" && !step.content.is_empty() && first_user_prompt_title.is_empty() {
+            let extracted = extract_user_request(&step.content);
             if !extracted.is_empty() {
                 first_user_prompt_title = extracted;
             }
         }
 
-        let mut tool_calls = Vec::new();
-        if let Some(Value::Array(raw_calls)) = map.get("tool_calls") {
-            for item in raw_calls {
-                let t_name = item
-                    .get("name")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string();
-                let mut args_map: HashMap<String, Value> = HashMap::new();
-                if let Some(Value::Object(raw_args)) = item.get("args") {
-                    for (k, v) in raw_args {
-                        let str_val = match v {
-                            Value::String(s) => clean_quoted_string(s),
-                            other => clean_quoted_string(&other.to_string()),
-                        };
-                        args_map.insert(k.clone(), Value::String(str_val));
-                    }
-                }
+        if step.phase == "crossVerification" {
+            has_verify = true;
+        } else if step.phase == "parallelExecution" {
+            has_edit_or_parallel = true;
+        }
 
-                let path_arg = args_map
-                    .get("Path")
-                    .and_then(|v| v.as_str())
-                    .map(|s| s.to_string());
-                let repo_tag = classify_repo_from_path(path_arg.as_deref().unwrap_or(""));
-                let summary_label = build_tool_summary_label(&t_name, &args_map);
-
-                tool_calls.push(ToolCallInfo {
-                    name: t_name.clone(),
-                    args: args_map.clone(),
-                    summary_label,
-                    target_path: path_arg.clone(),
-                    repo_tag: repo_tag.clone(),
-                });
-
-                if let Some(ref p) = path_arg {
-                    if !p.is_empty() {
-                        let action = match t_name.as_str() {
-                            "read_file" | "view_file_outline" => Some("READ"),
-                            "write_file" => Some("WRITE"),
-                            "edit_file" => Some("EDIT"),
-                            _ => None,
-                        };
-                        if let Some(act) = action {
-                            let (added_lines, removed_lines, diff_preview) =
-                                extract_tool_diff(&t_name, &args_map);
-                            let touch_agent = if repo_tag == "muop-erp-server" {
-                                "erp-server-agent"
-                            } else if repo_tag == "muop-erp-app" {
-                                "erp-app-agent"
-                            } else {
-                                "Coordinator"
-                            };
-                            files_touched.push(FileTouchRecord {
-                                path: p.clone(),
-                                action: act.to_string(),
-                                repo: repo_tag.clone(),
-                                agent_name: touch_agent.to_string(),
-                                step_index,
-                                timestamp: step_time.to_rfc3339(),
-                                added_lines,
-                                removed_lines,
-                                diff_preview,
-                            });
-                        }
-                    }
-                }
-
-                if t_name == "run_command" {
-                    let cmd_line = args_map
-                        .get("CommandLine")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("")
-                        .to_string();
-                    let summary = args_map
-                        .get("toolSummary")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("Thực thi lệnh terminal")
-                        .to_string();
-                    let cmd_agent = if cmd_line.contains("flutter analyze")
-                        || cmd_line.contains("go build")
-                    {
-                        "erp-contract-verifier"
-                    } else if cmd_line.contains("muop-erp-server") {
+        for tc in &step.tool_calls {
+            let path_arg = tc.target_path.as_deref().unwrap_or("");
+            if !path_arg.is_empty() {
+                let action = match tc.name.as_str() {
+                    "read_file" | "view_file_outline" => Some("READ"),
+                    "write_file" => Some("WRITE"),
+                    "edit_file" => Some("EDIT"),
+                    _ => None,
+                };
+                if let Some(act) = action {
+                    let (added_lines, removed_lines, diff_preview) =
+                        extract_tool_diff(&tc.name, &tc.args);
+                    let touch_agent = if tc.repo_tag == "muop-erp-server" {
                         "erp-server-agent"
-                    } else if cmd_line.contains("muop-erp-app") {
+                    } else if tc.repo_tag == "muop-erp-app" {
                         "erp-app-agent"
                     } else {
                         "Coordinator"
                     };
-                    commands_run.push(CommandExecutionRecord {
-                        command_line: cmd_line,
-                        summary,
-                        agent_name: cmd_agent.to_string(),
+                    files_deque.push_back(FileTouchRecord {
+                        path: path_arg.to_string(),
+                        action: act.to_string(),
+                        repo: tc.repo_tag.clone(),
+                        agent_name: touch_agent.to_string(),
                         step_index,
-                        timestamp: step_time.to_rfc3339(),
-                        output_preview: String::new(),
-                        is_success: true,
+                        timestamp: step.created_at.clone(),
+                        added_lines,
+                        removed_lines,
+                        diff_preview: safe_truncate(&diff_preview, 200).to_string(),
                     });
+                    if files_deque.len() > 80 {
+                        files_deque.pop_front();
+                    }
                 }
+            }
 
-                if t_name == "invoke_subagent" {
-                    let role = args_map
-                        .get("Role")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("Subagent Worker")
-                        .to_string();
-                    let type_name = args_map
-                        .get("TypeName")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("self")
-                        .to_string();
-                    let prompt = args_map
-                        .get("Prompt")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("")
-                        .to_string();
-                    let name = if type_name == "self" {
-                        role.clone()
-                    } else {
-                        type_name
-                    };
-                    let idx = spawned_subagents.len();
-                    spawned_subagents.push(SpawnedSubagentMeta {
-                        id: String::new(),
-                        name,
-                        role: role.clone(),
-                        prompt,
-                        step_index,
-                        status: "running".to_string(),
-                        last_action: format!("Đang khởi chạy Subagent: {}", role),
-                        tool_name: "invoke_subagent".to_string(),
-                    });
-                    pending_subagent_indices.push(idx);
+            if tc.name == "run_command" {
+                let cmd_line = tc.args
+                    .get("CommandLine")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let summary = tc.args
+                    .get("toolSummary")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("Thực thi lệnh terminal")
+                    .to_string();
+                let cmd_agent = if cmd_line.contains("flutter analyze")
+                    || cmd_line.contains("go build")
+                {
+                    "erp-contract-verifier"
+                } else if cmd_line.contains("muop-erp-server") {
+                    "erp-server-agent"
+                } else if cmd_line.contains("muop-erp-app") {
+                    "erp-app-agent"
+                } else {
+                    "Coordinator"
+                };
+                commands_deque.push_back(CommandExecutionRecord {
+                    command_line: cmd_line,
+                    summary,
+                    agent_name: cmd_agent.to_string(),
+                    step_index,
+                    timestamp: step.created_at.clone(),
+                    output_preview: String::new(),
+                    is_success: true,
+                });
+                if commands_deque.len() > 40 {
+                    commands_deque.pop_front();
                 }
+            }
+
+            if tc.name == "invoke_subagent" {
+                let role = tc.args
+                    .get("Role")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("Subagent Worker")
+                    .to_string();
+                let type_name = tc.args
+                    .get("TypeName")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("self")
+                    .to_string();
+                let prompt = tc.args
+                    .get("Prompt")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let name = if type_name == "self" {
+                    role.clone()
+                } else {
+                    type_name
+                };
+                let idx = spawned_subagents.len();
+                spawned_subagents.push(SpawnedSubagentMeta {
+                    id: String::new(),
+                    name,
+                    role: role.clone(),
+                    prompt,
+                    step_index,
+                    status: "running".to_string(),
+                    last_action: format!("Đang khởi chạy Subagent: {}", role),
+                    tool_name: "invoke_subagent".to_string(),
+                });
+                pending_subagent_indices.push(idx);
             }
         }
 
-        if step_type == "GENERIC"
-            && content.contains("Created the following subagent:")
+        if step.step_type == "GENERIC"
+            && step.content.contains("Created the following subagent:")
             && !pending_subagent_indices.is_empty()
         {
             let idx = pending_subagent_indices.remove(0);
-            if let Some(caps) = conv_id_re.captures(&content) {
+            if let Some(caps) = conv_id_re.captures(&step.content) {
                 if let Some(m) = caps.get(1) {
                     if let Some(sub) = spawned_subagents.get_mut(idx) {
                         sub.id = m.as_str().to_string();
@@ -2060,10 +2308,10 @@ fn parse_transcript_file(
             }
         }
 
-        if step_type == "SYSTEM_MESSAGE" && content.contains("<SYSTEM_MESSAGE>") {
+        if step.step_type == "SYSTEM_MESSAGE" && step.content.contains("<SYSTEM_MESSAGE>") {
             for sub in &mut spawned_subagents {
-                if !sub.id.is_empty() && content.contains(&sub.id) {
-                    if content.contains("encountered an error") {
+                if !sub.id.is_empty() && step.content.contains(&sub.id) {
+                    if step.content.contains("encountered an error") {
                         sub.status = "error".to_string();
                         sub.last_action = "Subagent gặp lỗi khi thực thi".to_string();
                     } else {
@@ -2075,29 +2323,19 @@ fn parse_transcript_file(
             }
         }
 
-        let phase = determine_step_phase(&step_type, &tool_calls, &content);
-        let (vn_title, vn_detail) =
-            describe_step_vietnamese(&step_type, &tool_calls, &content, &thinking);
-        let step_agent = classify_step_agent(&step_type, &tool_calls, &content, &thinking);
-
-        steps.push(AgentStep {
-            step_index,
-            source,
-            step_type: step_type.clone(),
-            status,
-            created_at: step_time.to_rfc3339(),
-            content: clean_user_request_envelope(&step_type, &content),
-            thinking,
-            tool_calls,
-            input_tokens: in_tok,
-            output_tokens: out_tok,
-            cache_read_tokens: cache_tok,
-            agent_name: step_agent,
-            phase,
-            vietnamese_title: vn_title,
-            vietnamese_detail: vn_detail,
-        });
+        steps_deque.push_back(step);
+        if steps_deque.len() > 150 {
+            steps_deque.pop_front();
+        }
     }
+
+    if total_step_count == 0 {
+        return None;
+    }
+
+    let steps: Vec<AgentStep> = steps_deque.into_iter().collect();
+    let files_touched: Vec<FileTouchRecord> = files_deque.into_iter().collect();
+    let commands_run: Vec<CommandExecutionRecord> = commands_deque.into_iter().collect();
 
     if title.starts_with("Phiên #") && !first_user_prompt_title.is_empty() {
         title = first_user_prompt_title;
@@ -2147,16 +2385,6 @@ fn parse_transcript_file(
             }
         }
 
-        let mut has_verify = false;
-        let mut has_edit_or_parallel = false;
-        for s in &steps {
-            if s.phase == "crossVerification" {
-                has_verify = true;
-            } else if s.phase == "parallelExecution" {
-                has_edit_or_parallel = true;
-            }
-        }
-
         if session_status == "completed" {
             current_phase = "completed".to_string();
         } else if has_verify {
@@ -2168,7 +2396,7 @@ fn parse_transcript_file(
         }
     }
 
-    Some(ParsedTranscript {
+    let parsed_res = ParsedTranscript {
         id: id.to_string(),
         title,
         created_at: created_at.unwrap_or(file_modified),
@@ -2184,7 +2412,21 @@ fn parse_transcript_file(
         total_cache_tokens: total_cache,
         project_name,
         project_path,
-    })
+        total_steps: total_step_count,
+    };
+
+    if let Ok(mut cache) = get_transcript_cache().lock() {
+        cache.insert(
+            id.to_string(),
+            CachedTranscript {
+                modified: file_modified,
+                len: file_len,
+                parsed: std::sync::Arc::new(parsed_res.clone()),
+            },
+        );
+    }
+
+    Some(parsed_res)
 }
 
 fn clean_user_request_envelope(step_type: &str, raw: &str) -> String {
@@ -2213,6 +2455,18 @@ fn extract_user_request(raw: &str) -> String {
         format!("{}...", truncated)
     } else {
         first_line.to_string()
+    }
+}
+
+fn safe_truncate(s: &str, max_bytes: usize) -> &str {
+    if s.len() <= max_bytes {
+        s
+    } else {
+        let mut idx = max_bytes;
+        while idx > 0 && !s.is_char_boundary(idx) {
+            idx -= 1;
+        }
+        &s[..idx]
     }
 }
 

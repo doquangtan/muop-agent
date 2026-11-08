@@ -14,39 +14,51 @@ impl Tray for MuopAgentTray {
     }
 
     fn icon_name(&self) -> String {
-        "network-server".to_string()
+        "muop-agent-server".to_string()
+    }
+
+    fn icon_theme_path(&self) -> String {
+        let home = std::env::var("HOME").unwrap_or_else(|_| "/home/john".to_string());
+        format!("{}/.local/share/icons/muop-agent", home)
     }
 
     fn tool_tip(&self) -> ToolTip {
         ToolTip {
             title: "Mướp Agent Server Engine".to_string(),
             description: "📡 Cổng: 0.0.0.0:8787 • Socket.IO Realtime Active".to_string(),
-            icon_name: "network-server".to_string(),
+            icon_name: "muop-agent-server".to_string(),
             icon_pixmap: Vec::new(),
         }
     }
 
     fn icon_pixmap(&self) -> Vec<Icon> {
-        static ICON: LazyLock<Vec<Icon>> = LazyLock::new(|| {
-            let raw_bytes = include_bytes!("../assets/tray_icon.png");
-            if let Ok(img) = image::load_from_memory_with_format(raw_bytes, image::ImageFormat::Png) {
-                let (width, height) = (img.width(), img.height());
-                let mut data = img.into_rgba8().into_vec();
-                if data.len() % 4 == 0 {
-                    for pixel in data.chunks_exact_mut(4) {
-                        pixel.rotate_right(1); // RGBA sang ARGB (chuẩn StatusNotifierItem)
+        static ICONS: LazyLock<Vec<Icon>> = LazyLock::new(|| {
+            let mut result = Vec::new();
+            let raw_images: [&[u8]; 3] = [
+                include_bytes!("../assets/tray_icon_24.png"),
+                include_bytes!("../assets/tray_icon_32.png"),
+                include_bytes!("../assets/tray_icon.png"),
+            ];
+            for raw in raw_images {
+                if let Ok(img) = image::load_from_memory_with_format(raw, image::ImageFormat::Png) {
+                    let (width, height) = (img.width(), img.height());
+                    let mut data = img.into_rgba8().into_vec();
+                    if data.len() % 4 == 0 {
+                        for pixel in data.chunks_exact_mut(4) {
+                            pixel.rotate_right(1); // RGBA sang ARGB (chuẩn StatusNotifierItem)
+                        }
+                        result.push(Icon {
+                            width: width as i32,
+                            height: height as i32,
+                            data,
+                        });
                     }
-                    return vec![Icon {
-                        width: width as i32,
-                        height: height as i32,
-                        data,
-                    }];
                 }
             }
-            Vec::new()
+            result
         });
 
-        ICON.clone()
+        ICONS.clone()
     }
 
     fn activate(&mut self, _x: i32, _y: i32) {

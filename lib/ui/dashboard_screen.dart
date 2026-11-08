@@ -53,6 +53,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
   String? _selectedSessionId;
   bool _isLoading = true;
   String _searchQuery = '';
+  final Set<String> _expandedProjects = {};
 
   Timer? _fallbackTimer;
   StreamSubscription<AgentMonitorSnapshot>? _snapshotSub;
@@ -128,31 +129,45 @@ class _DashboardScreenState extends State<DashboardScreen> {
         _hostLanIps = snapshot.lanIps;
       }
 
-      // Hợp nhất steps nếu session cũ đã tải chi tiết trước đó
+      // Hợp nhất steps, filesTouched và subagentLanes để bảo toàn dữ liệu khi có nhiều conversation cùng chạy
       final mergedSessions = <ConversationSession>[];
       for (final s in snapshot.sessions) {
-        final existing = _sessions.firstWhere(
-          (old) => old.id == s.id && old.steps.isNotEmpty,
-          orElse: () => s,
-        );
-        if (existing.steps.isNotEmpty &&
-            existing.steps.length > s.steps.length) {
-          final mergedSteps = _mergeNewerSteps(existing.steps, s.steps);
+        final existing = _sessions.where((old) => old.id == s.id).firstOrNull;
+        if (existing != null) {
+          final mergedFiles = _mergeFilesTouched(existing.filesTouched, s.filesTouched);
+          final mergedLanes = s.subagentLanes.isNotEmpty ? s.subagentLanes : existing.subagentLanes;
+
+          if (existing.steps.isNotEmpty &&
+              existing.steps.length > s.steps.length) {
+            final mergedSteps = _mergeNewerSteps(existing.steps, s.steps);
+            mergedSessions.add(
+              s.copyWith(
+                steps: mergedSteps,
+                filesTouched: mergedFiles,
+                subagentLanes: mergedLanes,
+              ),
+            );
+            continue;
+          } else if (s.steps.isEmpty && existing.steps.isNotEmpty) {
+            mergedSessions.add(
+              s.copyWith(
+                steps: existing.steps,
+                filesTouched: mergedFiles,
+                subagentLanes: mergedLanes,
+              ),
+            );
+            continue;
+          }
+
           mergedSessions.add(
             s.copyWith(
-              steps: mergedSteps,
+              filesTouched: mergedFiles,
+              subagentLanes: mergedLanes,
             ),
           );
-          continue;
-        } else if (s.steps.isEmpty && existing.steps.isNotEmpty) {
-          mergedSessions.add(
-            s.copyWith(
-              steps: existing.steps,
-            ),
-          );
-          continue;
+        } else {
+          mergedSessions.add(s);
         }
-        mergedSessions.add(s);
       }
 
       _sessions = mergedSessions;
@@ -517,6 +532,35 @@ class _DashboardScreenState extends State<DashboardScreen> {
         ),
       ),
     );
+  }
+
+  List<FileTouchRecord> _mergeFilesTouched(
+    List<FileTouchRecord> oldFiles,
+    List<FileTouchRecord> newFiles,
+  ) {
+    if (newFiles.isEmpty) return oldFiles;
+    if (oldFiles.isEmpty) return newFiles;
+
+    final seen = <String>{};
+    final merged = <FileTouchRecord>[];
+
+    // Ưu tiên các records từ newFiles
+    for (final f in newFiles) {
+      final key = '${f.path}__${f.stepIndex}__${f.action}';
+      if (seen.add(key)) {
+        merged.add(f);
+      }
+    }
+
+    // Bổ sung các records cũ từ oldFiles nếu chưa có
+    for (final f in oldFiles) {
+      final key = '${f.path}__${f.stepIndex}__${f.action}';
+      if (seen.add(key)) {
+        merged.add(f);
+      }
+    }
+
+    return merged;
   }
 
   List<AgentStep> _mergeNewerSteps(
@@ -1211,7 +1255,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
               width: 300,
               backgroundColor: colorScheme.surfaceContainerLow,
               child: SafeArea(
-                child: _buildAntigravitySidebar(context, isMobileDrawer: true),
+                child: RepaintBoundary(
+                  child: _buildAntigravitySidebar(context, isMobileDrawer: true),
+                ),
               ),
             )
           : null,
@@ -1223,77 +1269,81 @@ class _DashboardScreenState extends State<DashboardScreen> {
               Container(
                 width: 280,
                 color: colorScheme.surfaceContainerLow,
-                child: _buildAntigravitySidebar(context, isMobileDrawer: false),
+                child: RepaintBoundary(
+                  child: _buildAntigravitySidebar(context, isMobileDrawer: false),
+                ),
               ),
               VerticalDivider(width: 1, color: colorScheme.outlineVariant),
             ],
 
             // Khung Chat chính kiểu Antigravity
             Expanded(
-              child: Column(
-                children: [
-                  _buildMinimalTopHeader(
-                    context,
-                    activeSession,
-                    isMobile: isMobile,
-                  ),
-                  Divider(height: 1, color: colorScheme.outlineVariant),
-                  Expanded(
-                    child: _isLoading &&
-                            activeSession == null &&
-                            !_isNewConversationMode
-                        ? const Center(child: CircularProgressIndicator())
-                        : !_isRemoteConnected &&
-                                !_isSocketLive &&
-                                activeSession == null
-                            ? _buildDisconnectedView(context)
-                            : ChatCanvasView(
-                                session: activeSession,
-                                projects: _projects,
-                                selectedProject: _activeChatProject,
-                                availableAgents: _availableAgents,
-                                availableModels: _availableModels,
-                                modelQuotas: _modelQuotas,
-                                selectedAgent: _selectedAgent,
-                                selectedModel: _selectedModel,
-                                isNewConversationMode: _isNewConversationMode,
-                                isSending: _isSendingPrompt,
-                                activeStream: _currentSessionStream,
-                                lastDownloadedFilePath: _lastDownloadedFilePath,
-                                onSelectProject: (p) {
-                                  setState(() => _activeChatProject = p);
-                                },
-                                onSelectAgent: (a) {
-                                  setState(() => _selectedAgent = a);
-                                },
-                                onSelectModel: (m) {
-                                  setState(() => _selectedModel = m);
-                                },
-                                onStartNewConversation: () =>
-                                    _startNewConversationInProject(
-                                  _activeChatProject,
+              child: RepaintBoundary(
+                child: Column(
+                  children: [
+                    _buildMinimalTopHeader(
+                      context,
+                      activeSession,
+                      isMobile: isMobile,
+                    ),
+                    Divider(height: 1, color: colorScheme.outlineVariant),
+                    Expanded(
+                      child: _isLoading &&
+                              activeSession == null &&
+                              !_isNewConversationMode
+                          ? const Center(child: CircularProgressIndicator())
+                          : !_isRemoteConnected &&
+                                  !_isSocketLive &&
+                                  activeSession == null
+                              ? _buildDisconnectedView(context)
+                              : ChatCanvasView(
+                                  session: activeSession,
+                                  projects: _projects,
+                                  selectedProject: _activeChatProject,
+                                  availableAgents: _availableAgents,
+                                  availableModels: _availableModels,
+                                  modelQuotas: _modelQuotas,
+                                  selectedAgent: _selectedAgent,
+                                  selectedModel: _selectedModel,
+                                  isNewConversationMode: _isNewConversationMode,
+                                  isSending: _isSendingPrompt,
+                                  activeStream: _currentSessionStream,
+                                  lastDownloadedFilePath: _lastDownloadedFilePath,
+                                  onSelectProject: (p) {
+                                    setState(() => _activeChatProject = p);
+                                  },
+                                  onSelectAgent: (a) {
+                                    setState(() => _selectedAgent = a);
+                                  },
+                                  onSelectModel: (m) {
+                                    setState(() => _selectedModel = m);
+                                  },
+                                  onStartNewConversation: () =>
+                                      _startNewConversationInProject(
+                                    _activeChatProject,
+                                  ),
+                                  onSendMessage: _handleSendPrompt,
+                                  onStopTurn: _handleStopTurn,
+                                  onOpenFileBrowser: () =>
+                                      _openServerFileBrowser(initialTab: 0),
+                                  onOpenChangesTab: () =>
+                                      _openServerFileBrowser(initialTab: 1),
+                                  onInspectFileChange: _inspectFileChange,
+                                  onDownloadFile: _downloadFileDirectly,
+                                  onOpenDownloadedFile: (path) =>
+                                      _scanner.openDownloadedFile(path),
+                                  onApprovePlan: _handleApprovePlan,
+                                  onRejectPlan: _handleRejectPlan,
+                                  onLoadOlderHistory: _handleLoadOlderHistory,
+                                  onOpenParallelFlow: _openParallelAgentFlowScreen,
+                                  onOpenCreateProject: () =>
+                                      _showCreateProjectDialog(context),
+                                  onGitPush: _handleGitPush,
+                                  onOpenGitHistory: _openActiveGitHistory,
                                 ),
-                                onSendMessage: _handleSendPrompt,
-                                onStopTurn: _handleStopTurn,
-                                onOpenFileBrowser: () =>
-                                    _openServerFileBrowser(initialTab: 0),
-                                onOpenChangesTab: () =>
-                                    _openServerFileBrowser(initialTab: 1),
-                                onInspectFileChange: _inspectFileChange,
-                                onDownloadFile: _downloadFileDirectly,
-                                onOpenDownloadedFile: (path) =>
-                                    _scanner.openDownloadedFile(path),
-                                onApprovePlan: _handleApprovePlan,
-                                onRejectPlan: _handleRejectPlan,
-                                onLoadOlderHistory: _handleLoadOlderHistory,
-                                onOpenParallelFlow: _openParallelAgentFlowScreen,
-                                onOpenCreateProject: () =>
-                                    _showCreateProjectDialog(context),
-                                onGitPush: _handleGitPush,
-                                onOpenGitHistory: _openActiveGitHistory,
-                              ),
-                  ),
-                ],
+                    ),
+                  ],
+                ),
               ),
             ),
           ],
@@ -1748,14 +1798,46 @@ class _DashboardScreenState extends State<DashboardScreen> {
         title: Row(
           children: [
             Expanded(
-              child: Text(
-                project.name,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: textTheme.labelMedium?.copyWith(
-                  fontWeight: hasSelected ? FontWeight.w800 : FontWeight.w600,
-                  color: colorScheme.onSurface,
-                ),
+              child: Row(
+                children: [
+                  Flexible(
+                    child: Text(
+                      project.name,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: textTheme.labelMedium?.copyWith(
+                        fontWeight:
+                            hasSelected ? FontWeight.w800 : FontWeight.w600,
+                        color: colorScheme.onSurface,
+                      ),
+                    ),
+                  ),
+                  if (projectSessions.isNotEmpty) ...[
+                    Container(
+                      margin: const EdgeInsets.only(left: 6),
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 5.5,
+                        vertical: 1.5,
+                      ),
+                      decoration: BoxDecoration(
+                        color: hasSelected
+                            ? colorScheme.primary.withAlpha(30)
+                            : colorScheme.surfaceContainerHighest.withAlpha(120),
+                        borderRadius: BorderRadius.circular(10),
+                      ),
+                      child: Text(
+                        '${projectSessions.length}',
+                        style: textTheme.labelSmall?.copyWith(
+                          fontSize: 10,
+                          fontWeight: FontWeight.w700,
+                          color: hasSelected
+                              ? colorScheme.primary
+                              : colorScheme.onSurfaceVariant,
+                        ),
+                      ),
+                    ),
+                  ],
+                ],
               ),
             ),
             if (project.gitSyncStatus?.isAhead == true &&
@@ -1848,14 +1930,98 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 ),
               ),
             )
-          else
-            for (final session in projectSessions)
-              _buildSidebarConversationItem(
-                context,
-                session,
-                !_isNewConversationMode && session.id == _selectedSessionId,
-                closeDrawerOnTap: closeDrawerOnTap,
-              ),
+          else ...[
+            () {
+              final int totalSessions = projectSessions.length;
+              final bool hasOverflow = totalSessions > 5;
+              final int selectedIndex =
+                  projectSessions.indexWhere((s) => s.id == _selectedSessionId);
+              final bool isSelectedHidden = selectedIndex >= 5;
+              final bool isExpanded =
+                  _expandedProjects.contains(project.name) ||
+                      isSelectedHidden ||
+                      _searchQuery.isNotEmpty;
+              final visibleSessions = (isExpanded || !hasOverflow)
+                  ? projectSessions
+                  : projectSessions.take(5).toList();
+              final int remainingCount = totalSessions - 5;
+
+              return Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  for (final session in visibleSessions)
+                    _buildSidebarConversationItem(
+                      context,
+                      session,
+                      !_isNewConversationMode &&
+                          session.id == _selectedSessionId,
+                      closeDrawerOnTap: closeDrawerOnTap,
+                    ),
+                  if (hasOverflow && _searchQuery.isEmpty)
+                    Padding(
+                      padding: const EdgeInsets.only(
+                        top: 2,
+                        bottom: 4,
+                        left: 4,
+                        right: 4,
+                      ),
+                      child: InkWell(
+                        borderRadius: BorderRadius.circular(6),
+                        onTap: () {
+                          setState(() {
+                            if (isExpanded) {
+                              _expandedProjects.remove(project.name);
+                            } else {
+                              _expandedProjects.add(project.name);
+                            }
+                          });
+                        },
+                        child: Container(
+                          width: double.infinity,
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 8,
+                            vertical: 5,
+                          ),
+                          decoration: BoxDecoration(
+                            color: colorScheme.surfaceContainerHighest
+                                .withAlpha(90),
+                            borderRadius: BorderRadius.circular(6),
+                            border: Border.all(
+                              color: colorScheme.outlineVariant.withAlpha(60),
+                              width: 0.8,
+                            ),
+                          ),
+                          child: Row(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: [
+                              Icon(
+                                isExpanded
+                                    ? Icons.keyboard_arrow_up_rounded
+                                    : Icons.keyboard_arrow_down_rounded,
+                                size: 14,
+                                color: colorScheme.primary,
+                              ),
+                              const SizedBox(width: 4),
+                              Text(
+                                isExpanded
+                                    ? 'See less (thu gọn)'
+                                    : 'See all (còn $remainingCount cuộc hội thoại)',
+                                style: textTheme.labelSmall?.copyWith(
+                                  fontSize: 11,
+                                  fontWeight: FontWeight.w600,
+                                  color: colorScheme.primary,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ),
+                ],
+              );
+            }(),
+          ],
         ],
       ),
     );
