@@ -7,6 +7,7 @@ import '../models/agent_models.dart';
 import '../services/brain_scanner_service.dart';
 import 'parallel_agent_flow_screen.dart';
 import 'widgets/chat_canvas_view.dart';
+import 'widgets/project_git_history_sheet.dart';
 import 'widgets/server_file_browser_sheet.dart';
 
 class DashboardScreen extends StatefulWidget {
@@ -577,6 +578,32 @@ class _DashboardScreenState extends State<DashboardScreen> {
       filePath: filePath,
       groupedChange: change,
       onDownloadFile: _downloadFileDirectly,
+    );
+  }
+
+  void _openActiveGitHistory() {
+    final project = _activeChatProject;
+    final path = project?.path ??
+        _activeSession?.projectPath ??
+        '/home/john/Documents/muop-ecosystem/muop-agent';
+    final name = project?.name ?? _activeSession?.projectName;
+
+    ProjectGitHistorySheet.show(
+      context,
+      scanner: _scanner,
+      serverAddress: _serverAddress,
+      projectPath: path,
+      projectName: name,
+    );
+  }
+
+  void _openGitHistorySheet(ProjectWorkspace project) {
+    ProjectGitHistorySheet.show(
+      context,
+      scanner: _scanner,
+      serverAddress: _serverAddress,
+      projectPath: project.path,
+      projectName: project.name,
     );
   }
 
@@ -1263,6 +1290,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                                 onOpenCreateProject: () =>
                                     _showCreateProjectDialog(context),
                                 onGitPush: _handleGitPush,
+                                onOpenGitHistory: _openActiveGitHistory,
                               ),
                   ),
                 ],
@@ -1434,6 +1462,12 @@ class _DashboardScreenState extends State<DashboardScreen> {
             visualDensity: VisualDensity.compact,
             onPressed: () => _openServerFileBrowser(initialTab: 0),
             icon: const Icon(Icons.folder_special_outlined, size: 19),
+          ),
+          IconButton(
+            tooltip: "Xem Git Tree & Lịch sử Commit",
+            visualDensity: VisualDensity.compact,
+            onPressed: _openActiveGitHistory,
+            icon: const Icon(Icons.account_tree_outlined, size: 19),
           ),
           IconButton(
             tooltip: 'New Conversation',
@@ -1760,6 +1794,27 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 ),
               ),
             ],
+            InkWell(
+              borderRadius: BorderRadius.circular(4),
+              onTap: () {
+                _openGitHistorySheet(project);
+                if (closeDrawerOnTap && Navigator.of(context).canPop()) {
+                  Navigator.of(context).pop();
+                }
+              },
+              child: Padding(
+                padding: const EdgeInsets.all(4),
+                child: Tooltip(
+                  message: "Xem Git Tree & Commit History",
+                  child: Icon(
+                    Icons.account_tree_outlined,
+                    size: 15,
+                    color: colorScheme.onSurfaceVariant,
+                  ),
+                ),
+              ),
+            ),
+            const SizedBox(width: 2),
             InkWell(
               borderRadius: BorderRadius.circular(4),
               onTap: () {

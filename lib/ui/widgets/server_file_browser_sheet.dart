@@ -3,6 +3,7 @@ import 'package:flutter/services.dart';
 
 import '../../models/agent_models.dart';
 import '../../services/brain_scanner_service.dart';
+import 'project_git_history_sheet.dart';
 
 /// Đại diện cho 1 tệp đã được nhóm (deduplicated) từ danh sách FileTouchRecord
 class GroupedFileChange {
@@ -464,6 +465,20 @@ class _ServerFileBrowserSheetState extends State<ServerFileBrowserSheet> {
                 style: const ButtonStyle(
                   visualDensity: VisualDensity.compact,
                 ),
+              ),
+              const SizedBox(width: 4),
+              IconButton(
+                visualDensity: VisualDensity.compact,
+                icon: const Icon(Icons.account_tree_outlined, size: 18),
+                tooltip: 'Xem Git Tree & Commit History',
+                onPressed: () {
+                  ProjectGitHistorySheet.show(
+                    context,
+                    scanner: widget.scanner,
+                    serverAddress: widget.serverAddress,
+                    projectPath: _currentPath,
+                  );
+                },
               ),
               const SizedBox(width: 4),
               IconButton(

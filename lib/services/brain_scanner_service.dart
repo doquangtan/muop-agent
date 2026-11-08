@@ -734,6 +734,90 @@ class BrainScannerService {
     }
   }
 
+  /// Lấy toàn bộ lịch sử Git commits & Git tree của dự án (`/api/git/history`)
+  Future<GitHistoryResponse> fetchGitHistory({
+    required String address,
+    required String projectPath,
+    String? branch,
+    int limit = 100,
+  }) async {
+    final baseUrl = normalizeBaseUrl(address);
+    final client = HttpClient()
+      ..connectionTimeout = const Duration(seconds: 8);
+    try {
+      final uri = Uri.parse('$baseUrl/api/git/history').replace(
+        queryParameters: {
+          'project_path': projectPath.trim(),
+          if (branch != null && branch.trim().isNotEmpty)
+            'branch': branch.trim(),
+          'limit': limit.toString(),
+        },
+      );
+      final req = await client.getUrl(uri);
+      final resp = await req.close().timeout(const Duration(seconds: 12));
+      final body = await resp.transform(utf8.decoder).join();
+      final map = jsonDecode(body) as Map<String, dynamic>;
+      return GitHistoryResponse.fromJson(map);
+    } catch (e) {
+      return GitHistoryResponse(
+        ok: false,
+        projectPath: projectPath,
+        projectName: projectPath.split('/').last,
+        currentBranch: '',
+        branches: const [],
+        totalCommits: 0,
+        commits: const [],
+        error: '$e',
+      );
+    } finally {
+      client.close(force: true);
+    }
+  }
+
+  /// Lấy chi tiết một commit kèm danh sách file thay đổi và unified diff (`/api/git/commit`)
+  Future<GitCommitDetailResponse> fetchGitCommitDetail({
+    required String address,
+    required String projectPath,
+    required String hash,
+  }) async {
+    final baseUrl = normalizeBaseUrl(address);
+    final client = HttpClient()
+      ..connectionTimeout = const Duration(seconds: 10);
+    try {
+      final uri = Uri.parse('$baseUrl/api/git/commit').replace(
+        queryParameters: {
+          'project_path': projectPath.trim(),
+          'hash': hash.trim(),
+        },
+      );
+      final req = await client.getUrl(uri);
+      final resp = await req.close().timeout(const Duration(seconds: 15));
+      final body = await resp.transform(utf8.decoder).join();
+      final map = jsonDecode(body) as Map<String, dynamic>;
+      return GitCommitDetailResponse.fromJson(map);
+    } catch (e) {
+      return GitCommitDetailResponse(
+        ok: false,
+        projectPath: projectPath,
+        hash: hash,
+        shortHash: hash.length >= 7 ? hash.substring(0, 7) : hash,
+        authorName: '',
+        authorEmail: '',
+        committedAt: '',
+        relativeTime: '',
+        subject: '',
+        body: '',
+        parentHashes: const [],
+        refs: const [],
+        files: const [],
+        diff: '',
+        error: '$e',
+      );
+    } finally {
+      client.close(force: true);
+    }
+  }
+
   /// Duyệt danh sách file và thư mục trên Rust Server (`/api/files/list`)
   Future<ServerDirListResponse> fetchServerDirectory({
     required String address,

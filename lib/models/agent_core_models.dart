@@ -1223,3 +1223,184 @@ class ProjectAgentsResponse {
     );
   }
 }
+
+class GitCommitSummary {
+  const GitCommitSummary({
+    required this.hash,
+    required this.shortHash,
+    required this.authorName,
+    required this.authorEmail,
+    required this.committedAt,
+    required this.relativeTime,
+    required this.subject,
+    required this.body,
+    required this.parentHashes,
+    required this.refs,
+    required this.isHead,
+    this.filesCount = 0,
+  });
+
+  final String hash;
+  final String shortHash;
+  final String authorName;
+  final String authorEmail;
+  final String committedAt;
+  final String relativeTime;
+  final String subject;
+  final String body;
+  final List<String> parentHashes;
+  final List<String> refs;
+  final bool isHead;
+  final int filesCount;
+
+  factory GitCommitSummary.fromJson(Map<String, dynamic> json) {
+    return GitCommitSummary(
+      hash: '${json['hash'] ?? ''}',
+      shortHash: '${json['shortHash'] ?? ''}',
+      authorName: '${json['authorName'] ?? ''}',
+      authorEmail: '${json['authorEmail'] ?? ''}',
+      committedAt: '${json['committedAt'] ?? ''}',
+      relativeTime: '${json['relativeTime'] ?? ''}',
+      subject: '${json['subject'] ?? ''}',
+      body: '${json['body'] ?? ''}',
+      parentHashes: (json['parentHashes'] as List?)?.map((e) => '$e').toList() ?? const [],
+      refs: (json['refs'] as List?)?.map((e) => '$e').toList() ?? const [],
+      isHead: json['isHead'] == true,
+      filesCount: (json['filesCount'] as num?)?.toInt() ?? 0,
+    );
+  }
+}
+
+class GitHistoryResponse {
+  const GitHistoryResponse({
+    required this.ok,
+    required this.projectPath,
+    required this.projectName,
+    required this.currentBranch,
+    required this.branches,
+    required this.totalCommits,
+    required this.commits,
+    this.error,
+  });
+
+  final bool ok;
+  final String projectPath;
+  final String projectName;
+  final String currentBranch;
+  final List<String> branches;
+  final int totalCommits;
+  final List<GitCommitSummary> commits;
+  final String? error;
+
+  factory GitHistoryResponse.fromJson(Map<String, dynamic> json) {
+    final commitList = <GitCommitSummary>[];
+    if (json['commits'] is List) {
+      for (final item in json['commits'] as List) {
+        if (item is Map) {
+          commitList.add(GitCommitSummary.fromJson(Map<String, dynamic>.from(item)));
+        }
+      }
+    }
+
+    final branchList = (json['branches'] as List?)?.map((e) => '$e').toList() ?? const <String>[];
+
+    return GitHistoryResponse(
+      ok: json['ok'] == true,
+      projectPath: '${json['projectPath'] ?? ''}',
+      projectName: '${json['projectName'] ?? ''}',
+      currentBranch: '${json['currentBranch'] ?? ''}',
+      branches: branchList,
+      totalCommits: (json['totalCommits'] as num?)?.toInt() ?? commitList.length,
+      commits: commitList,
+      error: json['error']?.toString(),
+    );
+  }
+}
+
+class GitCommitFileChange {
+  const GitCommitFileChange({
+    required this.path,
+    required this.status,
+    required this.additions,
+    required this.deletions,
+  });
+
+  final String path;
+  final String status;
+  final int additions;
+  final int deletions;
+
+  factory GitCommitFileChange.fromJson(Map<String, dynamic> json) {
+    return GitCommitFileChange(
+      path: '${json['path'] ?? ''}',
+      status: '${json['status'] ?? 'M'}',
+      additions: (json['additions'] as num?)?.toInt() ?? 0,
+      deletions: (json['deletions'] as num?)?.toInt() ?? 0,
+    );
+  }
+}
+
+class GitCommitDetailResponse {
+  const GitCommitDetailResponse({
+    required this.ok,
+    required this.projectPath,
+    required this.hash,
+    required this.shortHash,
+    required this.authorName,
+    required this.authorEmail,
+    required this.committedAt,
+    required this.relativeTime,
+    required this.subject,
+    required this.body,
+    required this.parentHashes,
+    required this.refs,
+    required this.files,
+    required this.diff,
+    this.error,
+  });
+
+  final bool ok;
+  final String projectPath;
+  final String hash;
+  final String shortHash;
+  final String authorName;
+  final String authorEmail;
+  final String committedAt;
+  final String relativeTime;
+  final String subject;
+  final String body;
+  final List<String> parentHashes;
+  final List<String> refs;
+  final List<GitCommitFileChange> files;
+  final String diff;
+  final String? error;
+
+  factory GitCommitDetailResponse.fromJson(Map<String, dynamic> json) {
+    final fileList = <GitCommitFileChange>[];
+    if (json['files'] is List) {
+      for (final item in json['files'] as List) {
+        if (item is Map) {
+          fileList.add(GitCommitFileChange.fromJson(Map<String, dynamic>.from(item)));
+        }
+      }
+    }
+
+    return GitCommitDetailResponse(
+      ok: json['ok'] == true,
+      projectPath: '${json['projectPath'] ?? ''}',
+      hash: '${json['hash'] ?? ''}',
+      shortHash: '${json['shortHash'] ?? ''}',
+      authorName: '${json['authorName'] ?? ''}',
+      authorEmail: '${json['authorEmail'] ?? ''}',
+      committedAt: '${json['committedAt'] ?? ''}',
+      relativeTime: '${json['relativeTime'] ?? ''}',
+      subject: '${json['subject'] ?? ''}',
+      body: '${json['body'] ?? ''}',
+      parentHashes: (json['parentHashes'] as List?)?.map((e) => '$e').toList() ?? const [],
+      refs: (json['refs'] as List?)?.map((e) => '$e').toList() ?? const [],
+      files: fileList,
+      diff: '${json['diff'] ?? ''}',
+      error: json['error']?.toString(),
+    );
+  }
+}

@@ -38,6 +38,7 @@ class ChatCanvasView extends StatefulWidget {
     this.onOpenParallelFlow,
     this.onOpenCreateProject,
     this.onGitPush,
+    this.onOpenGitHistory,
   });
 
   final ConversationSession? session;
@@ -71,6 +72,7 @@ class ChatCanvasView extends StatefulWidget {
   final VoidCallback? onOpenCreateProject;
   final Future<GitPushResponse> Function(String projectPath, String branch)?
       onGitPush;
+  final VoidCallback? onOpenGitHistory;
 
   @override
   State<ChatCanvasView> createState() => _ChatCanvasViewState();
@@ -4311,6 +4313,18 @@ class _ChatCanvasViewState extends State<ChatCanvasView> {
                             colorScheme: colorScheme,
                           ),
                         ),
+                        if (widget.onOpenGitHistory != null) ...[
+                          const SizedBox(width: 5),
+                          InkWell(
+                            borderRadius: BorderRadius.circular(8),
+                            onTap: widget.onOpenGitHistory,
+                            child: _ComposerPill(
+                              icon: Icons.account_tree_outlined,
+                              label: isMobile ? 'Git Tree' : 'Git Tree & History',
+                              colorScheme: colorScheme,
+                            ),
+                          ),
+                        ],
                       ],
                     ),
                   ),

@@ -457,6 +457,385 @@ async fn handle_git_push(
     }
 }
 
+#[derive(serde::Deserialize)]
+struct GitHistoryQuery {
+    project_path: String,
+    branch: Option<String>,
+    limit: Option<usize>,
+}
+
+async fn handle_git_history(Query(params): Query<GitHistoryQuery>) -> impl IntoResponse {
+    let project_path = params.project_path.trim().to_string();
+    let branch_filter = params.branch.map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
+    let limit = params.limit.unwrap_or(100).clamp(1, 500);
+
+    let res = tokio::task::spawn_blocking(move || {
+        let p = PathBuf::from(&project_path);
+        let canonical = fs::canonicalize(&p).unwrap_or(p);
+        let project_name = canonical.file_name().and_then(|n| n.to_str()).unwrap_or("project").to_string();
+
+        if !canonical.exists() || !canonical.is_dir() {
+            return models::GitHistoryResponse {
+                ok: false,
+                project_path: canonical.to_string_lossy().to_string(),
+                project_name,
+                current_branch: String::new(),
+                branches: vec![],
+                total_commits: 0,
+                commits: vec![],
+                error: Some(format!("Thư mục không tồn tại: {}", canonical.to_string_lossy())),
+            };
+        }
+
+        if !canonical.join(".git").exists() {
+            return models::GitHistoryResponse {
+                ok: false,
+                project_path: canonical.to_string_lossy().to_string(),
+                project_name,
+                current_branch: String::new(),
+                branches: vec![],
+                total_commits: 0,
+                commits: vec![],
+                error: Some("Thư mục này không phải là một kho lưu trữ Git (.git không tồn tại)".to_string()),
+            };
+        }
+
+        // Lấy tên branch hiện tại
+        let current_branch = Command::new("git")
+            .current_dir(&canonical)
+            .args(["rev-parse", "--abbrev-ref", "HEAD"])
+            .output()
+            .ok()
+            .and_then(|o| if o.status.success() { Some(String::from_utf8_lossy(&o.stdout).trim().to_string()) } else { None })
+            .unwrap_or_else(|| "HEAD".to_string());
+
+        // Lấy danh sách tất cả các branch (cả local và remote)
+        let branches = Command::new("git")
+            .current_dir(&canonical)
+            .args(["branch", "-a", "--format=%(refname:short)"])
+            .output()
+            .ok()
+            .map(|o| {
+                let out = String::from_utf8_lossy(&o.stdout);
+                let mut list: Vec<String> = out.lines()
+                    .map(|l| l.trim().to_string())
+                    .filter(|l| !l.is_empty())
+                    .collect();
+                list.sort();
+                list.dedup();
+                list
+            })
+            .unwrap_or_default();
+
+        let target_branch = branch_filter.unwrap_or_else(|| "HEAD".to_string());
+
+        // Chạy git log với định dạng chuẩn phân cách ký tự điều khiển ASCII
+        let log_res = Command::new("git")
+            .current_dir(&canonical)
+            .args([
+                "log",
+                &format!("-n{}", limit),
+                &target_branch,
+                "--pretty=format:%H\x1f%h\x1f%an\x1f%ae\x1f%aI\x1f%ar\x1f%s\x1f%b\x1f%P\x1f%D\x1e",
+            ])
+            .output();
+
+        match log_res {
+            Ok(out) => {
+                let stdout = String::from_utf8_lossy(&out.stdout);
+                let mut commits = Vec::new();
+                for record in stdout.split('\x1e') {
+                    let rec = record.trim();
+                    if rec.is_empty() {
+                        continue;
+                    }
+                    let fields: Vec<&str> = rec.split('\x1f').collect();
+                    if fields.len() < 7 {
+                        continue;
+                    }
+
+                    let hash = fields.get(0).unwrap_or(&"").trim().to_string();
+                    let short_hash = fields.get(1).unwrap_or(&"").trim().to_string();
+                    let author_name = fields.get(2).unwrap_or(&"").trim().to_string();
+                    let author_email = fields.get(3).unwrap_or(&"").trim().to_string();
+                    let committed_at = fields.get(4).unwrap_or(&"").trim().to_string();
+                    let relative_time = fields.get(5).unwrap_or(&"").trim().to_string();
+                    let subject = fields.get(6).unwrap_or(&"").trim().to_string();
+                    let body = fields.get(7).unwrap_or(&"").trim().to_string();
+                    let parent_hashes: Vec<String> = fields.get(8)
+                        .unwrap_or(&"")
+                        .split_whitespace()
+                        .map(|s| s.trim().to_string())
+                        .filter(|s| !s.is_empty())
+                        .collect();
+                    let refs_raw = fields.get(9).unwrap_or(&"").trim();
+                    let refs: Vec<String> = if !refs_raw.is_empty() {
+                        refs_raw.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect()
+                    } else {
+                        vec![]
+                    };
+                    let is_head = refs.iter().any(|r| r.contains("HEAD"));
+
+                    commits.push(models::GitCommitSummary {
+                        hash,
+                        short_hash,
+                        author_name,
+                        author_email,
+                        committed_at,
+                        relative_time,
+                        subject,
+                        body,
+                        parent_hashes,
+                        refs,
+                        is_head,
+                        files_count: 0,
+                    });
+                }
+
+                models::GitHistoryResponse {
+                    ok: true,
+                    project_path: canonical.to_string_lossy().to_string(),
+                    project_name,
+                    current_branch,
+                    branches,
+                    total_commits: commits.len(),
+                    commits,
+                    error: None,
+                }
+            }
+            Err(e) => models::GitHistoryResponse {
+                ok: false,
+                project_path: canonical.to_string_lossy().to_string(),
+                project_name,
+                current_branch,
+                branches,
+                total_commits: 0,
+                commits: vec![],
+                error: Some(format!("Lỗi khi thực thi lệnh git log: {}", e)),
+            },
+        }
+    }).await.unwrap_or_else(|e| models::GitHistoryResponse {
+        ok: false,
+        project_path: String::new(),
+        project_name: String::new(),
+        current_branch: String::new(),
+        branches: vec![],
+        total_commits: 0,
+        commits: vec![],
+        error: Some(format!("Lỗi hệ thống khi quét lịch sử git: {}", e)),
+    });
+
+    Json(res)
+}
+
+#[derive(serde::Deserialize)]
+struct GitCommitQuery {
+    project_path: String,
+    hash: String,
+}
+
+async fn handle_git_commit(Query(params): Query<GitCommitQuery>) -> impl IntoResponse {
+    let project_path = params.project_path.trim().to_string();
+    let hash = params.hash.trim().to_string();
+
+    if !hash.chars().all(|c| c.is_ascii_hexdigit()) || hash.len() < 4 || hash.len() > 40 {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(models::GitCommitDetailResponse {
+                ok: false,
+                project_path,
+                hash,
+                short_hash: String::new(),
+                author_name: String::new(),
+                author_email: String::new(),
+                committed_at: String::new(),
+                relative_time: String::new(),
+                subject: String::new(),
+                body: String::new(),
+                parent_hashes: vec![],
+                refs: vec![],
+                files: vec![],
+                diff: String::new(),
+                error: Some("Mã băm commit không hợp lệ".to_string()),
+            }),
+        );
+    }
+
+    let res = tokio::task::spawn_blocking(move || {
+        let p = PathBuf::from(&project_path);
+        let canonical = fs::canonicalize(&p).unwrap_or(p);
+
+        if !canonical.exists() || !canonical.join(".git").exists() {
+            return models::GitCommitDetailResponse {
+                ok: false,
+                project_path: canonical.to_string_lossy().to_string(),
+                hash: hash.clone(),
+                short_hash: String::new(),
+                author_name: String::new(),
+                author_email: String::new(),
+                committed_at: String::new(),
+                relative_time: String::new(),
+                subject: String::new(),
+                body: String::new(),
+                parent_hashes: vec![],
+                refs: vec![],
+                files: vec![],
+                diff: String::new(),
+                error: Some("Thư mục dự án không phải là kho lưu trữ Git".to_string()),
+            };
+        }
+
+        // Lấy metadata của commit
+        let meta_res = Command::new("git")
+            .current_dir(&canonical)
+            .args([
+                "show",
+                "-s",
+                "--pretty=format:%H\x1f%h\x1f%an\x1f%ae\x1f%aI\x1f%ar\x1f%s\x1f%b\x1f%P\x1f%D",
+                &hash,
+            ])
+            .output();
+
+        let mut short_hash = hash.chars().take(7).collect::<String>();
+        let mut author_name = String::new();
+        let mut author_email = String::new();
+        let mut committed_at = String::new();
+        let mut relative_time = String::new();
+        let mut subject = String::new();
+        let mut body = String::new();
+        let mut parent_hashes = Vec::new();
+        let mut refs = Vec::new();
+
+        if let Ok(meta_out) = meta_res {
+            let meta_str = String::from_utf8_lossy(&meta_out.stdout);
+            let fields: Vec<&str> = meta_str.split('\x1f').collect();
+            if fields.len() >= 7 {
+                short_hash = fields.get(1).unwrap_or(&"").trim().to_string();
+                author_name = fields.get(2).unwrap_or(&"").trim().to_string();
+                author_email = fields.get(3).unwrap_or(&"").trim().to_string();
+                committed_at = fields.get(4).unwrap_or(&"").trim().to_string();
+                relative_time = fields.get(5).unwrap_or(&"").trim().to_string();
+                subject = fields.get(6).unwrap_or(&"").trim().to_string();
+                body = fields.get(7).unwrap_or(&"").trim().to_string();
+                parent_hashes = fields.get(8)
+                    .unwrap_or(&"")
+                    .split_whitespace()
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+                    .collect();
+                let refs_raw = fields.get(9).unwrap_or(&"").trim();
+                if !refs_raw.is_empty() {
+                    refs = refs_raw.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
+                }
+            }
+        }
+
+        // Lấy danh sách files và số dòng thêm/bớt qua numstat
+        let mut files_map: HashMap<String, (usize, usize, String)> = HashMap::new();
+        if let Ok(numstat_out) = Command::new("git")
+            .current_dir(&canonical)
+            .args(["show", "--numstat", "--format=", &hash])
+            .output()
+        {
+            let numstat_str = String::from_utf8_lossy(&numstat_out.stdout);
+            for line in numstat_str.lines() {
+                let parts: Vec<&str> = line.split('\t').collect();
+                if parts.len() >= 3 {
+                    let additions = parts[0].trim().parse::<usize>().unwrap_or(0);
+                    let deletions = parts[1].trim().parse::<usize>().unwrap_or(0);
+                    let file_path = parts[2].trim().to_string();
+                    files_map.insert(file_path, (additions, deletions, "M".to_string()));
+                }
+            }
+        }
+
+        // Lấy trạng thái A, M, D, R qua name-status
+        if let Ok(status_out) = Command::new("git")
+            .current_dir(&canonical)
+            .args(["diff-tree", "--no-commit-id", "--name-status", "-r", &hash])
+            .output()
+        {
+            let status_str = String::from_utf8_lossy(&status_out.stdout);
+            for line in status_str.lines() {
+                let parts: Vec<&str> = line.split_whitespace().collect();
+                if parts.len() >= 2 {
+                    let status = parts[0].chars().next().unwrap_or('M').to_string();
+                    let file_path = parts.last().unwrap_or(&"").to_string();
+                    if let Some(entry) = files_map.get_mut(&file_path) {
+                        entry.2 = status;
+                    } else {
+                        files_map.insert(file_path, (0, 0, status));
+                    }
+                }
+            }
+        }
+
+        let mut files: Vec<models::GitCommitFileChange> = files_map.into_iter()
+            .map(|(path, (additions, deletions, status))| models::GitCommitFileChange {
+                path,
+                status,
+                additions,
+                deletions,
+            })
+            .collect();
+        files.sort_by(|a, b| a.path.cmp(&b.path));
+
+        // Lấy diff chi tiết của commit
+        let diff = Command::new("git")
+            .current_dir(&canonical)
+            .args(["show", "--stat", "-p", &hash])
+            .output()
+            .ok()
+            .map(|o| {
+                let out = String::from_utf8_lossy(&o.stdout).to_string();
+                if out.len() > 300_000 {
+                    let mut truncated = out[..300_000].to_string();
+                    truncated.push_str("\n\n... [Diff quá lớn đã được cắt bớt] ...");
+                    truncated
+                } else {
+                    out
+                }
+            })
+            .unwrap_or_default();
+
+        models::GitCommitDetailResponse {
+            ok: true,
+            project_path: canonical.to_string_lossy().to_string(),
+            hash,
+            short_hash,
+            author_name,
+            author_email,
+            committed_at,
+            relative_time,
+            subject,
+            body,
+            parent_hashes,
+            refs,
+            files,
+            diff,
+            error: None,
+        }
+    }).await.unwrap_or_else(|e| models::GitCommitDetailResponse {
+        ok: false,
+        project_path: String::new(),
+        hash: String::new(),
+        short_hash: String::new(),
+        author_name: String::new(),
+        author_email: String::new(),
+        committed_at: String::new(),
+        relative_time: String::new(),
+        subject: String::new(),
+        body: String::new(),
+        parent_hashes: vec![],
+        refs: vec![],
+        files: vec![],
+        diff: String::new(),
+        error: Some(format!("Lỗi khi lấy thông tin commit: {}", e)),
+    });
+
+    (StatusCode::OK, Json(res))
+}
+
 async fn handle_files_list(Query(params): Query<HashMap<String, String>>) -> impl IntoResponse {
     let raw_path = params
         .get("path")
@@ -771,6 +1150,8 @@ async fn main() {
         .route("/api/project/create", post(handle_project_create))
         .route("/api/project/agents", get(handle_project_agents))
         .route("/api/git/push", post(handle_git_push))
+        .route("/api/git/history", get(handle_git_history))
+        .route("/api/git/commit", get(handle_git_commit))
         .route("/api/plan/pending", get(handle_plan_pending))
         .route("/api/plan/action", post(handle_plan_action))
         .route("/api/files/list", get(handle_files_list))

@@ -367,5 +367,67 @@ pub struct ProjectAgentsResponse {
     pub error: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GitCommitSummary {
+    pub hash: String,
+    pub short_hash: String,
+    pub author_name: String,
+    pub author_email: String,
+    pub committed_at: String,
+    pub relative_time: String,
+    pub subject: String,
+    pub body: String,
+    pub parent_hashes: Vec<String>,
+    pub refs: Vec<String>,
+    pub is_head: bool,
+    pub files_count: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GitHistoryResponse {
+    pub ok: bool,
+    pub project_path: String,
+    pub project_name: String,
+    pub current_branch: String,
+    pub branches: Vec<String>,
+    pub total_commits: usize,
+    pub commits: Vec<GitCommitSummary>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GitCommitFileChange {
+    pub path: String,
+    pub status: String,
+    pub additions: usize,
+    pub deletions: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GitCommitDetailResponse {
+    pub ok: bool,
+    pub project_path: String,
+    pub hash: String,
+    pub short_hash: String,
+    pub author_name: String,
+    pub author_email: String,
+    pub committed_at: String,
+    pub relative_time: String,
+    pub subject: String,
+    pub body: String,
+    pub parent_hashes: Vec<String>,
+    pub refs: Vec<String>,
+    pub files: Vec<GitCommitFileChange>,
+    pub diff: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+
 
 
