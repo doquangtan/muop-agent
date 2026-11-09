@@ -1,3 +1,4 @@
+use crate::claude_code;
 use crate::models::{
     AgentMonitorSnapshot, AgentStep, ChatTurnStreamState, CommandExecutionRecord,
     ConversationSession, CustomAgentSpec, FileTouchRecord, GitSyncStatus, ModelQuotaBucket,
@@ -26,14 +27,20 @@ pub const ECOSYSTEM_DIR_PATH: &str = "/home/john/Documents/muop-ecosystem";
 pub const AGENTS_CONFIG_DIR_PATH: &str =
     "/home/john/Documents/muop-ecosystem/muop-erp-server/.agents";
 
+/// Danh sách model gửi xuống UI. Id có tiền tố provider để chọn đúng backend:
+/// - `agy:<model>` → Antigravity CLI (`agy`)
+/// - `claude-cli:<alias>` → Claude Code CLI (`claude --model <alias>`)
 pub fn default_models() -> Vec<String> {
     vec![
-        "gemini-3.8-flash-high".to_string(),
-        "gemini-3.8-flash-medium".to_string(),
-        "claude-sonnet-5-5-high".to_string(),
-        "claude-opus-5-5-high".to_string(),
-        "gemini-4-argon-high".to_string(),
-        "gemini-4-argon-medium".to_string(),
+        "claude-cli:sonnet".to_string(),
+        "claude-cli:opus".to_string(),
+        "claude-cli:haiku".to_string(),
+        "agy:gemini-3.8-flash-high".to_string(),
+        "agy:gemini-3.8-flash-medium".to_string(),
+        "agy:claude-sonnet-5-5-high".to_string(),
+        "agy:claude-opus-5-5-high".to_string(),
+        "agy:gemini-4-argon-high".to_string(),
+        "agy:gemini-4-argon-medium".to_string(),
     ]
 }
 
@@ -166,6 +173,8 @@ pub fn scan_running_agy_conversations() -> std::collections::HashSet<String> {
 pub struct SessionChangeTracker {
     pub transcript_fingerprints: HashMap<String, (u64, u64)>, // id -> (mtime_ms, file_size)
     pub sqlite_mtime: u64,
+    /// Fingerprint (mtime, size) của các file session Claude Code CLI
+    pub claude_fingerprints: HashMap<String, (u64, u64)>,
 }
 
 pub fn init_session_change_tracker() -> SessionChangeTracker {
@@ -219,6 +228,7 @@ pub struct DetectedChanges {
 
 /// Xoá cache quota để lần fetch kế tiếp lấy dữ liệu mới nhất từ daemon
 pub fn invalidate_quota_cache() {
+    claude_code::invalidate_limits_cache();
     if let Some(cache) = QUOTA_CACHE.get() {
         if let Ok(mut guard) = cache.lock() {
             guard.0 = Instant::now() - Duration::from_secs(3600);
@@ -304,7 +314,17 @@ pub fn detect_changed_sessions(tracker: &mut SessionChangeTracker) -> DetectedCh
     tracker
         .transcript_fingerprints
         .retain(|id, _| seen_ids.contains(id));
-    let sessions_removed = tracker.transcript_fingerprints.len() != before;
+    let mut sessions_removed = tracker.transcript_fingerprints.len() != before;
+
+    // 1c. Session của Claude Code CLI
+    let claude_changes = claude_code::detect_changes(&mut tracker.claude_fingerprints);
+    changed_top_ids.extend(claude_changes.changed_ids);
+    if claude_changes.removed {
+        sessions_removed = true;
+    }
+    if claude_changes.added {
+        projects_changed = true;
+    }
 
     // 2. Kiểm tra SQLite db mtime
     let db_path = Path::new(SUMMARY_DB_PATH);
@@ -348,7 +368,7 @@ pub fn build_full_snapshot(
     let projects = discover_projects(&sessions);
     let hostname = detect_hostname();
     let lan_ips = detect_lan_ips();
-    let model_quotas = fetch_antigravity_model_quotas();
+    let model_quotas = fetch_all_model_quotas();
 
     AgentMonitorSnapshot {
         sessions,
@@ -366,6 +386,15 @@ pub fn build_full_snapshot(
 }
 
 static QUOTA_CACHE: OnceLock<Mutex<(Instant, Vec<ModelQuotaGroup>)>> = OnceLock::new();
+
+/// Toàn bộ quota/limit hiển thị trên UI: Antigravity + limit tài khoản Claude Code CLI
+pub fn fetch_all_model_quotas() -> Vec<ModelQuotaGroup> {
+    let mut groups = fetch_antigravity_model_quotas();
+    if let Some(claude) = claude_code::fetch_limit_group() {
+        groups.push(claude);
+    }
+    groups
+}
 
 pub fn fetch_antigravity_model_quotas() -> Vec<ModelQuotaGroup> {
     let cache = QUOTA_CACHE.get_or_init(|| {
@@ -1383,6 +1412,8 @@ pub fn scan_all_sessions(
         });
     }
 
+    // Session của Claude Code CLI (~/.claude/projects) được gộp chung vào danh sách
+    sessions.extend(claude_code::scan_sessions(active_streams));
     sessions
 }
 
@@ -1450,6 +1481,9 @@ pub fn get_single_session_with_streams(
     session_id: &str,
     active_streams: &HashMap<String, ChatTurnStreamState>,
 ) -> Option<ConversationSession> {
+    if let Some(session) = claude_code::get_session(session_id, active_streams) {
+        return Some(session);
+    }
     let brain_dir = Path::new(BRAIN_DIR_PATH);
 
     let db_meta_map = load_conversation_summary_meta();
@@ -1618,6 +1652,9 @@ pub fn get_session_steps_page(
     before_step: Option<usize>,
     limit: usize,
 ) -> Option<SessionStepsPageResponse> {
+    if let Some(page) = claude_code::get_steps_page(session_id, before_step, limit) {
+        return Some(page);
+    }
     let brain_dir = Path::new(BRAIN_DIR_PATH);
     let session_dir = brain_dir.join(session_id);
     if !session_dir.exists() {

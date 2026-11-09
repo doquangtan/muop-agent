@@ -1,4 +1,5 @@
 mod chat;
+mod claude_code;
 mod models;
 mod scanner;
 mod tray;

@@ -373,22 +373,79 @@ class _ChatCanvasViewState extends State<ChatCanvasView> {
     });
   }
 
+  /// Model thuộc Claude Code CLI (id dạng `claude-cli:<alias>`), còn lại là Antigravity (`agy:<model>`)
+  bool _isClaudeCliModel(String modelId) => modelId.startsWith('claude-cli:');
+
   String _formatModelLabel(String modelId) {
     switch (modelId) {
       case 'default':
-      case 'gemini-3.8-flash-high':
+      case 'claude-cli:sonnet':
+        return 'Claude Sonnet';
+      case 'claude-cli:opus':
+        return 'Claude Opus';
+      case 'claude-cli:haiku':
+        return 'Claude Haiku';
+      case 'agy:gemini-3.8-flash-high':
         return 'Gemini 3.8 Flash (High)';
-      case 'gemini-3.8-flash-medium':
+      case 'agy:gemini-3.8-flash-medium':
         return 'Gemini 3.8 Flash (Medium)';
-      case 'claude-opus-5-5-high':
-        return 'Claude Opus 5.5 (High)';
-      case 'claude-sonnet-5-5-high':
-        return 'Claude Sonnet 5.5 (High)';
-      case 'claude-sonnet-5-5-medium':
-        return 'Claude Sonnet 5.5 (Medium)';
+      case 'agy:claude-sonnet-5-5-high':
+        return 'Claude Sonnet 5.5 (agy)';
+      case 'agy:claude-opus-5-5-high':
+        return 'Claude Opus 5.5 (agy)';
+      case 'agy:gemini-4-argon-high':
+        return 'Gemini 4 Argon (High)';
+      case 'agy:gemini-4-argon-medium':
+        return 'Gemini 4 Argon (Medium)';
       default:
         return modelId;
     }
+  }
+
+  /// Model đầu tiên của một nhóm provider (để chèn header trong popup)
+  bool _isGroupStart(String modelId) {
+    final index = widget.availableModels.indexOf(modelId);
+    if (index <= 0) return true;
+    return _isClaudeCliModel(modelId) !=
+        _isClaudeCliModel(widget.availableModels[index - 1]);
+  }
+
+  /// Header của mỗi nhóm provider trong popup chọn model
+  List<PopupMenuEntry<String>> _providerHeaderEntries(
+    String modelId,
+    ColorScheme colorScheme, {
+    required bool showDivider,
+  }) {
+    final isClaude = _isClaudeCliModel(modelId);
+    return [
+      if (showDivider) const PopupMenuDivider(),
+      PopupMenuItem<String>(
+        enabled: false,
+        height: 34,
+        child: Row(
+          children: [
+            Icon(
+              isClaude ? Icons.terminal_rounded : Icons.hub_rounded,
+              size: 14,
+              color: colorScheme.primary,
+            ),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text(
+                isClaude
+                    ? 'Claude Code CLI · limit tài khoản Claude'
+                    : 'Antigravity (agy) · quota Gemini/Claude',
+                style: TextStyle(
+                  fontSize: 12,
+                  fontWeight: FontWeight.w700,
+                  color: colorScheme.onSurfaceVariant,
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    ];
   }
 
   List<_ParsedResponseSegment> _parseResponseIntoGranularSegments(String raw) {
@@ -3909,15 +3966,23 @@ class _ChatCanvasViewState extends State<ChatCanvasView> {
     ModelQuotaGroup? claudeGpt;
     ModelQuotaGroup? argon;
 
+    ModelQuotaGroup? claudeCode;
     for (final g in widget.modelQuotas) {
       final lower = g.displayName.toLowerCase();
-      if (lower.contains('argon')) {
+      if (lower.contains('claude code')) {
+        // Limit tài khoản của Claude Code CLI: chỉ dùng cho model claude-cli
+        claudeCode = g;
+      } else if (lower.contains('argon')) {
         argon = g;
       } else if (lower.contains('claude') || lower.contains('gpt')) {
         claudeGpt = g;
       } else if (lower.contains('gemini')) {
         gemini = g;
       }
+    }
+
+    if (_isClaudeCliModel(widget.selectedModel)) {
+      return (primaryGroup: claudeCode, geminiGroup: null);
     }
 
     final m = widget.selectedModel.toLowerCase();
@@ -3973,10 +4038,17 @@ class _ChatCanvasViewState extends State<ChatCanvasView> {
         children: [
           // Chọn nhanh Model AI
           PopupMenuButton<String>(
-            tooltip: 'Đổi Model AI đang sử dụng',
+            tooltip:
+                'Chọn model: Claude Code CLI (claude) hoặc Antigravity (agy)',
             onSelected: widget.onSelectModel,
             itemBuilder: (ctx) => [
-              for (final m in widget.availableModels)
+              for (final m in widget.availableModels) ...[
+                if (_isGroupStart(m))
+                  ..._providerHeaderEntries(
+                    m,
+                    colorScheme,
+                    showDivider: widget.availableModels.indexOf(m) > 0,
+                  ),
                 PopupMenuItem<String>(
                   value: m,
                   child: Row(
@@ -4000,6 +4072,7 @@ class _ChatCanvasViewState extends State<ChatCanvasView> {
                     ],
                   ),
                 ),
+              ],
             ],
             child: Row(
               mainAxisSize: MainAxisSize.min,
@@ -4175,7 +4248,7 @@ class _ChatCanvasViewState extends State<ChatCanvasView> {
                   const SizedBox(width: 10),
                   Expanded(
                     child: Text(
-                      'Antigravity AI Quota & Rate Limits (Realtime)',
+                      'Quota & Limits: Antigravity + Claude Code CLI (Realtime)',
                       style: textTheme.titleSmall?.copyWith(
                         fontWeight: FontWeight.w800,
                       ),
@@ -7319,6 +7392,61 @@ class _AnimatedThinkingRobotCardState extends State<_AnimatedThinkingRobotCard>
                   ],
                 ),
               ),
+
+              // Thinking block: Hiển thị quá trình suy luận của Claude
+              if (stream.thinkingText.trim().isNotEmpty) ...[
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(10, 4, 10, 8),
+                  child: Container(
+                    padding: const EdgeInsets.all(10),
+                    decoration: BoxDecoration(
+                      color: Colors.indigo.withAlpha(30),
+                      borderRadius: BorderRadius.circular(8),
+                      border: Border.all(
+                        color: Colors.indigoAccent.withAlpha(100),
+                        width: 1.0,
+                      ),
+                    ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        Row(
+                          children: [
+                            Container(
+                              width: 6,
+                              height: 6,
+                              decoration: BoxDecoration(
+                                shape: BoxShape.circle,
+                                color: Colors.indigoAccent,
+                              ),
+                            ),
+                            const SizedBox(width: 6),
+                            Text(
+                              'Thinking (Suy luận)',
+                              style: TextStyle(
+                                fontFamily: 'monospace',
+                                fontSize: 10,
+                                fontWeight: FontWeight.w700,
+                                color: colorScheme.onSurfaceVariant,
+                              ),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 6),
+                        SelectableText(
+                          stream.thinkingText.trim(),
+                          style: textTheme.bodySmall?.copyWith(
+                            fontFamily: 'monospace',
+                            fontSize: 10.5,
+                            height: 1.45,
+                            color: colorScheme.onSurfaceVariant,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ],
 
               // Nội dung chi tiết suy nghĩ (khoảng 10 dòng content mới nhất với animation chạy ra)
               if (_isTraceExpanded && stream.streamingText.trim().isNotEmpty) ...[

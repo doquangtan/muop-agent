@@ -44,7 +44,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
   ProjectWorkspace? _activeChatProject;
   String _selectedAgent = 'Coordinator';
-  String _selectedModel = 'gemini-3.8-flash-high';
+  String _selectedModel = 'claude-cli:sonnet';
   bool _isNewConversationMode = false;
   bool _isSendingPrompt = false;
   bool _showDesktopSidebar = true;
@@ -388,7 +388,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
       if (_availableModels.isNotEmpty) {
         _selectedModel = _availableModels.first;
       } else {
-        _selectedModel = 'gemini-3.8-flash-high';
+        _selectedModel = 'claude-cli:sonnet';
       }
     }
     if (_activeChatProject == null && _projects.isNotEmpty) {
@@ -432,7 +432,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
     });
 
     final effectiveModel = (_selectedModel.isEmpty || _selectedModel == 'default')
-        ? 'gemini-3.8-flash-high'
+        ? 'claude-cli:sonnet'
         : _selectedModel;
 
     final result = await _scanner.sendRemoteChatPrompt(

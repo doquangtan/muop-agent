@@ -213,6 +213,7 @@ class ChatTurnStreamState {
     required this.activeStepType,
     required this.startedAt,
     this.error = '',
+    this.thinkingText = '',
   });
 
   final String conversationId;
@@ -223,6 +224,7 @@ class ChatTurnStreamState {
   final String activeStepType;
   final DateTime startedAt;
   final String error;
+  final String thinkingText;
 
   ChatTurnStreamState copyWith({
     String? conversationId,
@@ -233,6 +235,7 @@ class ChatTurnStreamState {
     String? activeStepType,
     DateTime? startedAt,
     String? error,
+    String? thinkingText,
   }) {
     return ChatTurnStreamState(
       conversationId: conversationId ?? this.conversationId,
@@ -243,6 +246,7 @@ class ChatTurnStreamState {
       activeStepType: activeStepType ?? this.activeStepType,
       startedAt: startedAt ?? this.startedAt,
       error: error ?? this.error,
+      thinkingText: thinkingText ?? this.thinkingText,
     );
   }
 
@@ -255,6 +259,7 @@ class ChatTurnStreamState {
         'activeStepType': activeStepType,
         'startedAt': startedAt.toIso8601String(),
         'error': error,
+        'thinkingText': thinkingText,
       };
 
   factory ChatTurnStreamState.fromJson(Map<String, dynamic> json) {
@@ -268,6 +273,7 @@ class ChatTurnStreamState {
       startedAt:
           DateTime.tryParse('${json['startedAt'] ?? ''}') ?? DateTime.now(),
       error: '${json['error'] ?? ''}',
+      thinkingText: '${json['thinkingText'] ?? ''}',
     );
   }
 }

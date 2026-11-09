@@ -186,20 +186,26 @@ class FileDownloadResult {
 }
 
 /// Pure UI Client Service kết nối tới Mướp Agent Rust Server qua Socket.IO v4 & HTTP REST.
-/// Toàn bộ việc quét file, đọc SQLite và chạy tiến trình `agy` đều do Rust Server đảm nhiệm.
+/// Toàn bộ việc quét session, đọc log và chạy tiến trình `claude` (Claude Code CLI) đều do Rust Server đảm nhiệm.
 class BrainScannerService {
   BrainScannerService();
 
   static const String defaultHostAddress = '192.168.31.96:8787';
   static const int defaultBridgePort = 8787;
 
+  /// Id model phải khớp với `scanner::default_models` ở Rust Server.
+  /// - `claude-cli:<alias>` → Claude Code CLI (`claude --model <alias>`)
+  /// - `agy:<model>` → Antigravity CLI (`agy`)
   static const List<String> defaultModels = [
-    'gemini-3.8-flash-high',
-    'gemini-3.8-flash-medium',
-    'claude-sonnet-5-5-high',
-    'claude-opus-5-5-high',
-    'gemini-4-argon-high',
-    'gemini-4-argon-medium',
+    'claude-cli:sonnet',
+    'claude-cli:opus',
+    'claude-cli:haiku',
+    'agy:gemini-3.8-flash-high',
+    'agy:gemini-3.8-flash-medium',
+    'agy:claude-sonnet-5-5-high',
+    'agy:claude-opus-5-5-high',
+    'agy:gemini-4-argon-high',
+    'agy:gemini-4-argon-medium',
   ];
 
   static const List<String> defaultAgents = [

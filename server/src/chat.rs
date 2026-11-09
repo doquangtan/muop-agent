@@ -1,3 +1,4 @@
+use crate::claude_code;
 use crate::models::{ChatSendRequest, ChatSendResponse, ChatTurnStreamState};
 use crate::scanner;
 use chrono::Utc;
@@ -11,6 +12,52 @@ use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
 use tokio::sync::oneshot;
 use tokio::time::{timeout, Duration};
+
+/// Tiền tố id model để UI chọn đúng backend (phải khớp với `scanner::default_models`)
+pub const AGY_PREFIX: &str = "agy:";
+pub const CLAUDE_PREFIX: &str = "claude-cli:";
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Provider {
+    /// Antigravity CLI (`agy`)
+    Agy,
+    /// Claude Code CLI (`claude`)
+    ClaudeCli,
+}
+
+/// Tách provider và tên model thực tế từ id model do UI gửi lên.
+/// Id không có tiền tố được coi là id cũ: alias `sonnet/opus/haiku` → Claude, còn lại → agy.
+pub fn resolve_model(raw: &str) -> (Provider, String) {
+    let m = raw.trim();
+    if let Some(rest) = m.strip_prefix(CLAUDE_PREFIX) {
+        return (Provider::ClaudeCli, claude_code::normalize_model(rest));
+    }
+    if let Some(rest) = m.strip_prefix(AGY_PREFIX) {
+        return (Provider::Agy, agy_model(rest));
+    }
+    if matches!(m, "sonnet" | "opus" | "haiku") {
+        return (Provider::ClaudeCli, m.to_string());
+    }
+    (Provider::Agy, agy_model(m))
+}
+
+fn agy_model(raw: &str) -> String {
+    let m = raw.trim();
+    if m.is_empty() || m == "default" {
+        // Luôn chỉ định model còn quota, không để CLI tự chọn model đã hết quota
+        "gemini-3.8-flash-high".to_string()
+    } else {
+        m.to_string()
+    }
+}
+
+fn agy_bin() -> &'static str {
+    if Path::new("/home/john/.local/bin/agy").exists() {
+        "/home/john/.local/bin/agy"
+    } else {
+        "/home/john/.gemini/bin/agy"
+    }
+}
 
 #[derive(Clone)]
 pub struct AppState {
@@ -71,11 +118,11 @@ impl AppState {
         }
     }
 
-    /// Lấy quota mới nhất và chỉ phát `quotas:update` nếu nội dung thực sự thay đổi so với lần phát trước.
-    /// Hàm có I/O đồng bộ (gọi daemon qua TCP) nên phải được gọi trong `spawn_blocking`.
+    /// Lấy quota/limit mới nhất (Antigravity + Claude Code) và chỉ phát `quotas:update` nếu thay đổi.
+    /// Hàm có I/O đồng bộ (daemon TCP, curl) nên phải được gọi trong `spawn_blocking`.
     /// Trả về `true` nếu đã phát event.
     pub fn broadcast_quotas_update(&self, force: bool) -> bool {
-        let quotas = scanner::fetch_antigravity_model_quotas();
+        let quotas = scanner::fetch_all_model_quotas();
         let val = match serde_json::to_value(&quotas) {
             Ok(v) => v,
             Err(_) => return false,
@@ -126,6 +173,336 @@ impl AppState {
     }
 }
 
+/// Ghép phần đã chốt (committed) với phần đang stream dở (live).
+fn compose_text(committed: &str, live: &str) -> String {
+    match (committed.is_empty(), live.is_empty()) {
+        (_, true) => committed.to_string(),
+        (true, false) => live.to_string(),
+        (false, false) => format!("{}\n\n{}", committed, live),
+    }
+}
+
+/// Ngữ cảnh chung của một lượt chat, dùng để phát `chat:stream`
+struct TurnCtx {
+    state: AppState,
+    pid: u32,
+    cwd: String,
+    prompt: String,
+    started_at: String,
+}
+
+impl TurnCtx {
+    fn emit(&self, cid: &str, text: String, step: &str, thinking: String) {
+        let stream_state = ChatTurnStreamState {
+            conversation_id: cid.to_string(),
+            project_path: self.cwd.clone(),
+            user_prompt: self.prompt.clone(),
+            streaming_text: text,
+            is_running: true,
+            active_step_type: step.to_string(),
+            started_at: self.started_at.clone(),
+            error: String::new(),
+            thinking_text: thinking,
+        };
+        if let Ok(mut streams) = self.state.active_streams.lock() {
+            streams.insert(cid.to_string(), stream_state.clone());
+        }
+        self.state.broadcast_stream_state(&stream_state);
+    }
+
+    /// Đăng ký session id khi CLI báo init (cũng ghi pid để có thể dừng)
+    fn register(&self, cid: &str) {
+        if self.pid > 0 {
+            if let Ok(mut pids) = self.state.running_pids.lock() {
+                pids.insert(cid.to_string(), self.pid);
+            }
+        }
+    }
+}
+
+/// Trạng thái đọc một lượt chat (cập nhật liên tục khi đọc stdout)
+struct TurnState {
+    tracked_id: String,
+    committed: String,
+    live: String,
+    thinking_text: String,
+    current_block_type: String,
+    result_error: Option<String>,
+    init_tx: Option<oneshot::Sender<String>>,
+}
+
+impl TurnState {
+    fn set_init(&mut self, cid: String) {
+        self.tracked_id = cid.clone();
+        if let Some(sender) = self.init_tx.take() {
+            let _ = sender.send(cid);
+        }
+    }
+}
+
+/// Xử lý một dòng stream-json của Antigravity CLI (`agy`)
+fn handle_agy_event(ctx: &TurnCtx, st: &mut TurnState, map: &Value) {
+    match map.get("event").and_then(|v| v.as_str()).unwrap_or("") {
+        "init" => {
+            let cid = map
+                .get("conversation_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .trim()
+                .to_string();
+            if !cid.is_empty() {
+                ctx.register(&cid);
+                st.set_init(cid.clone());
+                ctx.emit(&cid, st.committed.clone(), "init", String::new());
+            }
+        }
+        "step_update" => {
+            let Some(su) = map.get("step_update") else {
+                return;
+            };
+            let cid = su
+                .get("conversation_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or(&st.tracked_id)
+                .trim()
+                .to_string();
+            if !cid.is_empty() && cid != st.tracked_id {
+                st.set_init(cid);
+            }
+            let step_type = su
+                .get("step_type")
+                .and_then(|v| v.as_str())
+                .unwrap_or("agent_response")
+                .to_string();
+            if let Some(delta) = su.get("text_delta").and_then(|v| v.as_str()) {
+                st.committed.push_str(delta);
+            }
+            if !st.tracked_id.is_empty() {
+                let tid = st.tracked_id.clone();
+                ctx.emit(&tid, st.committed.clone(), &step_type, String::new());
+            }
+        }
+        "result" => {
+            if let Some(res) = map.get("result") {
+                let resp_text = res
+                    .get("response")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .trim();
+                if !resp_text.is_empty() && st.committed.is_empty() {
+                    st.committed.push_str(resp_text);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Xử lý một dòng stream-json của Claude Code CLI (`claude -p --output-format stream-json`)
+fn handle_claude_event(ctx: &TurnCtx, st: &mut TurnState, map: &Value) {
+    let kind = map.get("type").and_then(|v| v.as_str()).unwrap_or("");
+    match kind {
+        // Đầu tiên: session_id của Claude Code
+        "system" => {
+            if map.get("subtype").and_then(|v| v.as_str()) != Some("init") {
+                return;
+            }
+            let cid = map
+                .get("session_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .trim()
+                .to_string();
+            if cid.is_empty() {
+                return;
+            }
+            ctx.register(&cid);
+            st.set_init(cid.clone());
+            ctx.emit(&cid, compose_text(&st.committed, &st.live), "init", st.thinking_text.clone());
+        }
+        // Token-level streaming (cần --include-partial-messages)
+        "stream_event" => {
+            let Some(ev) = map.get("event") else {
+                return;
+            };
+            match ev.get("type").and_then(|v| v.as_str()).unwrap_or("") {
+                "message_start" => {
+                    st.live.clear();
+                    st.thinking_text.clear();
+                    st.current_block_type.clear();
+                }
+                "content_block_start" => {
+                    let block_type = ev
+                        .get("content_block")
+                        .and_then(|b| b.get("type"))
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    st.current_block_type = block_type.clone();
+                    let step = match block_type.as_str() {
+                        "tool_use" => "tool_use",
+                        "thinking" => "thinking",
+                        _ => "agent_response",
+                    };
+                    if !st.tracked_id.is_empty() {
+                        let tid = st.tracked_id.clone();
+                        ctx.emit(&tid, compose_text(&st.committed, &st.live), step, st.thinking_text.clone());
+                    }
+                }
+                "content_block_delta" => {
+                    let Some(delta) = ev.get("delta") else {
+                        return;
+                    };
+                    if delta.get("type").and_then(|v| v.as_str()) == Some("text_delta") {
+                        if let Some(t) = delta.get("text").and_then(|v| v.as_str()) {
+                            if st.current_block_type == "thinking" {
+                                st.thinking_text.push_str(t);
+                            } else {
+                                st.live.push_str(t);
+                            }
+                        }
+                        if !st.tracked_id.is_empty() {
+                            let tid = st.tracked_id.clone();
+                            let step = if st.current_block_type == "thinking" {
+                                "thinking"
+                            } else {
+                                "agent_response"
+                            };
+                            ctx.emit(&tid, compose_text(&st.committed, &st.live), step, st.thinking_text.clone());
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        // Message hoàn chỉnh của assistant: chốt text và ghi nhận tool_use
+        "assistant" => {
+            let blocks = map
+                .get("message")
+                .and_then(|m| m.get("content"))
+                .and_then(|c| c.as_array())
+                .cloned()
+                .unwrap_or_default();
+            let mut step = "agent_response";
+            for b in &blocks {
+                match b.get("type").and_then(|v| v.as_str()).unwrap_or("") {
+                    "text" => {
+                        if let Some(t) = b.get("text").and_then(|v| v.as_str()) {
+                            if !t.trim().is_empty() {
+                                if !st.committed.is_empty() {
+                                    st.committed.push_str("\n\n");
+                                }
+                                st.committed.push_str(t.trim_end());
+                            }
+                        }
+                    }
+                    "thinking" => {
+                        if let Some(t) = b.get("thinking").and_then(|v| v.as_str()) {
+                            if !st.thinking_text.is_empty() {
+                                st.thinking_text.push_str("\n\n");
+                            }
+                            st.thinking_text.push_str(t.trim_end());
+                        }
+                    }
+                    "tool_use" => step = "tool_use",
+                    _ => {}
+                }
+            }
+            st.live.clear();
+            if !st.tracked_id.is_empty() {
+                let tid = st.tracked_id.clone();
+                ctx.emit(&tid, compose_text(&st.committed, &st.live), step, st.thinking_text.clone());
+            }
+        }
+        // Kết quả tool trả về cho Claude
+        "user" => {
+            if !st.tracked_id.is_empty() {
+                let tid = st.tracked_id.clone();
+                ctx.emit(&tid, compose_text(&st.committed, &st.live), "tool_result", st.thinking_text.clone());
+            }
+        }
+        "result" => {
+            let is_error = map
+                .get("is_error")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            let text = map
+                .get("result")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .trim()
+                .to_string();
+            if is_error {
+                st.result_error = Some(if text.is_empty() {
+                    "Claude Code CLI báo lỗi".to_string()
+                } else {
+                    text
+                });
+            } else if st.committed.is_empty() && !text.is_empty() {
+                st.committed = text;
+            }
+            st.live.clear();
+        }
+        _ => {}
+    }
+}
+
+fn agy_args(prompt: &str, model: &str, conv_id: Option<&str>, agent: &str) -> Vec<String> {
+    let mut args = vec![
+        "--app_data_dir=antigravity".to_string(),
+        "--dangerously-skip-permissions".to_string(),
+        "--output-format=stream-json".to_string(),
+    ];
+    if let Some(cid) = conv_id {
+        args.push("--conversation".to_string());
+        args.push(cid.to_string());
+    }
+    if !agent.is_empty() && agent != "Coordinator" && agent != "default" {
+        args.push("--agent".to_string());
+        args.push(agent.to_string());
+    }
+    args.push("--model".to_string());
+    args.push(model.to_string());
+    args.push("-p".to_string());
+    args.push(prompt.to_string());
+    args
+}
+
+fn claude_args(prompt: &str, model: &str, conv_id: Option<&str>) -> Vec<String> {
+    let mut args: Vec<String> = vec![
+        "-p".to_string(),
+        prompt.to_string(),
+        "--output-format".to_string(),
+        "stream-json".to_string(),
+        "--verbose".to_string(),
+        "--include-partial-messages".to_string(),
+        "--model".to_string(),
+        model.to_string(),
+        // Giữ hành vi cũ của server: CLI chạy không hỏi quyền (không có người trả lời prompt)
+        "--dangerously-skip-permissions".to_string(),
+    ];
+    if let Some(cid) = conv_id {
+        args.push("--resume".to_string());
+        args.push(cid.to_string());
+    }
+    args
+}
+
+/// Chạy script đồng bộ session của Antigravity IDE (chỉ dùng cho provider agy)
+fn spawn_agy_sync(cid: String, delay_ms: u64) {
+    tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+        let _ = Command::new("python3")
+            .arg("/home/john/Documents/muop-ecosystem/muop-agent/server/scripts/sync_antigravity_ide.py")
+            .arg(&cid)
+            .output()
+            .await;
+    });
+}
+
+/// Gửi một lượt chat tới backend tương ứng với model đã chọn:
+/// - `claude-cli:<alias>` → Claude Code CLI, tiếp tục session bằng `--resume`
+/// - `agy:<model>` → Antigravity CLI (`agy`)
 pub async fn start_chat_turn(state: AppState, req: ChatSendRequest) -> ChatSendResponse {
     let trimmed_prompt = req.prompt.trim().to_string();
     if trimmed_prompt.is_empty() {
@@ -137,53 +514,36 @@ pub async fn start_chat_turn(state: AppState, req: ChatSendRequest) -> ChatSendR
         };
     }
 
-    let agy_bin = if Path::new("/home/john/.local/bin/agy").exists() {
-        "/home/john/.local/bin/agy"
-    } else {
-        "/home/john/.gemini/bin/agy"
-    };
+    let (provider, model) = resolve_model(&req.model);
 
     let mut effective_cwd = req.project_path.trim().to_string();
     if effective_cwd.is_empty() || !Path::new(&effective_cwd).exists() {
         effective_cwd = "/home/john/Documents/muop-ecosystem/muop-erp-server".to_string();
     }
 
-    let mut args = vec![
-        "--app_data_dir=antigravity".to_string(),
-        "--dangerously-skip-permissions".to_string(),
-        "--output-format=stream-json".to_string(),
-    ];
-
     let clean_conv_id = req.conversation_id.trim().to_string();
-    if !clean_conv_id.is_empty()
-        && clean_conv_id != "new"
-        && !clean_conv_id.starts_with("sim-")
-    {
-        args.push("--conversation".to_string());
-        args.push(clean_conv_id.clone());
-    }
-
-    let clean_agent = req.agent_name.trim().to_string();
-    if !clean_agent.is_empty() && clean_agent != "Coordinator" && clean_agent != "default" {
-        args.push("--agent".to_string());
-        args.push(clean_agent);
-    }
-
-    // Luôn luôn chỉ định model còn quota (gemini-3.8-flash-high mặc định), không để CLI tự chọn gemini-4-argon hết quota
-    let clean_model = if !req.model.trim().is_empty() && req.model.trim() != "default" {
-        req.model.trim().to_string()
+    let is_resume =
+        !clean_conv_id.is_empty() && clean_conv_id != "new" && !clean_conv_id.starts_with("sim-");
+    let resume_id = if is_resume {
+        Some(clean_conv_id.as_str())
     } else {
-        "gemini-3.8-flash-high".to_string()
+        None
     };
-    args.push("--model".to_string());
-    args.push(clean_model.clone());
 
-    args.push("-p".to_string());
-    args.push(trimmed_prompt.clone());
+    let (bin, args) = match provider {
+        Provider::ClaudeCli => (
+            claude_code::claude_bin(),
+            claude_args(&trimmed_prompt, &model, resume_id),
+        ),
+        Provider::Agy => (
+            agy_bin().to_string(),
+            agy_args(&trimmed_prompt, &model, resume_id, req.agent_name.trim()),
+        ),
+    };
 
     eprintln!(
-        "[CHAT_SEND] Spawning agy CLI: bin={} conv='{}' model='{}' cwd='{}' prompt='{}'",
-        agy_bin, clean_conv_id, clean_model, effective_cwd, trimmed_prompt
+        "[CHAT_SEND] provider={:?} bin={} conv='{}' model='{}' cwd='{}' prompt='{}'",
+        provider, bin, clean_conv_id, model, effective_cwd, trimmed_prompt
     );
 
     let use_systemd_scope =
@@ -193,81 +553,69 @@ pub async fn start_chat_turn(state: AppState, req: ChatSendRequest) -> ChatSendR
         c.arg("--user")
             .arg("--scope")
             .arg("--quiet")
-            .arg(agy_bin)
+            .arg(&bin)
             .args(&args);
         c
     } else {
-        let mut c = Command::new(agy_bin);
+        let mut c = Command::new(&bin);
         c.args(&args);
         c
     };
 
     let mut child = match cmd
         .current_dir(&effective_cwd)
+        .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
     {
         Ok(c) => c,
         Err(e) => {
+            let label = match provider {
+                Provider::ClaudeCli => "Claude Code CLI",
+                Provider::Agy => "agy CLI",
+            };
             return ChatSendResponse {
                 ok: false,
                 conversation_id: clean_conv_id,
                 project_path: effective_cwd,
-                error: format!("Không thể khởi chạy agy CLI: {}", e),
+                error: format!("Không thể khởi chạy {} ({}): {}", label, bin, e),
             };
         }
     };
 
     let pid = child.id().unwrap_or(0);
-    let started_at_str = Utc::now().to_rfc3339();
+    let ctx = TurnCtx {
+        state: state.clone(),
+        pid,
+        cwd: effective_cwd.clone(),
+        prompt: trimmed_prompt.clone(),
+        started_at: Utc::now().to_rfc3339(),
+    };
 
     if !clean_conv_id.is_empty() {
-        if pid > 0 {
-            if let Ok(mut pids) = state.running_pids.lock() {
-                pids.insert(clean_conv_id.clone(), pid);
-            }
+        ctx.register(&clean_conv_id);
+        ctx.emit(&clean_conv_id, String::new(), "starting", String::new());
+        if provider == Provider::Agy {
+            spawn_agy_sync(clean_conv_id.clone(), 2200);
         }
-        let init_state = ChatTurnStreamState {
-            conversation_id: clean_conv_id.clone(),
-            project_path: effective_cwd.clone(),
-            user_prompt: trimmed_prompt.clone(),
-            streaming_text: String::new(),
-            is_running: true,
-            active_step_type: "starting".to_string(),
-            started_at: started_at_str.clone(),
-            error: String::new(),
-        };
-        if let Ok(mut map) = state.active_streams.lock() {
-            map.insert(clean_conv_id.clone(), init_state.clone());
-        }
-        state.broadcast_stream_state(&init_state);
-
-        let start_cid = clean_conv_id.clone();
-        tokio::spawn(async move {
-            tokio::time::sleep(Duration::from_millis(2200)).await;
-            let _ = Command::new("python3")
-                .arg("/home/john/Documents/muop-ecosystem/muop-agent/server/scripts/sync_antigravity_ide.py")
-                .arg(&start_cid)
-                .output()
-                .await;
-        });
     }
 
     let (tx, rx) = oneshot::channel::<String>();
-    let mut init_tx = Some(tx);
-
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();
-
-    let state_clone = state.clone();
-    let cwd_clone = effective_cwd.clone();
-    let prompt_clone = trimmed_prompt.clone();
     let initial_cid = clean_conv_id.clone();
 
     tokio::spawn(async move {
-        let mut tracked_id = initial_cid;
-        let mut text_buffer = String::new();
+        let mut st = TurnState {
+            tracked_id: initial_cid,
+            committed: String::new(),
+            live: String::new(),
+            thinking_text: String::new(),
+            current_block_type: String::new(),
+            result_error: None,
+            init_tx: Some(tx),
+        };
 
         if let Some(out) = stdout {
             let mut reader = BufReader::new(out).lines();
@@ -279,110 +627,9 @@ pub async fn start_chat_turn(state: AppState, req: ChatSendRequest) -> ChatSendR
                 let Ok(map) = serde_json::from_str::<Value>(trimmed) else {
                     continue;
                 };
-                let event = map.get("event").and_then(|v| v.as_str()).unwrap_or("");
-
-                if event == "init" {
-                    let cid = map
-                        .get("conversation_id")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("")
-                        .trim()
-                        .to_string();
-                    if !cid.is_empty() {
-                        tracked_id = cid.clone();
-                        if pid > 0 {
-                            if let Ok(mut pids) = state_clone.running_pids.lock() {
-                                pids.insert(tracked_id.clone(), pid);
-                            }
-                        }
-                        let stream_state = ChatTurnStreamState {
-                            conversation_id: tracked_id.clone(),
-                            project_path: cwd_clone.clone(),
-                            user_prompt: prompt_clone.clone(),
-                            streaming_text: String::new(),
-                            is_running: true,
-                            active_step_type: "init".to_string(),
-                            started_at: started_at_str.clone(),
-                            error: String::new(),
-                        };
-                        if let Ok(mut streams) = state_clone.active_streams.lock() {
-                            streams.insert(tracked_id.clone(), stream_state.clone());
-                        }
-                        state_clone.broadcast_stream_state(&stream_state);
-                        if let Some(sender) = init_tx.take() {
-                            let _ = sender.send(tracked_id.clone());
-                        }
-                    }
-                } else if event == "step_update" {
-                    if let Some(su) = map.get("step_update") {
-                        let cid = su
-                            .get("conversation_id")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or(&tracked_id)
-                            .trim()
-                            .to_string();
-                        if !cid.is_empty() {
-                            tracked_id = cid.clone();
-                            if let Some(sender) = init_tx.take() {
-                                let _ = sender.send(tracked_id.clone());
-                            }
-                        }
-                        let step_type = su
-                            .get("step_type")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("agent_response")
-                            .to_string();
-                        let delta = su
-                            .get("text_delta")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("");
-                        if !delta.is_empty() {
-                            text_buffer.push_str(delta);
-                        }
-                        if !tracked_id.is_empty() {
-                            let stream_state = ChatTurnStreamState {
-                                conversation_id: tracked_id.clone(),
-                                project_path: cwd_clone.clone(),
-                                user_prompt: prompt_clone.clone(),
-                                streaming_text: text_buffer.clone(),
-                                is_running: true,
-                                active_step_type: step_type,
-                                started_at: started_at_str.clone(),
-                                error: String::new(),
-                            };
-                            if let Ok(mut streams) = state_clone.active_streams.lock() {
-                                streams.insert(tracked_id.clone(), stream_state.clone());
-                            }
-                            state_clone.broadcast_stream_state(&stream_state);
-                        }
-                    }
-                } else if event == "result" {
-                    if let Some(res) = map.get("result") {
-                        let resp_text = res
-                            .get("response")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("")
-                            .trim();
-                        if !resp_text.is_empty() && text_buffer.is_empty() {
-                            text_buffer.push_str(resp_text);
-                        }
-                    }
-                    if !tracked_id.is_empty() {
-                        let stream_state = ChatTurnStreamState {
-                            conversation_id: tracked_id.clone(),
-                            project_path: cwd_clone.clone(),
-                            user_prompt: prompt_clone.clone(),
-                            streaming_text: text_buffer.clone(),
-                            is_running: false,
-                            active_step_type: "done".to_string(),
-                            started_at: started_at_str.clone(),
-                            error: String::new(),
-                        };
-                        if let Ok(mut streams) = state_clone.active_streams.lock() {
-                            streams.insert(tracked_id.clone(), stream_state.clone());
-                        }
-                        state_clone.broadcast_stream_state(&stream_state);
-                    }
+                match provider {
+                    Provider::Agy => handle_agy_event(&ctx, &mut st, &map),
+                    Provider::ClaudeCli => handle_claude_event(&ctx, &mut st, &map),
                 }
             }
         }
@@ -398,62 +645,8 @@ pub async fn start_chat_turn(state: AppState, req: ChatSendRequest) -> ChatSendR
         }
 
         let status = child.wait().await;
-        let is_ok = status.map(|s| s.success()).unwrap_or(false);
-
-        if !tracked_id.is_empty() {
-            if let Ok(mut pids) = state_clone.running_pids.lock() {
-                pids.remove(&tracked_id);
-            }
-            let final_state = ChatTurnStreamState {
-                conversation_id: tracked_id.clone(),
-                project_path: cwd_clone.clone(),
-                user_prompt: prompt_clone.clone(),
-                streaming_text: text_buffer,
-                is_running: false,
-                active_step_type: if is_ok {
-                    "done".to_string()
-                } else {
-                    "error".to_string()
-                },
-                started_at: started_at_str,
-                error: if is_ok { String::new() } else { stderr_msg },
-            };
-            if let Ok(mut streams) = state_clone.active_streams.lock() {
-                streams.insert(tracked_id.clone(), final_state.clone());
-            }
-            state_clone.broadcast_stream_state(&final_state);
-            state_clone.broadcast_session_update(&tracked_id);
-            // Lượt chat vừa kết thúc -> quota đã bị tiêu hao, làm mới cache và phát nếu thay đổi
-            state_clone.spawn_quotas_update(true, false);
-
-            let finish_cid = tracked_id.clone();
-            tokio::spawn(async move {
-                tokio::time::sleep(Duration::from_millis(300)).await;
-                let _ = Command::new("python3")
-                    .arg("/home/john/Documents/muop-ecosystem/muop-agent/server/scripts/sync_antigravity_ide.py")
-                    .arg(&finish_cid)
-                    .output()
-                    .await;
-            });
-
-            let cleanup_state = state_clone.clone();
-            let cid_cleanup = tracked_id.clone();
-            tokio::spawn(async move {
-                tokio::time::sleep(Duration::from_secs(6)).await;
-                let mut removed = false;
-                if let Ok(mut streams) = cleanup_state.active_streams.lock() {
-                    if let Some(st) = streams.get(&cid_cleanup) {
-                        if !st.is_running {
-                            streams.remove(&cid_cleanup);
-                            removed = true;
-                        }
-                    }
-                }
-                if removed {
-                    cleanup_state.broadcast_session_update(&cid_cleanup);
-                }
-            });
-        }
+        let is_ok = status.map(|s| s.success()).unwrap_or(false) && st.result_error.is_none();
+        finish_turn(&ctx, st, is_ok, stderr_msg, provider);
     });
 
     let resolved_id = match timeout(Duration::from_secs(4), rx).await {
@@ -467,6 +660,66 @@ pub async fn start_chat_turn(state: AppState, req: ChatSendRequest) -> ChatSendR
         project_path: effective_cwd,
         error: String::new(),
     }
+}
+
+/// Chốt trạng thái cuối của lượt chat, phát session mới và làm mới quota/limit
+fn finish_turn(ctx: &TurnCtx, st: TurnState, is_ok: bool, stderr_msg: String, provider: Provider) {
+    if st.tracked_id.is_empty() {
+        return;
+    }
+    let state = &ctx.state;
+    if let Ok(mut pids) = state.running_pids.lock() {
+        pids.remove(&st.tracked_id);
+    }
+    let error = if is_ok {
+        String::new()
+    } else {
+        st.result_error.clone().unwrap_or(stderr_msg)
+    };
+    let final_state = ChatTurnStreamState {
+        conversation_id: st.tracked_id.clone(),
+        project_path: ctx.cwd.clone(),
+        user_prompt: ctx.prompt.clone(),
+        streaming_text: compose_text(&st.committed, &st.live),
+        is_running: false,
+        active_step_type: if is_ok {
+            "done".to_string()
+        } else {
+            "error".to_string()
+        },
+        started_at: ctx.started_at.clone(),
+        error,
+        thinking_text: st.thinking_text,
+    };
+    if let Ok(mut streams) = state.active_streams.lock() {
+        streams.insert(st.tracked_id.clone(), final_state.clone());
+    }
+    state.broadcast_stream_state(&final_state);
+    state.broadcast_session_update(&st.tracked_id);
+    // Lượt chat vừa kết thúc -> quota đã thay đổi, làm mới cache và phát nếu có khác biệt
+    state.spawn_quotas_update(true, false);
+
+    if provider == Provider::Agy {
+        spawn_agy_sync(st.tracked_id.clone(), 300);
+    }
+
+    let cleanup_state = state.clone();
+    let cid_cleanup = st.tracked_id;
+    tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_secs(6)).await;
+        let mut removed = false;
+        if let Ok(mut streams) = cleanup_state.active_streams.lock() {
+            if let Some(s) = streams.get(&cid_cleanup) {
+                if !s.is_running {
+                    streams.remove(&cid_cleanup);
+                    removed = true;
+                }
+            }
+        }
+        if removed {
+            cleanup_state.broadcast_session_update(&cid_cleanup);
+        }
+    });
 }
 
 pub fn stop_chat_turn(state: &AppState, conversation_id: &str) -> bool {

@@ -29,6 +29,8 @@ pub struct ChatTurnStreamState {
     pub active_step_type: String,
     pub started_at: String,
     pub error: String,
+    #[serde(default)]
+    pub thinking_text: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
