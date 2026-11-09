@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import '../theme/app_theme.dart';
 
 /// Trình hiển thị tài liệu Markdown hoàn chỉnh (Complete Markdown Document View)
 /// Hỗ trợ đầy đủ:
@@ -189,12 +190,12 @@ class CompleteMarkdownDocView extends StatelessWidget {
     return Container(
       margin: const EdgeInsets.symmetric(vertical: 8),
       decoration: BoxDecoration(
-        color: const Color(0xFF16161E),
+        color: context.scheme.surfaceContainerLowest,
         borderRadius: BorderRadius.circular(10),
         border: Border.all(
           color: isMermaid
-              ? Colors.deepPurpleAccent.withAlpha(120)
-              : const Color(0xFF2E2E3E),
+              ? context.scheme.tertiary.withAlpha(120)
+              : context.scheme.outlineVariant,
           width: 1,
         ),
         boxShadow: const [
@@ -213,14 +214,14 @@ class CompleteMarkdownDocView extends StatelessWidget {
             padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
             decoration: BoxDecoration(
               color: isMermaid
-                  ? Colors.deepPurple.withAlpha(45)
-                  : const Color(0xFF20202C),
+                  ? context.scheme.tertiary.withAlpha(45)
+                  : context.scheme.surfaceContainerLow,
               borderRadius: const BorderRadius.vertical(top: Radius.circular(9)),
               border: Border(
                 bottom: BorderSide(
                   color: isMermaid
-                      ? Colors.deepPurpleAccent.withAlpha(80)
-                      : const Color(0xFF2E2E3E),
+                      ? context.scheme.tertiary.withAlpha(80)
+                      : context.scheme.outlineVariant,
                   width: 0.8,
                 ),
               ),
@@ -232,7 +233,7 @@ class CompleteMarkdownDocView extends StatelessWidget {
                       ? Icons.account_tree_outlined
                       : Icons.code_rounded,
                   size: 14,
-                  color: isMermaid ? Colors.deepPurpleAccent : const Color(0xFF94A3B8),
+                  color: isMermaid ? context.scheme.tertiary : context.scheme.onSurfaceVariant,
                 ),
                 const SizedBox(width: 6),
                 Text(
@@ -244,18 +245,18 @@ class CompleteMarkdownDocView extends StatelessWidget {
                     fontSize: 11,
                     fontWeight: FontWeight.w800,
                     color: isMermaid
-                        ? Colors.deepPurpleAccent
-                        : const Color(0xFFCBD5E1),
+                        ? context.scheme.tertiary
+                        : context.scheme.onSurfaceVariant,
                     letterSpacing: 0.6,
                   ),
                 ),
                 const SizedBox(width: 8),
                 Text(
                   '($lineCount dòng)',
-                  style: const TextStyle(
+                  style: TextStyle(
                     fontFamily: 'monospace',
                     fontSize: 10,
-                    color: Color(0xFF64748B),
+                    color: context.scheme.onSurfaceVariant,
                   ),
                 ),
                 const Spacer(),
@@ -271,7 +272,7 @@ class CompleteMarkdownDocView extends StatelessWidget {
                       ),
                     );
                   },
-                  child: const Padding(
+                  child: Padding(
                     padding: EdgeInsets.symmetric(horizontal: 6, vertical: 2),
                     child: Row(
                       mainAxisSize: MainAxisSize.min,
@@ -279,14 +280,14 @@ class CompleteMarkdownDocView extends StatelessWidget {
                         Icon(
                           Icons.copy_rounded,
                           size: 13,
-                          color: Color(0xFF94A3B8),
+                          color: context.scheme.onSurfaceVariant,
                         ),
                         SizedBox(width: 4),
                         Text(
                           'Sao chép',
                           style: TextStyle(
                             fontSize: 11,
-                            color: Color(0xFF94A3B8),
+                            color: context.scheme.onSurfaceVariant,
                             fontWeight: FontWeight.w600,
                           ),
                         ),
@@ -303,11 +304,11 @@ class CompleteMarkdownDocView extends StatelessWidget {
             padding: const EdgeInsets.all(12),
             child: SelectableText(
               block.code,
-              style: const TextStyle(
+              style: TextStyle(
                 fontFamily: 'monospace',
                 fontSize: 12.0,
                 height: 1.48,
-                color: Color(0xFFE2E8F0),
+                color: context.scheme.onSurface,
               ),
             ),
           ),
@@ -428,24 +429,24 @@ class CompleteMarkdownDocView extends StatelessWidget {
       final Color fg;
       switch (method) {
         case 'GET':
-          bg = Colors.blue.withAlpha(35);
-          fg = Colors.blue.shade300;
+          bg = context.scheme.secondary.withAlpha(35);
+          fg = context.scheme.secondary;
           break;
         case 'POST':
-          bg = Colors.green.withAlpha(35);
-          fg = Colors.green.shade300;
+          bg = context.status.success.withAlpha(35);
+          fg = context.status.success;
           break;
         case 'PUT':
-          bg = Colors.amber.withAlpha(35);
-          fg = Colors.amber.shade300;
+          bg = context.status.warning.withAlpha(35);
+          fg = context.status.warning;
           break;
         case 'DELETE':
-          bg = Colors.red.withAlpha(35);
-          fg = Colors.red.shade300;
+          bg = context.scheme.error.withAlpha(35);
+          fg = context.scheme.error;
           break;
         default:
-          bg = Colors.purple.withAlpha(35);
-          fg = Colors.purple.shade300;
+          bg = context.scheme.tertiary.withAlpha(35);
+          fg = context.scheme.tertiary;
       }
       return Align(
         alignment: Alignment.centerLeft,
@@ -498,27 +499,27 @@ class CompleteMarkdownDocView extends StatelessWidget {
 
     switch (block.alertKind) {
       case _AlertKind.tip:
-        accentColor = Colors.teal;
+        accentColor = context.status.success;
         icon = Icons.lightbulb_outline_rounded;
         title = 'TIP';
         break;
       case _AlertKind.important:
-        accentColor = Colors.deepPurpleAccent;
+        accentColor = context.scheme.tertiary;
         icon = Icons.priority_high_rounded;
         title = 'IMPORTANT';
         break;
       case _AlertKind.warning:
-        accentColor = Colors.amber.shade800;
+        accentColor = context.status.warning;
         icon = Icons.warning_amber_rounded;
         title = 'WARNING';
         break;
       case _AlertKind.caution:
-        accentColor = Colors.redAccent;
+        accentColor = context.scheme.error;
         icon = Icons.dangerous_outlined;
         title = 'CAUTION';
         break;
       case _AlertKind.note:
-        accentColor = Colors.blueAccent;
+        accentColor = context.scheme.secondary;
         icon = Icons.info_outline_rounded;
         title = 'NOTE';
         break;
@@ -628,7 +629,7 @@ class CompleteMarkdownDocView extends StatelessWidget {
                   : Icons.check_box_outline_blank_rounded,
               size: 17,
               color: block.isChecked
-                  ? Colors.teal
+                  ? context.status.success
                   : colorScheme.onSurfaceVariant.withAlpha(160),
             ),
           ),
@@ -789,10 +790,10 @@ class CompleteMarkdownDocView extends StatelessWidget {
                 padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
                 margin: const EdgeInsets.symmetric(horizontal: 2),
                 decoration: BoxDecoration(
-                  color: const Color(0xFF1E293B).withAlpha(190),
+                  color: context.scheme.surfaceContainerHighest.withAlpha(190),
                   borderRadius: BorderRadius.circular(4),
                   border: Border.all(
-                    color: const Color(0xFF3B82F6).withAlpha(140),
+                    color: context.scheme.secondary.withAlpha(140),
                     width: 0.8,
                   ),
                 ),
@@ -804,18 +805,18 @@ class CompleteMarkdownDocView extends StatelessWidget {
                           ? Icons.description_outlined
                           : Icons.open_in_new_rounded,
                       size: 12,
-                      color: const Color(0xFF60A5FA),
+                      color: context.scheme.primary,
                     ),
                     const SizedBox(width: 3),
                     Text(
                       label,
-                      style: const TextStyle(
+                      style: TextStyle(
                         fontFamily: 'monospace',
                         fontSize: 11.5,
                         fontWeight: FontWeight.w600,
-                        color: Color(0xFF60A5FA),
+                        color: context.scheme.primary,
                         decoration: TextDecoration.underline,
-                        decorationColor: Color(0xFF60A5FA),
+                        decorationColor: context.scheme.primary,
                       ),
                     ),
                   ],
@@ -834,20 +835,20 @@ class CompleteMarkdownDocView extends StatelessWidget {
               margin: const EdgeInsets.symmetric(horizontal: 2),
               padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
               decoration: BoxDecoration(
-                color: const Color(0xFF27272A),
+                color: context.scheme.surfaceContainerHigh,
                 borderRadius: BorderRadius.circular(4),
                 border: Border.all(
-                  color: const Color(0xFF3F3F46),
+                  color: context.scheme.outlineVariant,
                   width: 0.7,
                 ),
               ),
               child: Text(
                 codeText,
-                style: const TextStyle(
+                style: TextStyle(
                   fontFamily: 'monospace',
                   fontSize: 12.0,
                   fontWeight: FontWeight.w600,
-                  color: Color(0xFFFDE047),
+                  color: context.status.warning,
                 ),
               ),
             ),

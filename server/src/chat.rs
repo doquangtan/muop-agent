@@ -36,7 +36,7 @@ pub fn resolve_model(raw: &str) -> (Provider, String) {
         return (Provider::Agy, agy_model(rest));
     }
     if matches!(m, "sonnet" | "opus" | "haiku") {
-        return (Provider::ClaudeCli, m.to_string());
+        return (Provider::ClaudeCli, claude_code::normalize_model(m));
     }
     (Provider::Agy, agy_model(m))
 }
@@ -66,6 +66,8 @@ pub struct AppState {
     pub running_pids: Arc<Mutex<HashMap<String, u32>>>,
     /// Bản quota đã phát gần nhất (JSON) để chỉ phát `quotas:update` khi có thay đổi
     pub last_quotas_json: Arc<Mutex<String>>,
+    /// Câu hỏi từ AI: key = conversation_id, value = danh sách câu hỏi
+    pub ai_questions: Arc<Mutex<HashMap<String, Vec<crate::models::AIQuestion>>>>,
 }
 
 impl AppState {
@@ -75,6 +77,7 @@ impl AppState {
             active_streams: Arc::new(Mutex::new(HashMap::new())),
             running_pids: Arc::new(Mutex::new(HashMap::new())),
             last_quotas_json: Arc::new(Mutex::new(String::new())),
+            ai_questions: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -97,6 +100,23 @@ impl AppState {
             if let Ok(val) = serde_json::to_value(&session) {
                 if let Some(ns) = self.io.of("/") {
                     let _ = ns.emit("session:update", &val);
+                }
+            }
+        }
+    }
+
+    /// Phát files change vào room conversation (để chỉ UI client trong conversation đó nhận)
+    pub fn emit_session_files_to_room(&self, session_id: &str) {
+        let streams = self
+            .active_streams
+            .lock()
+            .map(|g| g.clone())
+            .unwrap_or_default();
+        if let Some(session) = scanner::get_single_session_with_streams(session_id, &streams) {
+            if let Ok(val) = serde_json::to_value(&session) {
+                let room = format!("conv:{}", session.id);
+                if let Some(ns) = self.io.of("/") {
+                    let _ = ns.to(room).emit("fileschange", &val);
                 }
             }
         }
@@ -151,6 +171,14 @@ impl AppState {
         });
     }
 
+    /// Phát file changes vào room conversation riêng (để chỉ clients trong conversation đó nhận)
+    pub fn emit_conversation_files_change(&self, conversation_id: &str, files_change: Value) {
+        let room = format!("conv:{}", conversation_id);
+        if let Some(ns) = self.io.of("/") {
+            let _ = ns.to(room).emit("fileschange", &files_change);
+        }
+    }
+
     /// Phát toàn bộ snapshot (full resync) — chỉ dùng cho các thay đổi mà event nhỏ không diễn tả được,
     /// ví dụ conversation bị xoá khỏi đĩa. Quét nặng nên chạy ở thread blocking.
     pub fn spawn_snapshot_resync(&self) {
@@ -189,6 +217,7 @@ struct TurnCtx {
     cwd: String,
     prompt: String,
     started_at: String,
+    model: String,
 }
 
 impl TurnCtx {
@@ -252,6 +281,7 @@ fn handle_agy_event(ctx: &TurnCtx, st: &mut TurnState, map: &Value) {
                 .to_string();
             if !cid.is_empty() {
                 ctx.register(&cid);
+                crate::scanner::record_agy_turn_model(&cid, &ctx.started_at, &ctx.model);
                 st.set_init(cid.clone());
                 ctx.emit(&cid, st.committed.clone(), "init", String::new());
             }
@@ -615,6 +645,7 @@ pub async fn start_chat_turn(state: AppState, req: ChatSendRequest) -> ChatSendR
         cwd: effective_cwd.clone(),
         prompt: trimmed_prompt.clone(),
         started_at: Utc::now().to_rfc3339(),
+        model: model.clone(),
     };
 
     if !clean_conv_id.is_empty() {

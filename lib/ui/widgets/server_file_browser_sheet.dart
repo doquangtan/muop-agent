@@ -5,6 +5,7 @@ import '../../models/agent_models.dart';
 import '../../services/brain_scanner_service.dart';
 import 'complete_markdown_doc_view.dart';
 import 'project_git_history_sheet.dart';
+import '../theme/app_theme.dart';
 
 /// Đại diện cho 1 tệp đã được nhóm (deduplicated) từ danh sách FileTouchRecord
 class GroupedFileChange {
@@ -18,6 +19,7 @@ class GroupedFileChange {
     required this.removedLines,
     required this.diffPreview,
     required this.lastTimestamp,
+    this.viaBash = false,
   });
 
   final String path;
@@ -29,6 +31,9 @@ class GroupedFileChange {
   final int removedLines;
   final String diffPreview;
   final DateTime lastTimestamp;
+
+  /// Thay đổi được suy ra từ lệnh Bash (không có số dòng +/-)
+  final bool viaBash;
 
   String get basename {
     final parts = path.split('/');
@@ -63,6 +68,7 @@ class GroupedFileChange {
         ),
       );
       group.touchCount += 1;
+      if (r.source == 'bash') group.viaBash = true;
       group.addedLines += r.addedLines;
       group.removedLines += r.removedLines;
       if (!group.agentNames.contains(r.agentName) &&
@@ -99,6 +105,7 @@ class GroupedFileChange {
             removedLines: g.removedLines,
             diffPreview: g.diffPreview,
             lastTimestamp: g.lastTimestamp,
+            viaBash: g.viaBash,
           ),
         )
         .toList();
@@ -130,6 +137,7 @@ class _MutableFileGroup {
   int addedLines = 0;
   int removedLines = 0;
   String diffPreview = '';
+  bool viaBash = false;
   DateTime lastTimestamp;
 }
 
@@ -578,20 +586,20 @@ class _ServerFileBrowserSheetState extends State<ServerFileBrowserSheet> {
         if (_lastSavedPath != null)
           Container(
             padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
-            color: Colors.teal.withAlpha(30),
+            color: context.status.success.withAlpha(30),
             child: Row(
               children: [
-                const Icon(
+                Icon(
                   Icons.check_circle_rounded,
                   size: 15,
-                  color: Colors.teal,
+                  color: context.status.success,
                 ),
                 const SizedBox(width: 8),
                 Expanded(
                   child: SelectableText(
                     'Đã lưu: $_lastSavedPath',
                     style: textTheme.labelSmall?.copyWith(
-                      color: Colors.teal,
+                      color: context.status.success,
                       fontWeight: FontWeight.w700,
                       fontFamily: 'monospace',
                     ),
@@ -646,20 +654,20 @@ class _ServerFileBrowserSheetState extends State<ServerFileBrowserSheet> {
         if (_downloadError != null)
           Container(
             padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
-            color: Colors.redAccent.withAlpha(30),
+            color: context.scheme.error.withAlpha(30),
             child: Row(
               children: [
-                const Icon(
+                Icon(
                   Icons.error_outline_rounded,
                   size: 15,
-                  color: Colors.redAccent,
+                  color: context.scheme.error,
                 ),
                 const SizedBox(width: 8),
                 Expanded(
                   child: Text(
                     'Lỗi tải tệp: $_downloadError',
                     style: textTheme.labelSmall?.copyWith(
-                      color: Colors.redAccent,
+                      color: context.scheme.error,
                       fontWeight: FontWeight.w700,
                     ),
                   ),
@@ -943,7 +951,7 @@ class _ServerFileBrowserSheetState extends State<ServerFileBrowserSheet> {
                         child: Text(
                           _errorMessage,
                           style: textTheme.bodyMedium?.copyWith(
-                            color: Colors.redAccent,
+                            color: context.scheme.error,
                           ),
                         ),
                       ),
@@ -1031,7 +1039,7 @@ class _ServerFileBrowserSheetState extends State<ServerFileBrowserSheet> {
                                           : _iconForFileName(entry.name),
                                       size: 20,
                                       color: entry.isDir
-                                          ? Colors.amber
+                                          ? context.status.warning
                                           : colorScheme.primary,
                                     ),
                                     const SizedBox(width: 10),
@@ -1392,16 +1400,16 @@ class _ServerFileBrowserSheetState extends State<ServerFileBrowserSheet> {
     Color fg;
     String label;
     if (action == 'WRITE') {
-      bg = Colors.teal.withAlpha(35);
-      fg = Colors.teal;
+      bg = context.status.success.withAlpha(35);
+      fg = context.status.success;
       label = 'NEW';
     } else if (action == 'EDIT') {
-      bg = Colors.amber.withAlpha(35);
-      fg = Colors.amber.shade700;
+      bg = context.status.warning.withAlpha(35);
+      fg = context.status.warning;
       label = 'MOD';
     } else {
-      bg = Colors.blueGrey.withAlpha(30);
-      fg = Colors.blueGrey;
+      bg = context.scheme.onSurfaceVariant.withAlpha(30);
+      fg = context.scheme.onSurfaceVariant;
       label = 'READ';
     }
     return Container(
@@ -1429,7 +1437,7 @@ class _ServerFileBrowserSheetState extends State<ServerFileBrowserSheet> {
           Container(
             padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
             decoration: BoxDecoration(
-              color: Colors.teal.withAlpha(30),
+              color: context.status.success.withAlpha(30),
               borderRadius: BorderRadius.circular(4),
             ),
             child: Text(
@@ -1438,7 +1446,7 @@ class _ServerFileBrowserSheetState extends State<ServerFileBrowserSheet> {
                 fontFamily: 'monospace',
                 fontSize: 10,
                 fontWeight: FontWeight.w800,
-                color: Colors.teal,
+                color: context.status.success,
               ),
             ),
           ),
@@ -1447,7 +1455,7 @@ class _ServerFileBrowserSheetState extends State<ServerFileBrowserSheet> {
           Container(
             padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
             decoration: BoxDecoration(
-              color: Colors.redAccent.withAlpha(30),
+              color: context.scheme.error.withAlpha(30),
               borderRadius: BorderRadius.circular(4),
             ),
             child: Text(
@@ -1456,7 +1464,7 @@ class _ServerFileBrowserSheetState extends State<ServerFileBrowserSheet> {
                 fontFamily: 'monospace',
                 fontSize: 10,
                 fontWeight: FontWeight.w800,
-                color: Colors.redAccent,
+                color: context.scheme.error,
               ),
             ),
           ),
@@ -1690,8 +1698,8 @@ class _FileDiffAndContentSheetState extends State<_FileDiffAndContentSheet> {
                       widget.scanner.openDownloadedFile(_downloadedLocalPath!),
                   style: FilledButton.styleFrom(
                     visualDensity: VisualDensity.compact,
-                    backgroundColor: Colors.teal,
-                    foregroundColor: Colors.white,
+                    backgroundColor: context.status.success,
+                    foregroundColor: context.scheme.onPrimary,
                     shape: RoundedRectangleBorder(
                       borderRadius: BorderRadius.circular(10),
                     ),
@@ -1833,12 +1841,12 @@ class _FileDiffAndContentSheetState extends State<_FileDiffAndContentSheet> {
         FontWeight weight = FontWeight.w400;
 
         if (line.startsWith('+') && !line.startsWith('+++')) {
-          bgColor = Colors.teal.withAlpha(38);
-          textColor = Colors.teal.shade300;
+          bgColor = context.status.success.withAlpha(38);
+          textColor = context.status.success;
           weight = FontWeight.w600;
         } else if (line.startsWith('-') && !line.startsWith('---')) {
-          bgColor = Colors.redAccent.withAlpha(38);
-          textColor = Colors.redAccent.shade100;
+          bgColor = context.scheme.error.withAlpha(38);
+          textColor = context.scheme.error.withAlpha(36);
           weight = FontWeight.w600;
         } else if (line.startsWith('@@')) {
           bgColor = colorScheme.primaryContainer.withAlpha(65);
@@ -1877,10 +1885,10 @@ class _FileDiffAndContentSheetState extends State<_FileDiffAndContentSheet> {
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              const Icon(
+              Icon(
                 Icons.error_outline_rounded,
                 size: 40,
-                color: Colors.redAccent,
+                color: context.scheme.error,
               ),
               const SizedBox(height: 10),
               Text(
@@ -1888,7 +1896,7 @@ class _FileDiffAndContentSheetState extends State<_FileDiffAndContentSheet> {
                     ? resp!.error
                     : 'Không thể đọc tệp từ Server',
                 textAlign: TextAlign.center,
-                style: textTheme.bodySmall?.copyWith(color: Colors.redAccent),
+                style: textTheme.bodySmall?.copyWith(color: context.scheme.error),
               ),
               const SizedBox(height: 14),
               FilledButton.tonalIcon(
@@ -1941,8 +1949,8 @@ class _FileDiffAndContentSheetState extends State<_FileDiffAndContentSheet> {
                 onPressed: () =>
                     widget.scanner.openDownloadedFile(_downloadedLocalPath!),
                 style: FilledButton.styleFrom(
-                  backgroundColor: Colors.teal,
-                  foregroundColor: Colors.white,
+                  backgroundColor: context.status.success,
+                  foregroundColor: context.scheme.onPrimary,
                   padding:
                       const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
                   shape: RoundedRectangleBorder(
@@ -1996,20 +2004,20 @@ class _FileDiffAndContentSheetState extends State<_FileDiffAndContentSheet> {
               Container(
                 padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
                 decoration: BoxDecoration(
-                  color: Colors.purple.withAlpha(35),
+                  color: context.scheme.tertiary.withAlpha(35),
                   borderRadius: BorderRadius.circular(5),
                   border: Border.all(
-                    color: Colors.purpleAccent.withAlpha(100),
+                    color: context.scheme.tertiary.withAlpha(100),
                     width: 0.8,
                   ),
                 ),
                 child: Text(
                   ext,
-                  style: const TextStyle(
+                  style: TextStyle(
                     fontFamily: 'monospace',
                     fontSize: 10,
                     fontWeight: FontWeight.w800,
-                    color: Colors.purpleAccent,
+                    color: context.scheme.tertiary,
                   ),
                 ),
               ),
@@ -2075,7 +2083,14 @@ class _FileDiffAndContentSheetState extends State<_FileDiffAndContentSheet> {
             children: [
               Positioned.fill(
                 child: CustomPaint(
-                  painter: _CheckerboardPainter(isDark: isDark),
+                  painter: _CheckerboardPainter(
+                    color1: isDark
+                        ? context.scheme.surfaceContainerLowest
+                        : context.scheme.surfaceContainerLow,
+                    color2: isDark
+                        ? context.scheme.surfaceContainerLow
+                        : context.scheme.surfaceContainerHighest,
+                  ),
                 ),
               ),
               Positioned.fill(
@@ -2124,17 +2139,17 @@ class _FileDiffAndContentSheetState extends State<_FileDiffAndContentSheet> {
                             child: Column(
                               mainAxisSize: MainAxisSize.min,
                               children: [
-                                const Icon(
+                                Icon(
                                   Icons.broken_image_rounded,
                                   size: 48,
-                                  color: Colors.redAccent,
+                                  color: context.scheme.error,
                                 ),
                                 const SizedBox(height: 10),
                                 Text(
                                   'Không thể hiển thị hình ảnh từ máy chủ',
                                   style: textTheme.bodyMedium?.copyWith(
                                     fontWeight: FontWeight.w700,
-                                    color: Colors.redAccent,
+                                    color: context.scheme.error,
                                   ),
                                 ),
                                 const SizedBox(height: 4),
@@ -2195,20 +2210,20 @@ class _FileDiffAndContentSheetState extends State<_FileDiffAndContentSheet> {
               Container(
                 padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
                 decoration: BoxDecoration(
-                  color: Colors.deepPurple.withAlpha(35),
+                  color: context.scheme.tertiary.withAlpha(35),
                   borderRadius: BorderRadius.circular(5),
                   border: Border.all(
-                    color: Colors.deepPurpleAccent.withAlpha(100),
+                    color: context.scheme.tertiary.withAlpha(100),
                     width: 0.8,
                   ),
                 ),
-                child: const Text(
+                child: Text(
                   'MARKDOWN',
                   style: TextStyle(
                     fontFamily: 'monospace',
                     fontSize: 10,
                     fontWeight: FontWeight.w800,
-                    color: Colors.deepPurpleAccent,
+                    color: context.scheme.tertiary,
                   ),
                 ),
               ),
@@ -2485,15 +2500,14 @@ class _FileDiffAndContentSheetState extends State<_FileDiffAndContentSheet> {
 
 /// Vẽ hoa văn ca-rô (checkerboard) cho vùng hiển thị hình ảnh trong suốt
 class _CheckerboardPainter extends CustomPainter {
-  const _CheckerboardPainter({required this.isDark});
-  final bool isDark;
+  const _CheckerboardPainter({required this.color1, required this.color2});
+  final Color color1;
+  final Color color2;
 
   @override
   void paint(Canvas canvas, Size size) {
-    final paint1 = Paint()
-      ..color = isDark ? const Color(0xFF14141E) : const Color(0xFFF1F5F9);
-    final paint2 = Paint()
-      ..color = isDark ? const Color(0xFF1F1F2C) : const Color(0xFFE2E8F0);
+    final paint1 = Paint()..color = color1;
+    final paint2 = Paint()..color = color2;
     const double squareSize = 16.0;
 
     canvas.drawRect(Rect.fromLTWH(0, 0, size.width, size.height), paint1);
@@ -2508,5 +2522,5 @@ class _CheckerboardPainter extends CustomPainter {
 
   @override
   bool shouldRepaint(covariant _CheckerboardPainter oldDelegate) =>
-      oldDelegate.isDark != isDark;
+      oldDelegate.color1 != color1 || oldDelegate.color2 != color2;
 }

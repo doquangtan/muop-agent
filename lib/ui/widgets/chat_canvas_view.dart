@@ -7,6 +7,7 @@ import 'package:flutter/services.dart';
 import '../../models/agent_models.dart';
 import 'complete_markdown_doc_view.dart';
 import 'server_file_browser_sheet.dart';
+import '../theme/app_theme.dart';
 
 class ChatCanvasView extends StatefulWidget {
   const ChatCanvasView({
@@ -37,6 +38,7 @@ class ChatCanvasView extends StatefulWidget {
     this.onApprovePlan,
     this.onRejectPlan,
     this.onLoadOlderHistory,
+    this.onFetchClaudeExtensions,
     this.onOpenParallelFlow,
     this.onOpenCreateProject,
     this.onGitPush,
@@ -70,6 +72,8 @@ class ChatCanvasView extends StatefulWidget {
   final ValueChanged<PlanArtifactInfo>? onApprovePlan;
   final void Function(PlanArtifactInfo plan, String feedback)? onRejectPlan;
   final Future<bool> Function()? onLoadOlderHistory;
+  final Future<List<CustomAgentSpec>?> Function(String projectPath)?
+      onFetchClaudeExtensions;
   final VoidCallback? onOpenParallelFlow;
   final VoidCallback? onOpenCreateProject;
   final Future<GitPushResponse> Function(String projectPath, String branch)?
@@ -131,11 +135,7 @@ class _ChatTurnGroup {
 enum _ChatBlockKind {
   turnSpacing,
   liveStreaming,
-  filesChangedCard,
-  aiRunningIndicator,
-  aiResponseSegment,
-  aiCollapseBanner,
-  trajectorySection,
+  aiTurnCard,
   userPromptBubble,
   loadMoreBanner,
 }
@@ -159,11 +159,7 @@ class _ChatFlatBlock {
     required this.kind,
     required this.keyId,
     this.turn,
-    this.segment,
     this.stream,
-    this.hiddenLineCount = 0,
-    this.totalLineCount = 0,
-    this.isExpanded = false,
     this.isLastTurn = false,
     this.remainingCount = 0,
     this.loadedCount = 0,
@@ -173,11 +169,7 @@ class _ChatFlatBlock {
   final _ChatBlockKind kind;
   final String keyId;
   final _ChatTurnGroup? turn;
-  final _ParsedResponseSegment? segment;
   final ChatTurnStreamState? stream;
-  final int hiddenLineCount;
-  final int totalLineCount;
-  final bool isExpanded;
   final bool isLastTurn;
   final int remainingCount;
   final int loadedCount;
@@ -211,7 +203,9 @@ class _ChatCanvasViewState extends State<ChatCanvasView> {
 
   /// Cache tính toán turns & flat blocks để không bị lag giật mỗi khi gõ phím hoặc rebuild
   String? _lastSessionId;
-  int _lastStepsCount = -1;
+  // Chữ ký nội dung steps: số lượng không đủ vì snapshot cắt còn 100 step nên
+  // lượt trả lời mới có thể làm số lượng giữ nguyên. Dùng thêm step cuối và updatedAt.
+  int _lastStepsSignature = -1;
   int _lastFilesTouchedCount = -1;
   int _lastLoadedTurnCount = -1;
   int _lastExpandedResponseTurnsHash = 0;
@@ -232,6 +226,7 @@ class _ChatCanvasViewState extends State<ChatCanvasView> {
     _scrollController.addListener(_onScroll);
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _scrollToBottom(animated: false);
+      _maybeLoadOlderTurns();
     });
   }
 
@@ -248,11 +243,12 @@ class _ChatCanvasViewState extends State<ChatCanvasView> {
       _expandedResponseTurns.clear();
       _expandedPromptTurns.clear();
       _lastSessionId = null;
-      _lastStepsCount = -1;
+      _lastStepsSignature = -1;
       _lastFilesTouchedCount = -1;
       _lastLoadedTurnCount = -1;
       WidgetsBinding.instance.addPostFrameCallback((_) {
         _scrollToBottom(animated: false);
+        _maybeLoadOlderTurns();
       });
     } else {
       // Khi đang ở trong cùng phiên hội thoại mà có thêm bước/tin nhắn mới:
@@ -291,10 +287,24 @@ class _ChatCanvasViewState extends State<ChatCanvasView> {
       setState(() => _showScrollToBottomBtn = shouldShowBtn);
     }
 
-    // Khi người dùng cuộn lên trên (gần chạm đỉnh maxScrollExtent): Tự động nạp thêm dữ liệu cũ
-    if (pos.pixels >= pos.maxScrollExtent - 240 && !_isLoadingMoreTurns) {
+    _maybeLoadOlderTurns();
+  }
+
+  /// Nạp thêm lịch sử khi banner đầu danh sách còn nằm trong khung nhìn.
+  /// Được gọi lại sau mỗi lần nạp để tiếp tục cho đến khi banner bị đẩy ra ngoài
+  /// hoặc hết dữ liệu cũ.
+  void _maybeLoadOlderTurns() {
+    if (!_scrollController.hasClients || _isLoadingMoreTurns) return;
+    final pos = _scrollController.position;
+    if (pos.maxScrollExtent - pos.pixels < pos.viewportDimension) {
       _loadOlderTurnsPage();
     }
+  }
+
+  void _scheduleOlderTurnsCheck() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _maybeLoadOlderTurns();
+    });
   }
 
   Future<void> _loadOlderTurnsPage() async {
@@ -315,6 +325,7 @@ class _ChatCanvasViewState extends State<ChatCanvasView> {
         _loadedTurnCount = math.min(totalTurns, _loadedTurnCount + _pageSize);
         _isLoadingMoreTurns = false;
       });
+      _scheduleOlderTurnsCheck();
       return;
     }
 
@@ -341,6 +352,7 @@ class _ChatCanvasViewState extends State<ChatCanvasView> {
             }
             _isLoadingMoreTurns = false;
           });
+          _scheduleOlderTurnsCheck();
         }
       } catch (_) {
         if (mounted) {
@@ -373,18 +385,30 @@ class _ChatCanvasViewState extends State<ChatCanvasView> {
     });
   }
 
+  KeyEventResult _handleComposerKeyEvent(FocusNode node, KeyEvent event) {
+    if (event is! KeyDownEvent) return KeyEventResult.ignored;
+    final key = event.logicalKey;
+    if (key != LogicalKeyboardKey.enter && key != LogicalKeyboardKey.numpadEnter) {
+      return KeyEventResult.ignored;
+    }
+    if (HardwareKeyboard.instance.isShiftPressed) return KeyEventResult.ignored;
+    if (_promptController.value.composing.isValid) return KeyEventResult.ignored;
+    _handleSend();
+    return KeyEventResult.handled;
+  }
+
   /// Model thuộc Claude Code CLI (id dạng `claude-cli:<alias>`), còn lại là Antigravity (`agy:<model>`)
   bool _isClaudeCliModel(String modelId) => modelId.startsWith('claude-cli:');
 
   String _formatModelLabel(String modelId) {
     switch (modelId) {
       case 'default':
-      case 'claude-cli:sonnet':
-        return 'Claude Sonnet';
-      case 'claude-cli:opus':
-        return 'Claude Opus';
-      case 'claude-cli:haiku':
-        return 'Claude Haiku';
+      case 'claude-cli:claude-sonnet-5-5':
+        return 'Claude Sonnet 5.5';
+      case 'claude-cli:claude-opus-5-5':
+        return 'Claude Opus 5.5';
+      case 'claude-cli:claude-haiku-5-5':
+        return 'Claude Haiku 5.5';
       case 'agy:gemini-3.8-flash-high':
         return 'Gemini 3.8 Flash (High)';
       case 'agy:gemini-3.8-flash-medium':
@@ -559,24 +583,30 @@ class _ChatCanvasViewState extends State<ChatCanvasView> {
     required int totalTurnsCount,
   }) {
     final blocks = <_ChatFlatBlock>[];
+    final stream = widget.activeStream;
+    final streamRunning = stream != null && stream.isRunning;
+    // Khi session đang chạy, thinking của stream nằm bên trong thẻ AI của lượt mới nhất
+    final liveAttached = streamRunning &&
+        visibleTurns.isNotEmpty &&
+        widget.session?.status == AgentStatus.running;
 
-    // 1. Luồng đang stream trực tiếp ở sát đáy
-    if (widget.activeStream != null) {
+    // Stream chưa gắn được vào lượt nào (hoặc có lỗi): thẻ AI đứng riêng ở đáy danh sách
+    if (stream != null &&
+        (streamRunning || stream.error.isNotEmpty) &&
+        !liveAttached) {
       blocks.add(
         _ChatFlatBlock(
           kind: _ChatBlockKind.liveStreaming,
-          keyId: 'stream_${widget.activeStream!.conversationId}',
-          stream: widget.activeStream,
+          keyId: 'stream_${stream.conversationId}',
+          stream: stream,
         ),
       );
     }
 
-    // 2. Duyệt từng lượt hội thoại từ mới nhất đến cũ nhất
-    // Vì ListView có `reverse: true`, phần tử push trước sẽ nằm ở dưới, phần tử push sau nằm ở trên.
+    // Duyệt từ mới nhất đến cũ nhất (ListView reverse: block push trước nằm dưới cùng)
     for (int i = visibleTurns.length - 1; i >= 0; i--) {
       final turn = visibleTurns[i];
-      final isNewestTurn =
-          (i == visibleTurns.length - 1) && widget.activeStream == null;
+      final isNewestTurn = i == visibleTurns.length - 1;
 
       blocks.add(
         _ChatFlatBlock(
@@ -585,84 +615,23 @@ class _ChatCanvasViewState extends State<ChatCanvasView> {
         ),
       );
 
-      // (Dưới cùng của Turn): Card nhóm các tệp thay đổi (Files Changed)
-      if (turn.groupedFiles.isNotEmpty) {
+      // Thẻ phản hồi AI của lượt: tool action (trên giữa), nội dung (trái), file thay đổi (dưới)
+      final hasAiContent = turn.finalAgentResponse.isNotEmpty ||
+          turn.agentSteps.isNotEmpty ||
+          turn.groupedFiles.isNotEmpty ||
+          (isNewestTurn && liveAttached);
+      if (hasAiContent) {
         blocks.add(
           _ChatFlatBlock(
-            kind: _ChatBlockKind.filesChangedCard,
-            keyId: 'files_${turn.turnIndex}',
-            turn: turn,
-          ),
-        );
-      }
-
-      // (Giữa của Turn): Nội dung phản hồi AI được chia nhỏ thành từng đoạn văn / khối code
-      final finalResponse = turn.finalAgentResponse;
-      if (finalResponse.isNotEmpty) {
-        final allLines = finalResponse.trimRight().split('\n');
-        final canCollapse = allLines.length > _collapsedTailLines;
-        final isExpanded = _expandedResponseTurns.contains(turn.turnIndex);
-        final hiddenLines =
-            canCollapse ? allLines.length - _collapsedTailLines : 0;
-
-        final displayedText = (canCollapse && !isExpanded)
-            ? allLines
-                .sublist(allLines.length - _collapsedTailLines)
-                .join('\n')
-            : finalResponse;
-
-        final segments = _parseResponseIntoGranularSegments(displayedText);
-
-        // Push các segment theo thứ tự ngược để khi reverse: true sẽ hiển thị đúng từ trên xuống dưới
-        for (int sIdx = segments.length - 1; sIdx >= 0; sIdx--) {
-          blocks.add(
-            _ChatFlatBlock(
-              kind: _ChatBlockKind.aiResponseSegment,
-              keyId: 'seg_${turn.turnIndex}_${isExpanded ? "full" : "tail"}_$sIdx',
-              turn: turn,
-              segment: segments[sIdx],
-              isExpanded: isExpanded,
-            ),
-          );
-        }
-
-        if (canCollapse) {
-          blocks.add(
-            _ChatFlatBlock(
-              kind: _ChatBlockKind.aiCollapseBanner,
-              keyId: 'collapse_${turn.turnIndex}',
-              turn: turn,
-              hiddenLineCount: hiddenLines,
-              totalLineCount: allLines.length,
-              isExpanded: isExpanded,
-            ),
-          );
-        }
-      } else if (isNewestTurn &&
-          widget.session?.status == AgentStatus.running &&
-          turn.agentSteps.isNotEmpty) {
-        blocks.add(
-          _ChatFlatBlock(
-            kind: _ChatBlockKind.aiRunningIndicator,
-            keyId: 'running_${turn.turnIndex}',
-            turn: turn,
-          ),
-        );
-      }
-
-      // (Phía trên phản hồi AI): Khối tiến trình suy luận & công cụ (Trajectory)
-      if (turn.trajectorySteps.isNotEmpty) {
-        blocks.add(
-          _ChatFlatBlock(
-            kind: _ChatBlockKind.trajectorySection,
-            keyId: 'traj_${turn.turnIndex}',
+            kind: _ChatBlockKind.aiTurnCard,
+            keyId: 'ai_${turn.turnIndex}',
             turn: turn,
             isLastTurn: isNewestTurn,
           ),
         );
       }
 
-      // (Trên cùng của Turn): Bong bóng câu hỏi của User
+      // (Trên cùng của lượt): Bong bóng câu hỏi của User
       if (turn.userStep != null) {
         blocks.add(
           _ChatFlatBlock(
@@ -689,16 +658,6 @@ class _ChatCanvasViewState extends State<ChatCanvasView> {
           totalTurnsCount: totalTurnsCount,
         ),
       );
-    } else if (totalTurnsCount > _pageSize) {
-      blocks.add(
-        _ChatFlatBlock(
-          kind: _ChatBlockKind.loadMoreBanner,
-          keyId: 'load_more_banner_done',
-          remainingCount: 0,
-          loadedCount: visibleTurns.length,
-          totalTurnsCount: totalTurnsCount,
-        ),
-      );
     }
 
     return blocks;
@@ -718,7 +677,19 @@ class _ChatCanvasViewState extends State<ChatCanvasView> {
             (session != null && session.status == AgentStatus.running));
 
     final currentSessionId = session?.id;
-    final currentStepsCount = session?.steps.length ?? 0;
+    final lastStepForSig =
+        (session != null && session.steps.isNotEmpty) ? session.steps.last : null;
+    final currentStepsSignature = Object.hash(
+      session?.steps.length ?? 0,
+      lastStepForSig?.stepIndex,
+      lastStepForSig?.status,
+      lastStepForSig?.content.length,
+      lastStepForSig?.thinking.length,
+      lastStepForSig?.toolCalls.length,
+      session?.updatedAt.millisecondsSinceEpoch,
+      session?.status,
+      widget.activeStream?.isRunning,
+    );
     final currentFilesTouchedCount = session?.filesTouched.length ?? 0;
     final currentResponseTurnsHash =
         _expandedResponseTurns.fold<int>(0, (prev, e) => prev ^ e);
@@ -728,7 +699,7 @@ class _ChatCanvasViewState extends State<ChatCanvasView> {
     final bool shouldRecomputeBlocks = widget.isNewConversationMode ||
         session == null ||
         _lastSessionId != currentSessionId ||
-        _lastStepsCount != currentStepsCount ||
+        _lastStepsSignature != currentStepsSignature ||
         _lastFilesTouchedCount != currentFilesTouchedCount ||
         _lastLoadedTurnCount != _loadedTurnCount ||
         _lastExpandedResponseTurnsHash != currentResponseTurnsHash ||
@@ -736,7 +707,7 @@ class _ChatCanvasViewState extends State<ChatCanvasView> {
 
     if (shouldRecomputeBlocks) {
       _lastSessionId = currentSessionId;
-      _lastStepsCount = currentStepsCount;
+      _lastStepsSignature = currentStepsSignature;
       _lastFilesTouchedCount = currentFilesTouchedCount;
       _lastLoadedTurnCount = _loadedTurnCount;
       _lastExpandedResponseTurnsHash = currentResponseTurnsHash;
@@ -838,14 +809,13 @@ class _ChatCanvasViewState extends State<ChatCanvasView> {
     required bool isMobile,
   }) {
     final colorScheme = Theme.of(context).colorScheme;
-    final textTheme = Theme.of(context).textTheme;
 
     switch (block.kind) {
       case _ChatBlockKind.turnSpacing:
         return SizedBox(height: isMobile ? 14 : 20);
 
       case _ChatBlockKind.liveStreaming:
-        return _buildLiveStreamingBlock(context, block.stream!);
+        return _buildStandaloneLiveCard(context, block.stream!);
 
       case _ChatBlockKind.userPromptBubble:
         final userStep = block.turn!.userStep!;
@@ -865,7 +835,7 @@ class _ChatCanvasViewState extends State<ChatCanvasView> {
                   vertical: isMobile ? 10 : 12,
                 ),
                 decoration: BoxDecoration(
-                  color: const Color(0xFF27272A),
+                  color: context.scheme.surfaceContainerHigh,
                   borderRadius: const BorderRadius.only(
                     topLeft: Radius.circular(16),
                     topRight: Radius.circular(16),
@@ -873,7 +843,7 @@ class _ChatCanvasViewState extends State<ChatCanvasView> {
                     bottomRight: Radius.circular(4),
                   ),
                   border: Border.all(
-                    color: const Color(0xFF3F3F46).withAlpha(140),
+                    color: context.scheme.outlineVariant.withAlpha(140),
                     width: 0.8,
                   ),
                 ),
@@ -882,7 +852,7 @@ class _ChatCanvasViewState extends State<ChatCanvasView> {
                     final textStyle = TextStyle(
                       fontSize: isMobile ? 13.5 : 14,
                       height: 1.45,
-                      color: const Color(0xFFF4F4F5),
+                      color: context.scheme.onSurface,
                       fontWeight: FontWeight.w500,
                     );
 
@@ -964,135 +934,22 @@ class _ChatCanvasViewState extends State<ChatCanvasView> {
           ),
         );
 
-      case _ChatBlockKind.trajectorySection:
+      case _ChatBlockKind.aiTurnCard:
         final turn = block.turn!;
+        final liveStream = (block.isLastTurn &&
+                widget.activeStream != null &&
+                widget.activeStream!.isRunning &&
+                widget.session?.status == AgentStatus.running)
+            ? widget.activeStream
+            : null;
         return Padding(
           padding: const EdgeInsets.only(bottom: 8),
-          child: _AntigravityTrajectorySection(
-            steps: turn.trajectorySteps,
-            thoughtCount: turn.totalThoughtCount,
-            toolCount: turn.totalToolCount,
-            initiallyExpanded:
-                block.isLastTurn && turn.finalAgentResponse.isEmpty,
-            onTapStep: (step) => _showStepDetailModal(context, step),
-            onDownloadFile: widget.onDownloadFile,
-          ),
-        );
-
-      case _ChatBlockKind.aiCollapseBanner:
-        final turnIndex = block.turn!.turnIndex;
-        final isExpanded = block.isExpanded;
-        return Padding(
-          padding: const EdgeInsets.only(top: 6, bottom: 8),
-          child: InkWell(
-            borderRadius: BorderRadius.circular(10),
-            onTap: () {
-              setState(() {
-                if (isExpanded) {
-                  _expandedResponseTurns.remove(turnIndex);
-                } else {
-                  _expandedResponseTurns.add(turnIndex);
-                }
-              });
-            },
-            child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8.5),
-              decoration: BoxDecoration(
-                gradient: LinearGradient(
-                  colors: isExpanded
-                      ? [
-                          colorScheme.surfaceContainerLow,
-                          colorScheme.surfaceContainer,
-                        ]
-                      : [
-                          colorScheme.primaryContainer.withAlpha(90),
-                          colorScheme.surfaceContainerHigh,
-                        ],
-                ),
-                borderRadius: BorderRadius.circular(10),
-                border: Border.all(
-                  color: isExpanded
-                      ? colorScheme.outlineVariant
-                      : colorScheme.primary.withAlpha(130),
-                  width: 0.9,
-                ),
-              ),
-              child: Row(
-                children: [
-                  Icon(
-                    isExpanded
-                        ? Icons.unfold_less_rounded
-                        : Icons.unfold_more_rounded,
-                    size: 16.5,
-                    color: colorScheme.primary,
-                  ),
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: Text(
-                      isExpanded
-                          ? 'Đang xem toàn bộ phản hồi (${block.totalLineCount} dòng) • Chạm để thu gọn'
-                          : 'Đã thu gọn (${block.hiddenLineCount} dòng phía trên) • Chạm để xem toàn bộ • Đang hiện $_collapsedTailLines dòng cuối',
-                      style: textTheme.labelSmall?.copyWith(
-                        fontWeight: FontWeight.w700,
-                        color: colorScheme.primary,
-                      ),
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          ),
-        );
-
-      case _ChatBlockKind.aiResponseSegment:
-        final seg = block.segment!;
-        final turnIndex = block.turn!.turnIndex;
-        return _buildGranularResponseSegmentWidget(
-          context,
-          seg,
-          turnIndex: turnIndex,
-          isExpanded: block.isExpanded,
-          colorScheme: colorScheme,
-          textTheme: textTheme,
-          isMobile: isMobile,
-        );
-
-      case _ChatBlockKind.aiRunningIndicator:
-        final turn = block.turn!;
-        return Padding(
-          padding: const EdgeInsets.symmetric(vertical: 6),
-          child: Row(
-            children: [
-              SizedBox(
-                width: 13,
-                height: 13,
-                child: CircularProgressIndicator(
-                  strokeWidth: 2,
-                  color: colorScheme.primary,
-                ),
-              ),
-              const SizedBox(width: 8),
-              Expanded(
-                child: Text(
-                  turn.agentSteps.last.vietnameseTitle,
-                  style: textTheme.bodySmall?.copyWith(
-                    color: colorScheme.onSurfaceVariant,
-                  ),
-                ),
-              ),
-            ],
-          ),
-        );
-
-      case _ChatBlockKind.filesChangedCard:
-        final turn = block.turn!;
-        return Padding(
-          padding: const EdgeInsets.only(top: 6),
-          child: _GroupedFilesChangedCard(
-            groupedFiles: turn.groupedFiles,
+          child: _buildAiTurnCard(
+            context,
+            turn,
             isMobile: isMobile,
-            onInspectFileChange: widget.onInspectFileChange,
-            onDownloadFile: widget.onDownloadFile,
+            isLastTurn: block.isLastTurn,
+            liveStream: liveStream,
           ),
         );
 
@@ -1119,9 +976,9 @@ class _ChatCanvasViewState extends State<ChatCanvasView> {
       return Container(
         margin: const EdgeInsets.symmetric(vertical: 6),
         decoration: BoxDecoration(
-          color: const Color(0xFF141416),
+          color: context.scheme.surfaceContainerLowest,
           borderRadius: BorderRadius.circular(9),
-          border: Border.all(color: const Color(0xFF2E2E34), width: 0.8),
+          border: Border.all(color: context.scheme.outlineVariant, width: 0.8),
         ),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -1129,12 +986,12 @@ class _ChatCanvasViewState extends State<ChatCanvasView> {
             Container(
               padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 5),
               decoration: BoxDecoration(
-                color: const Color(0xFF1F1F24),
+                color: context.scheme.surfaceContainerLow,
                 borderRadius: const BorderRadius.vertical(
                   top: Radius.circular(8.2),
                 ),
-                border: const Border(
-                  bottom: BorderSide(color: Color(0xFF2E2E34), width: 0.8),
+                border: Border(
+                  bottom: BorderSide(color: context.scheme.outlineVariant, width: 0.8),
                 ),
               ),
               child: Row(
@@ -1201,11 +1058,11 @@ class _ChatCanvasViewState extends State<ChatCanvasView> {
                 scrollDirection: Axis.horizontal,
                 child: SelectableText(
                   block.text,
-                  style: const TextStyle(
+                  style: TextStyle(
                     fontFamily: 'monospace',
                     fontSize: 12.5,
                     height: 1.5,
-                    color: Color(0xFFE4E4E7),
+                    color: context.scheme.onSurface,
                   ),
                 ),
               ),
@@ -1369,10 +1226,10 @@ class _ChatCanvasViewState extends State<ChatCanvasView> {
         vertical: 8,
       ),
       decoration: BoxDecoration(
-        color: Colors.amber.withAlpha(25),
+        color: context.status.warning.withAlpha(25),
         borderRadius: BorderRadius.circular(10),
         border: Border.all(
-          color: Colors.amber.shade700.withAlpha(120),
+          color: context.status.warning.withAlpha(120),
           width: 1,
         ),
       ),
@@ -1382,7 +1239,7 @@ class _ChatCanvasViewState extends State<ChatCanvasView> {
           Icon(
             Icons.warning_amber_rounded,
             size: 18,
-            color: Colors.amber.shade700,
+            color: context.status.warning,
           ),
           const SizedBox(width: 8),
           Expanded(
@@ -1394,7 +1251,7 @@ class _ChatCanvasViewState extends State<ChatCanvasView> {
                   'Tiến trình Agent trước đó đã bị gián đoạn',
                   style: textTheme.labelMedium?.copyWith(
                     fontWeight: FontWeight.bold,
-                    color: Colors.amber.shade900,
+                    color: context.status.warning,
                   ),
                 ),
                 const SizedBox(height: 2),
@@ -1428,7 +1285,7 @@ class _ChatCanvasViewState extends State<ChatCanvasView> {
         color: colorScheme.surfaceContainerHighest.withAlpha(220),
         borderRadius: BorderRadius.circular(12),
         border: Border.all(
-          color: Colors.amber.shade700.withAlpha(160),
+          color: context.status.warning.withAlpha(160),
           width: 1.2,
         ),
       ),
@@ -1446,13 +1303,13 @@ class _ChatCanvasViewState extends State<ChatCanvasView> {
               Container(
                 padding: const EdgeInsets.all(6),
                 decoration: BoxDecoration(
-                  color: Colors.amber.shade700.withAlpha(35),
+                  color: context.status.warning.withAlpha(35),
                   shape: BoxShape.circle,
                 ),
                 child: Icon(
                   Icons.cloud_upload_outlined,
                   size: 16,
-                  color: Colors.amber.shade700,
+                  color: context.status.warning,
                 ),
               ),
               const SizedBox(width: 8),
@@ -1600,8 +1457,8 @@ class _ChatCanvasViewState extends State<ChatCanvasView> {
               const SizedBox(width: 8),
               FilledButton.icon(
                 style: FilledButton.styleFrom(
-                  backgroundColor: Colors.teal.shade700,
-                  foregroundColor: Colors.white,
+                  backgroundColor: context.status.success,
+                  foregroundColor: context.scheme.onPrimary,
                   padding: const EdgeInsets.symmetric(
                     horizontal: 12,
                     vertical: 6,
@@ -1612,13 +1469,13 @@ class _ChatCanvasViewState extends State<ChatCanvasView> {
                   ),
                 ),
                 icon: _isPushingGit
-                    ? const SizedBox(
+                    ? SizedBox(
                         width: 13,
                         height: 13,
                         child: CircularProgressIndicator(
                           strokeWidth: 2,
                           valueColor: AlwaysStoppedAnimation<Color>(
-                            Colors.white,
+                            context.scheme.onPrimary,
                           ),
                         ),
                       )
@@ -1645,9 +1502,9 @@ class _ChatCanvasViewState extends State<ChatCanvasView> {
                               SnackBar(
                                 content: Row(
                                   children: [
-                                    const Icon(
+                                    Icon(
                                       Icons.check_circle_rounded,
-                                      color: Colors.white,
+                                      color: context.scheme.onPrimary,
                                       size: 18,
                                     ),
                                     const SizedBox(width: 8),
@@ -1660,7 +1517,7 @@ class _ChatCanvasViewState extends State<ChatCanvasView> {
                                     ),
                                   ],
                                 ),
-                                backgroundColor: Colors.teal.shade700,
+                                backgroundColor: context.status.success,
                                 behavior: SnackBarBehavior.floating,
                               ),
                             );
@@ -1721,12 +1578,12 @@ class _ChatCanvasViewState extends State<ChatCanvasView> {
         color: colorScheme.surfaceContainerHighest.withAlpha(220),
         borderRadius: BorderRadius.circular(12),
         border: Border.all(
-          color: Colors.amber.shade700.withAlpha(210),
+          color: context.status.warning.withAlpha(210),
           width: 1.2,
         ),
         boxShadow: [
           BoxShadow(
-            color: Colors.amber.shade900.withAlpha(25),
+            color: context.status.warning.withAlpha(25),
             blurRadius: 8,
             offset: const Offset(0, 2),
           ),
@@ -1743,13 +1600,13 @@ class _ChatCanvasViewState extends State<ChatCanvasView> {
               Container(
                 padding: const EdgeInsets.all(5),
                 decoration: BoxDecoration(
-                  color: Colors.amber.withAlpha(40),
+                  color: context.status.warning.withAlpha(40),
                   borderRadius: BorderRadius.circular(6),
                 ),
                 child: Icon(
                   Icons.assignment_outlined,
                   size: 16,
-                  color: Colors.amber.shade700,
+                  color: context.status.warning,
                 ),
               ),
               const SizedBox(width: 8),
@@ -1767,10 +1624,10 @@ class _ChatCanvasViewState extends State<ChatCanvasView> {
               Container(
                 padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
                 decoration: BoxDecoration(
-                  color: Colors.amber.withAlpha(35),
+                  color: context.status.warning.withAlpha(35),
                   borderRadius: BorderRadius.circular(10),
                   border: Border.all(
-                    color: Colors.amber.shade700.withAlpha(120),
+                    color: context.status.warning.withAlpha(120),
                     width: 0.8,
                   ),
                 ),
@@ -1781,7 +1638,7 @@ class _ChatCanvasViewState extends State<ChatCanvasView> {
                       width: 6,
                       height: 6,
                       decoration: BoxDecoration(
-                        color: Colors.amber.shade700,
+                        color: context.status.warning,
                         shape: BoxShape.circle,
                       ),
                     ),
@@ -1791,7 +1648,7 @@ class _ChatCanvasViewState extends State<ChatCanvasView> {
                       style: TextStyle(
                         fontSize: 10.5,
                         fontWeight: FontWeight.w600,
-                        color: Colors.amber.shade700,
+                        color: context.status.warning,
                       ),
                     ),
                   ],
@@ -1875,8 +1732,8 @@ class _ChatCanvasViewState extends State<ChatCanvasView> {
                     const SizedBox(height: 6),
                     FilledButton.icon(
                       style: FilledButton.styleFrom(
-                        backgroundColor: Colors.green.shade700,
-                        foregroundColor: Colors.white,
+                        backgroundColor: context.status.success,
+                        foregroundColor: context.scheme.onPrimary,
                         padding: const EdgeInsets.symmetric(
                           horizontal: 10,
                           vertical: 8,
@@ -1942,8 +1799,8 @@ class _ChatCanvasViewState extends State<ChatCanvasView> {
                     const SizedBox(width: 8),
                     FilledButton.icon(
                       style: FilledButton.styleFrom(
-                        backgroundColor: Colors.green.shade700,
-                        foregroundColor: Colors.white,
+                        backgroundColor: context.status.success,
+                        foregroundColor: context.scheme.onPrimary,
                         padding: const EdgeInsets.symmetric(
                           horizontal: 12,
                           vertical: 8,
@@ -2101,8 +1958,8 @@ class _ChatCanvasViewState extends State<ChatCanvasView> {
                           flex: 2,
                           child: FilledButton.icon(
                             style: FilledButton.styleFrom(
-                              backgroundColor: Colors.green.shade700,
-                              foregroundColor: Colors.white,
+                              backgroundColor: context.status.success,
+                              foregroundColor: context.scheme.onPrimary,
                               padding: const EdgeInsets.symmetric(vertical: 12),
                               shape: RoundedRectangleBorder(
                                 borderRadius: BorderRadius.circular(10),
@@ -2262,16 +2119,16 @@ class _ChatCanvasViewState extends State<ChatCanvasView> {
                       Container(
                         padding: const EdgeInsets.all(8),
                         decoration: BoxDecoration(
-                          color: Colors.orange.withAlpha(35),
+                          color: context.status.warning.withAlpha(35),
                           borderRadius: BorderRadius.circular(10),
                           border: Border.all(
-                            color: Colors.orange.withAlpha(120),
+                            color: context.status.warning.withAlpha(120),
                           ),
                         ),
-                        child: const Icon(
+                        child: Icon(
                           Icons.hub_rounded,
                           size: 20,
-                          color: Colors.orange,
+                          color: context.status.warning,
                         ),
                       ),
                       const SizedBox(width: 12),
@@ -2294,10 +2151,10 @@ class _ChatCanvasViewState extends State<ChatCanvasView> {
                                     vertical: 2,
                                   ),
                                   decoration: BoxDecoration(
-                                    color: Colors.orange.withAlpha(30),
+                                    color: context.status.warning.withAlpha(30),
                                     borderRadius: BorderRadius.circular(6),
                                     border: Border.all(
-                                      color: Colors.orange.withAlpha(100),
+                                      color: context.status.warning.withAlpha(100),
                                       width: 0.8,
                                     ),
                                   ),
@@ -2307,8 +2164,8 @@ class _ChatCanvasViewState extends State<ChatCanvasView> {
                                       Container(
                                         width: 6,
                                         height: 6,
-                                        decoration: const BoxDecoration(
-                                          color: Colors.orange,
+                                        decoration: BoxDecoration(
+                                          color: context.status.warning,
                                           shape: BoxShape.circle,
                                         ),
                                       ),
@@ -2318,7 +2175,7 @@ class _ChatCanvasViewState extends State<ChatCanvasView> {
                                         style: textTheme.labelSmall?.copyWith(
                                           fontSize: 9,
                                           fontWeight: FontWeight.w800,
-                                          color: Colors.orange,
+                                          color: context.status.warning,
                                         ),
                                       ),
                                     ],
@@ -2369,10 +2226,10 @@ class _ChatCanvasViewState extends State<ChatCanvasView> {
                           children: [
                             Row(
                               children: [
-                                const Icon(
+                                Icon(
                                   Icons.pending_actions_rounded,
                                   size: 16,
-                                  color: Colors.orange,
+                                  color: context.status.warning,
                                 ),
                                 const SizedBox(width: 8),
                                 Text(
@@ -2426,8 +2283,8 @@ class _ChatCanvasViewState extends State<ChatCanvasView> {
                                 backgroundColor:
                                     colorScheme.surfaceContainerHighest,
                                 valueColor:
-                                    const AlwaysStoppedAnimation<Color>(
-                                  Colors.orange,
+                                    AlwaysStoppedAnimation<Color>(
+                                  context.status.warning,
                                 ),
                                 minHeight: 4,
                               ),
@@ -2449,10 +2306,10 @@ class _ChatCanvasViewState extends State<ChatCanvasView> {
                         ),
                         child: Row(
                           children: [
-                            const Icon(
+                            Icon(
                               Icons.folder_outlined,
                               size: 16,
-                              color: Colors.teal,
+                              color: context.status.success,
                             ),
                             const SizedBox(width: 8),
                             Text(
@@ -2524,10 +2381,10 @@ class _ChatCanvasViewState extends State<ChatCanvasView> {
                                   child: Row(
                                     mainAxisSize: MainAxisSize.min,
                                     children: [
-                                      const Icon(
+                                      Icon(
                                         Icons.description_outlined,
                                         size: 13,
-                                        color: Colors.teal,
+                                        color: context.status.success,
                                       ),
                                       const SizedBox(width: 5),
                                       Text(
@@ -2563,7 +2420,7 @@ class _ChatCanvasViewState extends State<ChatCanvasView> {
                               '(Chạm để xem chi tiết)',
                               style: textTheme.labelSmall?.copyWith(
                                 fontSize: 10,
-                                color: Colors.orange,
+                                color: context.status.warning,
                                 fontStyle: FontStyle.italic,
                               ),
                             ),
@@ -2594,7 +2451,7 @@ class _ChatCanvasViewState extends State<ChatCanvasView> {
                                           ? Icons.build_circle_outlined
                                           : Icons.chat_bubble_outline_rounded,
                                       size: 14,
-                                      color: Colors.orange,
+                                      color: context.status.warning,
                                     ),
                                   ),
                                   const SizedBox(width: 8),
@@ -2664,18 +2521,18 @@ class _ChatCanvasViewState extends State<ChatCanvasView> {
                             Navigator.of(ctx).pop();
                             widget.onOpenParallelFlow!();
                           },
-                          icon: const Icon(
+                          icon: Icon(
                             Icons.alt_route_rounded,
                             size: 16,
-                            color: Colors.deepPurpleAccent,
+                            color: context.scheme.tertiary,
                           ),
-                          label: const Text(
+                          label: Text(
                             'Xem toàn bộ Sơ đồ Luồng Parallel Agent',
-                            style: TextStyle(color: Colors.deepPurpleAccent),
+                            style: TextStyle(color: context.scheme.tertiary),
                           ),
                           style: OutlinedButton.styleFrom(
-                            side: const BorderSide(
-                              color: Colors.deepPurpleAccent,
+                            side: BorderSide(
+                              color: context.scheme.tertiary,
                             ),
                             padding: const EdgeInsets.symmetric(vertical: 12),
                             shape: RoundedRectangleBorder(
@@ -2778,10 +2635,10 @@ class _ChatCanvasViewState extends State<ChatCanvasView> {
                                     vertical: 2,
                                   ),
                                   decoration: BoxDecoration(
-                                    color: Colors.green.withAlpha(30),
+                                    color: context.status.success.withAlpha(30),
                                     borderRadius: BorderRadius.circular(6),
                                     border: Border.all(
-                                      color: Colors.green.withAlpha(100),
+                                      color: context.status.success.withAlpha(100),
                                       width: 0.8,
                                     ),
                                   ),
@@ -2791,8 +2648,8 @@ class _ChatCanvasViewState extends State<ChatCanvasView> {
                                       Container(
                                         width: 6,
                                         height: 6,
-                                        decoration: const BoxDecoration(
-                                          color: Colors.green,
+                                        decoration: BoxDecoration(
+                                          color: context.status.success,
                                           shape: BoxShape.circle,
                                         ),
                                       ),
@@ -2802,7 +2659,7 @@ class _ChatCanvasViewState extends State<ChatCanvasView> {
                                         style: textTheme.labelSmall?.copyWith(
                                           fontSize: 9,
                                           fontWeight: FontWeight.w800,
-                                          color: Colors.green,
+                                          color: context.status.success,
                                         ),
                                       ),
                                     ],
@@ -3001,8 +2858,8 @@ class _ChatCanvasViewState extends State<ChatCanvasView> {
                         icon: const Icon(Icons.stop_circle_outlined, size: 18),
                         label: const Text('Dừng tác vụ (Stop Turn)'),
                         style: FilledButton.styleFrom(
-                          backgroundColor: Colors.redAccent,
-                          foregroundColor: Colors.white,
+                          backgroundColor: context.scheme.error,
+                          foregroundColor: context.scheme.onPrimary,
                           padding: const EdgeInsets.symmetric(vertical: 12),
                           shape: RoundedRectangleBorder(
                             borderRadius: BorderRadius.circular(10),
@@ -3101,10 +2958,10 @@ class _ChatCanvasViewState extends State<ChatCanvasView> {
         ),
         child: Row(
           children: [
-            const Icon(
+            Icon(
               Icons.check_circle_outline_rounded,
               size: 15,
-              color: Colors.teal,
+              color: context.status.success,
             ),
             const SizedBox(width: 8),
             Text(
@@ -3119,21 +2976,21 @@ class _ChatCanvasViewState extends State<ChatCanvasView> {
               const SizedBox(width: 6),
               Text(
                 '+$totalAdded',
-                style: const TextStyle(
+                style: TextStyle(
                   fontFamily: 'monospace',
                   fontSize: 10,
                   fontWeight: FontWeight.w700,
-                  color: Colors.teal,
+                  color: context.status.success,
                 ),
               ),
               const SizedBox(width: 3),
               Text(
                 '-$totalRemoved',
-                style: const TextStyle(
+                style: TextStyle(
                   fontFamily: 'monospace',
                   fontSize: 10,
                   fontWeight: FontWeight.w700,
-                  color: Colors.redAccent,
+                  color: context.scheme.error,
                 ),
               ),
             ],
@@ -3168,18 +3025,18 @@ class _ChatCanvasViewState extends State<ChatCanvasView> {
                   padding:
                       const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
                   decoration: BoxDecoration(
-                    color: Colors.deepPurple.withAlpha(35),
+                    color: context.scheme.tertiary.withAlpha(35),
                     borderRadius: BorderRadius.circular(6),
                     border: Border.all(
-                      color: Colors.deepPurpleAccent.withAlpha(120),
+                      color: context.scheme.tertiary.withAlpha(120),
                     ),
                   ),
-                  child: const Text(
+                  child: Text(
                     'Parallel Flow',
                     style: TextStyle(
                       fontSize: 10.5,
                       fontWeight: FontWeight.w700,
-                      color: Colors.deepPurpleAccent,
+                      color: context.scheme.tertiary,
                     ),
                   ),
                 ),
@@ -3238,7 +3095,7 @@ class _ChatCanvasViewState extends State<ChatCanvasView> {
 
     if (isGitCommitTask) {
       coordinatorToolBadge = 'git commit';
-      coordinatorBadgeColor = Colors.teal;
+      coordinatorBadgeColor = context.status.success;
       coordinatorActionIcon = Icons.commit_rounded;
       coordinatorActionTitle = currentStepIndex != null
           ? 'Bước #$currentStepIndex: Đang tạo Git Commit'
@@ -3252,7 +3109,7 @@ class _ChatCanvasViewState extends State<ChatCanvasView> {
       coordinatorToolBadge = toolName;
       switch (toolName) {
         case 'run_command':
-          coordinatorBadgeColor = Colors.blueAccent;
+          coordinatorBadgeColor = context.scheme.secondary;
           coordinatorActionIcon = Icons.terminal_rounded;
           final summary = lastTool.args['toolSummary']?.toString() ?? '';
           final cmd = lastTool.args['CommandLine']?.toString() ?? '';
@@ -3260,42 +3117,42 @@ class _ChatCanvasViewState extends State<ChatCanvasView> {
           coordinatorActionDetail = cmd.isNotEmpty ? cmd : lastStep.vietnameseDetail;
           break;
         case 'edit_file':
-          coordinatorBadgeColor = Colors.orange;
+          coordinatorBadgeColor = context.status.warning;
           coordinatorActionIcon = Icons.edit_note_rounded;
           final path = lastTool.args['Path']?.toString() ?? '';
           coordinatorActionTitle = 'Bước #$currentStepIndex: ${lastStep.vietnameseTitle.isNotEmpty ? lastStep.vietnameseTitle : 'Chỉnh sửa tệp nguồn'}';
           coordinatorActionDetail = path.isNotEmpty ? path.split('/').last : lastStep.vietnameseDetail;
           break;
         case 'write_file':
-          coordinatorBadgeColor = Colors.teal;
+          coordinatorBadgeColor = context.status.success;
           coordinatorActionIcon = Icons.note_add_rounded;
           final path = lastTool.args['Path']?.toString() ?? '';
           coordinatorActionTitle = 'Bước #$currentStepIndex: ${lastStep.vietnameseTitle.isNotEmpty ? lastStep.vietnameseTitle : 'Tạo mới tệp tin'}';
           coordinatorActionDetail = path.isNotEmpty ? path.split('/').last : lastStep.vietnameseDetail;
           break;
         case 'read_file':
-          coordinatorBadgeColor = Colors.amber.shade700;
+          coordinatorBadgeColor = context.status.warning;
           coordinatorActionIcon = Icons.search_rounded;
           final path = lastTool.args['Path']?.toString() ?? '';
           coordinatorActionTitle = 'Bước #$currentStepIndex: ${lastStep.vietnameseTitle.isNotEmpty ? lastStep.vietnameseTitle : 'Đọc nội dung tệp tin'}';
           coordinatorActionDetail = path.isNotEmpty ? path.split('/').last : lastStep.vietnameseDetail;
           break;
         case 'invoke_subagent':
-          coordinatorBadgeColor = Colors.purpleAccent;
+          coordinatorBadgeColor = context.scheme.tertiary;
           coordinatorActionIcon = Icons.alt_route_rounded;
           final role = lastTool.args['Role']?.toString() ?? '';
           coordinatorActionTitle = 'Bước #$currentStepIndex: ${role.isNotEmpty ? 'Phân quyền: $role' : 'Điều phối Subagent song song'}';
           coordinatorActionDetail = lastTool.args['Prompt']?.toString() ?? lastStep.vietnameseDetail;
           break;
         default:
-          coordinatorBadgeColor = Colors.deepPurpleAccent;
+          coordinatorBadgeColor = context.scheme.tertiary;
           coordinatorActionIcon = Icons.build_circle_outlined;
           coordinatorActionTitle = 'Bước #$currentStepIndex: ${lastStep.vietnameseTitle.isNotEmpty ? lastStep.vietnameseTitle : 'Công cụ: $toolName'}';
           coordinatorActionDetail = lastStep.vietnameseDetail;
       }
     } else if (stream != null && stream.streamingText.isNotEmpty) {
       coordinatorToolBadge = 'Thinking';
-      coordinatorBadgeColor = Colors.purpleAccent;
+      coordinatorBadgeColor = context.scheme.tertiary;
       coordinatorActionIcon = Icons.smart_toy_rounded;
       coordinatorActionTitle = currentStepIndex != null
           ? 'Bước #$currentStepIndex: Robot đang suy nghĩ & xử lý'
@@ -3308,7 +3165,7 @@ class _ChatCanvasViewState extends State<ChatCanvasView> {
     } else if (lastStep != null) {
       final isPlanner = lastStep.type == 'PLANNER_RESPONSE';
       coordinatorToolBadge = isPlanner ? 'Thinking' : lastStep.type;
-      coordinatorBadgeColor = isPlanner ? Colors.purpleAccent : colorScheme.primary;
+      coordinatorBadgeColor = isPlanner ? context.scheme.tertiary : colorScheme.primary;
       coordinatorActionIcon = isPlanner ? Icons.smart_toy_rounded : Icons.psychology_rounded;
       coordinatorActionTitle = currentStepIndex != null
           ? 'Bước #$currentStepIndex: ${isPlanner ? 'Robot đang suy nghĩ & phân tích' : (lastStep.vietnameseTitle.isNotEmpty ? lastStep.vietnameseTitle : 'Đang xử lý bước #$currentStepIndex')}'
@@ -3320,7 +3177,7 @@ class _ChatCanvasViewState extends State<ChatCanvasView> {
       );
     } else {
       coordinatorToolBadge = 'Thinking';
-      coordinatorBadgeColor = Colors.purpleAccent;
+      coordinatorBadgeColor = context.scheme.tertiary;
       coordinatorActionIcon = Icons.smart_toy_rounded;
       coordinatorActionTitle = 'Robot đang suy nghĩ & phân tích';
       coordinatorActionDetail = _extractSpecificThinkingDetail(
@@ -3387,17 +3244,17 @@ class _ChatCanvasViewState extends State<ChatCanvasView> {
                           vertical: 2,
                         ),
                         decoration: BoxDecoration(
-                          color: Colors.teal.withAlpha(35),
+                          color: context.status.success.withAlpha(35),
                           borderRadius: BorderRadius.circular(6),
-                          border: Border.all(color: Colors.teal.withAlpha(100)),
+                          border: Border.all(color: context.status.success.withAlpha(100)),
                         ),
                         child: Row(
                           mainAxisSize: MainAxisSize.min,
                           children: [
-                            const Icon(
+                            Icon(
                               Icons.open_in_new_rounded,
                               size: 11,
-                              color: Colors.teal,
+                              color: context.status.success,
                             ),
                             const SizedBox(width: 3),
                             Text(
@@ -3407,7 +3264,7 @@ class _ChatCanvasViewState extends State<ChatCanvasView> {
                               style: textTheme.labelSmall?.copyWith(
                                 fontSize: 9.5,
                                 fontWeight: FontWeight.w700,
-                                color: Colors.teal,
+                                color: context.status.success,
                               ),
                             ),
                           ],
@@ -3460,7 +3317,7 @@ class _ChatCanvasViewState extends State<ChatCanvasView> {
                                   fontFamily: 'monospace',
                                   fontSize: 8.5,
                                   fontWeight: FontWeight.w700,
-                                  color: Colors.teal,
+                                  color: context.status.success,
                                 ),
                               ),
                             ],
@@ -3481,19 +3338,19 @@ class _ChatCanvasViewState extends State<ChatCanvasView> {
                           vertical: 2,
                         ),
                         decoration: BoxDecoration(
-                          color: Colors.deepPurple.withAlpha(35),
+                          color: context.scheme.tertiary.withAlpha(35),
                           borderRadius: BorderRadius.circular(6),
                           border: Border.all(
-                            color: Colors.deepPurpleAccent.withAlpha(120),
+                            color: context.scheme.tertiary.withAlpha(120),
                           ),
                         ),
                         child: Row(
                           mainAxisSize: MainAxisSize.min,
                           children: [
-                            const Icon(
+                            Icon(
                               Icons.alt_route_rounded,
                               size: 11,
-                              color: Colors.deepPurpleAccent,
+                              color: context.scheme.tertiary,
                             ),
                             const SizedBox(width: 3),
                             Text(
@@ -3501,7 +3358,7 @@ class _ChatCanvasViewState extends State<ChatCanvasView> {
                               style: textTheme.labelSmall?.copyWith(
                                 fontSize: 9.5,
                                 fontWeight: FontWeight.w800,
-                                color: Colors.deepPurpleAccent,
+                                color: context.scheme.tertiary,
                               ),
                             ),
                           ],
@@ -3532,9 +3389,9 @@ class _ChatCanvasViewState extends State<ChatCanvasView> {
                 child: Row(
                   children: [
                     if (coordinatorToolBadge == 'Thinking')
-                      const _AnimatedThinkingRobotIcon(
+                      _AnimatedThinkingRobotIcon(
                         size: 16,
-                        color: Colors.purpleAccent,
+                        color: context.scheme.tertiary,
                       )
                     else
                       SizedBox(
@@ -3652,9 +3509,9 @@ class _ChatCanvasViewState extends State<ChatCanvasView> {
                           Row(
                             children: [
                               if (coordinatorToolBadge == 'Thinking')
-                                const _AnimatedThinkingRobotIcon(
+                                _AnimatedThinkingRobotIcon(
                                   size: 12,
-                                  color: Colors.purpleAccent,
+                                  color: context.scheme.tertiary,
                                 )
                               else
                                 Icon(
@@ -3731,13 +3588,13 @@ class _ChatCanvasViewState extends State<ChatCanvasView> {
                 padding: const EdgeInsets.fromLTRB(14, 4, 14, 7),
                 child: Row(
                   children: [
-                    const SizedBox(
+                    SizedBox(
                       width: 14,
                       height: 14,
                       child: CircularProgressIndicator(
                         strokeWidth: 1.8,
                         valueColor:
-                            AlwaysStoppedAnimation<Color>(Colors.orange),
+                            AlwaysStoppedAnimation<Color>(context.status.warning),
                       ),
                     ),
                     const SizedBox(width: 10),
@@ -3755,7 +3612,7 @@ class _ChatCanvasViewState extends State<ChatCanvasView> {
                                   overflow: TextOverflow.ellipsis,
                                   style: textTheme.labelSmall?.copyWith(
                                     fontWeight: FontWeight.w700,
-                                    color: Colors.orange,
+                                    color: context.status.warning,
                                   ),
                                 ),
                               ),
@@ -3861,9 +3718,9 @@ class _ChatCanvasViewState extends State<ChatCanvasView> {
                                             : Icons.description_outlined,
                                     size: 13,
                                     color: gf.action == 'WRITE'
-                                        ? Colors.teal
+                                        ? context.status.success
                                         : gf.action == 'EDIT'
-                                            ? Colors.amber
+                                            ? context.status.warning
                                             : colorScheme.onSurfaceVariant,
                                   ),
                                   const SizedBox(width: 4),
@@ -3884,7 +3741,7 @@ class _ChatCanvasViewState extends State<ChatCanvasView> {
                                         fontFamily: 'monospace',
                                         fontSize: 9.5,
                                         fontWeight: FontWeight.w700,
-                                        color: Colors.teal,
+                                        color: context.status.success,
                                       ),
                                     ),
                                   ],
@@ -3915,33 +3772,33 @@ class _ChatCanvasViewState extends State<ChatCanvasView> {
                           vertical: 6,
                         ),
                         decoration: BoxDecoration(
-                          color: Colors.deepPurple.withAlpha(25),
+                          color: context.scheme.tertiary.withAlpha(25),
                           borderRadius: BorderRadius.circular(8),
                           border: Border.all(
-                            color: Colors.deepPurpleAccent.withAlpha(90),
+                            color: context.scheme.tertiary.withAlpha(90),
                           ),
                         ),
                         child: Row(
                           mainAxisAlignment: MainAxisAlignment.center,
                           children: [
-                            const Icon(
+                            Icon(
                               Icons.account_tree_outlined,
                               size: 14,
-                              color: Colors.deepPurpleAccent,
+                              color: context.scheme.tertiary,
                             ),
                             const SizedBox(width: 6),
                             Text(
                               'Xem biểu đồ trực quan Luồng chạy Parallel Agent (Swimlanes & Checklist)',
                               style: textTheme.labelSmall?.copyWith(
                                 fontWeight: FontWeight.w700,
-                                color: Colors.deepPurpleAccent,
+                                color: context.scheme.tertiary,
                               ),
                             ),
                             const SizedBox(width: 4),
-                            const Icon(
+                            Icon(
                               Icons.arrow_forward_rounded,
                               size: 13,
-                              color: Colors.deepPurpleAccent,
+                              color: context.scheme.tertiary,
                             ),
                           ],
                         ),
@@ -4014,9 +3871,9 @@ class _ChatCanvasViewState extends State<ChatCanvasView> {
   }
 
   Color _quotaStatusColor(double remainingPct) {
-    if (remainingPct <= 15) return Colors.redAccent;
-    if (remainingPct <= 45) return Colors.amber;
-    return Colors.teal;
+    if (remainingPct <= 15) return context.scheme.error;
+    if (remainingPct <= 45) return context.status.warning;
+    return context.status.success;
   }
 
   /// [2] THANH % USAGE CỦA MODEL AI — Nằm ở giữa phần Task Running và Khung Chat
@@ -4401,7 +4258,7 @@ class _ChatCanvasViewState extends State<ChatCanvasView> {
         ),
         boxShadow: [
           BoxShadow(
-            color: Colors.black.withAlpha(14),
+            color: context.scheme.shadow.withAlpha(14),
             blurRadius: 10,
             offset: const Offset(0, 3),
           ),
@@ -4419,32 +4276,34 @@ class _ChatCanvasViewState extends State<ChatCanvasView> {
               2,
             ),
             child: RepaintBoundary(
-              child: TextField(
-                controller: _promptController,
-                focusNode: _inputFocusNode,
-                minLines: 1,
-                maxLines: isMobile ? 3 : 5,
-                keyboardType: TextInputType.multiline,
-                autocorrect: false,
-                enableSuggestions: true,
-                textInputAction: TextInputAction.send,
-                onSubmitted: (_) => _handleSend(),
-                style: textTheme.bodyMedium?.copyWith(
-                  height: 1.38,
-                  fontSize: isMobile ? 13.5 : 14,
-                  color: colorScheme.onSurface,
-                ),
-                decoration: InputDecoration(
-                  hintText: isMobile
-                      ? 'Nhập tin nhắn cho Agent ($activeProjectName)...'
-                      : 'Ask anything in $activeProjectName, or type / for workflows...',
-                  hintStyle: textTheme.bodyMedium?.copyWith(
-                    fontSize: isMobile ? 13 : 13.5,
-                    color: colorScheme.onSurfaceVariant.withAlpha(155),
+              child: Focus(
+                onKeyEvent: isMobile ? null : _handleComposerKeyEvent,
+                child: TextField(
+                  controller: _promptController,
+                  focusNode: _inputFocusNode,
+                  minLines: 4,
+                  maxLines: 10,
+                  keyboardType: TextInputType.multiline,
+                  autocorrect: false,
+                  enableSuggestions: true,
+                  textInputAction: TextInputAction.newline,
+                  style: textTheme.bodyMedium?.copyWith(
+                    height: 1.38,
+                    fontSize: isMobile ? 13.5 : 14,
+                    color: colorScheme.onSurface,
                   ),
-                  border: InputBorder.none,
-                  isDense: true,
-                  contentPadding: const EdgeInsets.symmetric(vertical: 5),
+                  decoration: InputDecoration(
+                    hintText: isMobile
+                        ? 'Nhập tin nhắn cho Agent ($activeProjectName)...'
+                        : 'Ask anything in $activeProjectName, or type / for workflows...',
+                    hintStyle: textTheme.bodyMedium?.copyWith(
+                      fontSize: isMobile ? 13 : 13.5,
+                      color: colorScheme.onSurfaceVariant.withAlpha(155),
+                    ),
+                    border: InputBorder.none,
+                    isDense: true,
+                    contentPadding: const EdgeInsets.symmetric(vertical: 5),
+                  ),
                 ),
               ),
             ),
@@ -4603,8 +4462,8 @@ class _ChatCanvasViewState extends State<ChatCanvasView> {
                     tooltip: 'Dừng lượt chạy (Stop)',
                     onPressed: widget.onStopTurn,
                     style: IconButton.styleFrom(
-                      backgroundColor: Colors.redAccent.withAlpha(40),
-                      foregroundColor: Colors.redAccent,
+                      backgroundColor: context.scheme.error.withAlpha(40),
+                      foregroundColor: context.scheme.error,
                       minimumSize: const Size(32, 32),
                       padding: EdgeInsets.zero,
                     ),
@@ -4631,14 +4490,35 @@ class _ChatCanvasViewState extends State<ChatCanvasView> {
     );
   }
 
-  void _showSlashCommandsPicker(BuildContext context) {
+  Future<void> _showSlashCommandsPicker(BuildContext context) async {
     final colorScheme = Theme.of(context).colorScheme;
     final textTheme = Theme.of(context).textTheme;
 
-    final allCustom = widget.session?.customAgents ??
-        widget.selectedProject?.customAgents ??
-        [];
-    final projectSkills = allCustom.where((s) => s.kind == 'skill').toList();
+    final isClaude = _isClaudeCliModel(widget.selectedModel);
+    final List<CustomAgentSpec> projectSkills;
+    final List<CustomAgentSpec> claudeAgents;
+    final List<CustomAgentSpec> claudeCommands;
+    if (isClaude) {
+      final projectPath =
+          widget.session?.projectPath ?? widget.selectedProject?.path ?? '';
+      final items = await widget.onFetchClaudeExtensions?.call(projectPath) ??
+          const <CustomAgentSpec>[];
+      if (!context.mounted) return;
+      projectSkills = items.where((s) => s.kind == 'skill').toList();
+      claudeAgents = items.where((s) => s.kind == 'agent').toList();
+      claudeCommands = items.where((s) => s.kind == 'command').toList();
+    } else {
+      final sessionCustom = widget.session?.customAgents ?? const [];
+      final allCustom = sessionCustom.isNotEmpty
+          ? sessionCustom
+          : widget.selectedProject?.customAgents ?? const [];
+      projectSkills = allCustom.where((s) => s.kind == 'skill').toList();
+      claudeAgents = const [];
+      claudeCommands = const [];
+    }
+    final skillSourceLabel = isClaude
+        ? 'Kỹ năng Claude Code (.claude/skills)'
+        : 'Kỹ năng Dự án & Ecosystem (.agents)';
 
     final coreCommands = const [
       (cmd: '/plan', label: 'Lập kế hoạch chi tiết', desc: 'Thiết kế Shared Contract, phân chia tác vụ & chờ duyệt', icon: Icons.architecture_rounded),
@@ -4669,11 +4549,16 @@ class _ChatCanvasViewState extends State<ChatCanvasView> {
                   c.desc.toLowerCase().contains(query);
             }).toList();
 
-            final filteredSkills = projectSkills.where((s) {
+            bool matchesQuery(CustomAgentSpec s) {
               if (query.isEmpty) return true;
               return s.name.toLowerCase().contains(query) ||
                   s.description.toLowerCase().contains(query);
-            }).toList();
+            }
+
+            final filteredSkills = projectSkills.where(matchesQuery).toList();
+            final filteredAgents = claudeAgents.where(matchesQuery).toList();
+            final filteredCommands =
+                claudeCommands.where(matchesQuery).toList();
 
             return DraggableScrollableSheet(
               initialChildSize: 0.65,
@@ -4698,10 +4583,10 @@ class _ChatCanvasViewState extends State<ChatCanvasView> {
                       padding: const EdgeInsets.fromLTRB(16, 4, 16, 8),
                       child: Row(
                         children: [
-                          const Icon(
+                          Icon(
                             Icons.terminal_rounded,
                             size: 20,
-                            color: Colors.deepPurpleAccent,
+                            color: context.scheme.tertiary,
                           ),
                           const SizedBox(width: 8),
                           Expanded(
@@ -4753,113 +4638,36 @@ class _ChatCanvasViewState extends State<ChatCanvasView> {
                         controller: scrollController,
                         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
                         children: [
-                          if (filteredSkills.isNotEmpty) ...[
-                            Padding(
-                              padding: const EdgeInsets.only(top: 6, bottom: 6),
-                              child: Row(
-                                children: [
-                                  const Icon(
-                                    Icons.auto_awesome_rounded,
-                                    size: 14,
-                                    color: Colors.deepPurpleAccent,
-                                  ),
-                                  const SizedBox(width: 6),
-                                  Text(
-                                    'Kỹ năng Dự án & Ecosystem (.agents)',
-                                    style: textTheme.labelSmall?.copyWith(
-                                      fontWeight: FontWeight.w800,
-                                      color: Colors.deepPurpleAccent,
-                                    ),
-                                  ),
-                                  const SizedBox(width: 6),
-                                  Container(
-                                    padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
-                                    decoration: BoxDecoration(
-                                      color: Colors.deepPurple.withAlpha(30),
-                                      borderRadius: BorderRadius.circular(4),
-                                    ),
-                                    child: Text(
-                                      '${filteredSkills.length}',
-                                      style: const TextStyle(
-                                        fontSize: 9.5,
-                                        fontWeight: FontWeight.w700,
-                                        color: Colors.deepPurpleAccent,
-                                      ),
-                                    ),
-                                  ),
-                                ],
-                              ),
+                          if (filteredSkills.isNotEmpty)
+                            ..._buildSlashGroup(
+                              ctx,
+                              title: skillSourceLabel,
+                              icon: Icons.auto_awesome_rounded,
+                              color: context.scheme.tertiary,
+                              itemIcon: Icons.auto_awesome_rounded,
+                              items: filteredSkills,
+                              tokenOf: (s) => '/${s.name}',
                             ),
-                            for (final s in filteredSkills)
-                              InkWell(
-                                borderRadius: BorderRadius.circular(10),
-                                onTap: () {
-                                  Navigator.of(ctx).pop();
-                                  _insertSlashCommand('/${s.name} ');
-                                },
-                                child: Container(
-                                  margin: const EdgeInsets.only(bottom: 6),
-                                  padding: const EdgeInsets.all(10),
-                                  decoration: BoxDecoration(
-                                    color: colorScheme.surfaceContainerHigh,
-                                    borderRadius: BorderRadius.circular(10),
-                                    border: Border.all(
-                                      color: colorScheme.outlineVariant.withAlpha(60),
-                                    ),
-                                  ),
-                                  child: Row(
-                                    children: [
-                                      Container(
-                                        padding: const EdgeInsets.all(6),
-                                        decoration: BoxDecoration(
-                                          color: Colors.deepPurple.withAlpha(25),
-                                          borderRadius: BorderRadius.circular(8),
-                                        ),
-                                        child: const Icon(
-                                          Icons.auto_awesome_rounded,
-                                          size: 16,
-                                          color: Colors.deepPurpleAccent,
-                                        ),
-                                      ),
-                                      const SizedBox(width: 10),
-                                      Expanded(
-                                        child: Column(
-                                          crossAxisAlignment: CrossAxisAlignment.start,
-                                          children: [
-                                            Text(
-                                              '/${s.name}',
-                                              style: textTheme.labelLarge?.copyWith(
-                                                fontWeight: FontWeight.w700,
-                                                color: Colors.deepPurpleAccent,
-                                              ),
-                                            ),
-                                            if (s.description.isNotEmpty) ...[
-                                              const SizedBox(height: 2),
-                                              Text(
-                                                s.description,
-                                                maxLines: 2,
-                                                overflow: TextOverflow.ellipsis,
-                                                style: textTheme.bodySmall?.copyWith(
-                                                  color: colorScheme.onSurfaceVariant,
-                                                  fontSize: 11,
-                                                ),
-                                              ),
-                                            ],
-                                          ],
-                                        ),
-                                      ),
-                                      const SizedBox(width: 6),
-                                      Icon(
-                                        Icons.add_rounded,
-                                        size: 16,
-                                        color: colorScheme.onSurfaceVariant.withAlpha(140),
-                                      ),
-                                    ],
-                                  ),
-                                ),
-                              ),
-                            const SizedBox(height: 8),
-                          ],
+                          if (filteredAgents.isNotEmpty)
+                            ..._buildSlashGroup(
+                              ctx,
+                              title: 'Sub-agents Claude Code (.claude/agents)',
+                              icon: Icons.smart_toy_rounded,
+                              color: context.status.success,
+                              itemIcon: Icons.smart_toy_outlined,
+                              items: filteredAgents,
+                              tokenOf: (s) => '@agent-${s.name}',
+                            ),
+                          if (filteredCommands.isNotEmpty)
+                            ..._buildSlashGroup(
+                              ctx,
+                              title: 'Lệnh Claude Code (.claude/commands)',
+                              icon: Icons.terminal_rounded,
+                              color: colorScheme.secondary,
+                              itemIcon: Icons.code_rounded,
+                              items: filteredCommands,
+                              tokenOf: (s) => '/${s.name}',
+                            ),
                           if (filteredCore.isNotEmpty) ...[
                             Padding(
                               padding: const EdgeInsets.only(top: 6, bottom: 6),
@@ -4959,7 +4767,10 @@ class _ChatCanvasViewState extends State<ChatCanvasView> {
                                 ),
                               ),
                           ],
-                          if (filteredSkills.isEmpty && filteredCore.isEmpty)
+                          if (filteredSkills.isEmpty &&
+                              filteredAgents.isEmpty &&
+                              filteredCommands.isEmpty &&
+                              filteredCore.isEmpty)
                             Padding(
                               padding: const EdgeInsets.all(32),
                               child: Center(
@@ -4982,6 +4793,118 @@ class _ChatCanvasViewState extends State<ChatCanvasView> {
         );
       },
     );
+  }
+
+  List<Widget> _buildSlashGroup(
+    BuildContext sheetCtx, {
+    required String title,
+    required IconData icon,
+    required Color color,
+    required IconData itemIcon,
+    required List<CustomAgentSpec> items,
+    required String Function(CustomAgentSpec spec) tokenOf,
+  }) {
+    final colorScheme = Theme.of(sheetCtx).colorScheme;
+    final textTheme = Theme.of(sheetCtx).textTheme;
+    return [
+      Padding(
+        padding: const EdgeInsets.only(top: 6, bottom: 6),
+        child: Row(
+          children: [
+            Icon(icon, size: 14, color: color),
+            const SizedBox(width: 6),
+            Text(
+              title,
+              style: textTheme.labelSmall?.copyWith(
+                fontWeight: FontWeight.w800,
+                color: color,
+              ),
+            ),
+            const SizedBox(width: 6),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
+              decoration: BoxDecoration(
+                color: color.withAlpha(30),
+                borderRadius: BorderRadius.circular(4),
+              ),
+              child: Text(
+                '${items.length}',
+                style: TextStyle(
+                  fontSize: 9.5,
+                  fontWeight: FontWeight.w700,
+                  color: color,
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+      for (final s in items)
+        InkWell(
+          borderRadius: BorderRadius.circular(10),
+          onTap: () {
+            Navigator.of(sheetCtx).pop();
+            _insertSlashCommand('${tokenOf(s)} ');
+          },
+          child: Container(
+            margin: const EdgeInsets.only(bottom: 6),
+            padding: const EdgeInsets.all(10),
+            decoration: BoxDecoration(
+              color: colorScheme.surfaceContainerHigh,
+              borderRadius: BorderRadius.circular(10),
+              border: Border.all(
+                color: colorScheme.outlineVariant.withAlpha(60),
+              ),
+            ),
+            child: Row(
+              children: [
+                Container(
+                  padding: const EdgeInsets.all(6),
+                  decoration: BoxDecoration(
+                    color: color.withAlpha(25),
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: Icon(itemIcon, size: 16, color: color),
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        tokenOf(s),
+                        style: textTheme.labelLarge?.copyWith(
+                          fontWeight: FontWeight.w700,
+                          color: color,
+                        ),
+                      ),
+                      if (s.description.isNotEmpty) ...[
+                        const SizedBox(height: 2),
+                        Text(
+                          s.description,
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis,
+                          style: textTheme.bodySmall?.copyWith(
+                            color: colorScheme.onSurfaceVariant,
+                            fontSize: 11,
+                          ),
+                        ),
+                      ],
+                    ],
+                  ),
+                ),
+                const SizedBox(width: 6),
+                Icon(
+                  Icons.add_rounded,
+                  size: 16,
+                  color: colorScheme.onSurfaceVariant.withAlpha(140),
+                ),
+              ],
+            ),
+          ),
+        ),
+      const SizedBox(height: 8),
+    ];
   }
 
   void _insertSlashCommand(String cmd) {
@@ -5011,41 +4934,6 @@ class _ChatCanvasViewState extends State<ChatCanvasView> {
     final colorScheme = Theme.of(context).colorScheme;
     final textTheme = Theme.of(context).textTheme;
     final nextBatch = math.min(_pageSize, remainingCount);
-
-    if (remainingCount == 0 &&
-        _hasLoadedAllServerHistory &&
-        !_isLoadingMoreTurns) {
-      return Padding(
-        padding: const EdgeInsets.only(bottom: 18, top: 6),
-        child: Center(
-          child: Container(
-            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
-            decoration: BoxDecoration(
-              color: colorScheme.surfaceContainerHighest.withAlpha(120),
-              borderRadius: BorderRadius.circular(16),
-            ),
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Icon(
-                  Icons.check_circle_outline_rounded,
-                  size: 13,
-                  color: colorScheme.outline,
-                ),
-                const SizedBox(width: 6),
-                Text(
-                  'Đầu cuộc hội thoại (Đã nạp toàn bộ $totalCount lượt chat)',
-                  style: textTheme.labelSmall?.copyWith(
-                    color: colorScheme.outline,
-                    fontSize: 11,
-                  ),
-                ),
-              ],
-            ),
-          ),
-        ),
-      );
-    }
 
     return Padding(
       padding: const EdgeInsets.only(bottom: 18, top: 6),
@@ -5255,76 +5143,441 @@ class _ChatCanvasViewState extends State<ChatCanvasView> {
     );
   }
 
-  Widget _buildLiveStreamingBlock(
+  /// Thẻ AI đứng riêng khi stream đang chạy nhưng chưa gắn được vào lượt nào trong session
+  Widget _buildStandaloneLiveCard(
     BuildContext context,
     ChatTurnStreamState stream,
   ) {
     final colorScheme = Theme.of(context).colorScheme;
     final textTheme = Theme.of(context).textTheme;
+    final isMobile = MediaQuery.sizeOf(context).width < 760;
     final lastStep = widget.session?.steps.isNotEmpty == true
         ? widget.session!.steps.last
         : null;
 
     return Padding(
       padding: const EdgeInsets.only(bottom: 20),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
+      child: _buildAiCardShell(
+        colorScheme: colorScheme,
+        isMobile: isMobile,
         children: [
+          if (stream.streamingText.trim().isNotEmpty) ...[
+            _AiResponseTypewriter(
+              text: stream.streamingText,
+              builder: (ctx, visibleText) => _buildResponseSegmentsColumn(
+                ctx,
+                _lastLinesOf(visibleText, _collapsedTailLines),
+                turnIndex: -1,
+                isExpanded: true,
+                isMobile: isMobile,
+              ),
+            ),
+            const SizedBox(height: 8),
+          ],
           if (stream.isRunning)
             _AnimatedThinkingRobotCard(
               stream: stream,
               lastStep: lastStep,
-              collapsedTailLines: _collapsedTailLines,
-            )
-          else ...[
-            Row(
+            ),
+          if (stream.error.isNotEmpty) ...[
+            const SizedBox(height: 8),
+            Text(
+              stream.error,
+              style: textTheme.bodySmall?.copyWith(color: context.scheme.error),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  /// Khung chung của thẻ phản hồi AI: căn trái, bề rộng tối đa bằng bong bóng user
+  /// (nên khoảng cách bên phải của thẻ AI bằng khoảng cách bên trái của bong bóng user)
+  Widget _buildAiCardShell({
+    required ColorScheme colorScheme,
+    required bool isMobile,
+    required List<Widget> children,
+  }) {
+    return Align(
+      alignment: Alignment.centerLeft,
+      child: ConstrainedBox(
+        constraints: BoxConstraints(maxWidth: isMobile ? 320 : 660),
+        child: Container(
+          width: double.infinity,
+          padding: EdgeInsets.fromLTRB(
+            isMobile ? 12 : 16,
+            10,
+            isMobile ? 12 : 16,
+            12,
+          ),
+          decoration: BoxDecoration(
+            color: colorScheme.surfaceContainerLow,
+            borderRadius: BorderRadius.circular(14),
+            border: Border.all(
+              color: colorScheme.outlineVariant.withAlpha(150),
+              width: 0.8,
+            ),
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
+            children: children,
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// Đổi id model thô thành nhãn ngắn, vd. `claude-haiku-5-5` → `Claude Haiku 5.5`,
+  /// `claude-haiku-4-5-20251001` → `Claude Haiku 4.5`
+  String _formatResponseModel(String raw) {
+    final id = raw.trim();
+    if (!id.startsWith('claude-')) return id;
+    final parts = id.split('-');
+    if (parts.length < 2) return id;
+    final family = parts[1].isEmpty
+        ? ''
+        : parts[1][0].toUpperCase() + parts[1].substring(1);
+    final version = parts
+        .skip(2)
+        .where((p) => p.isNotEmpty && p.length <= 2 && int.tryParse(p) != null)
+        .join('.');
+    return version.isEmpty ? 'Claude $family' : 'Claude $family $version';
+  }
+
+  String _lastLinesOf(String text, int count) {
+    final trimmed = text.trimRight();
+    final lines = trimmed.split('\n');
+    if (lines.length <= count) return trimmed;
+    return lines.sublist(lines.length - count).join('\n');
+  }
+
+  Widget _buildResponseSegmentsColumn(
+    BuildContext context,
+    String text, {
+    required int turnIndex,
+    required bool isExpanded,
+    required bool isMobile,
+  }) {
+    final colorScheme = Theme.of(context).colorScheme;
+    final textTheme = Theme.of(context).textTheme;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        for (final seg in _parseResponseIntoGranularSegments(text))
+          _buildGranularResponseSegmentWidget(
+            context,
+            seg,
+            turnIndex: turnIndex,
+            isExpanded: isExpanded,
+            colorScheme: colorScheme,
+            textTheme: textTheme,
+            isMobile: isMobile,
+          ),
+      ],
+    );
+  }
+
+  /// Thẻ phản hồi AI của một lượt:
+  /// - Nút tool action ở giữa trên cùng (bấm để xem danh sách trong dialog)
+  /// - Nội dung phản hồi căn trái (đang stream thì lấy nội dung live)
+  /// - Thinking đang chạy nằm bên trong thẻ
+  /// - Chip file thay đổi ở dưới cùng (bấm để xem trong dialog)
+  Widget _buildAiTurnCard(
+    BuildContext context,
+    _ChatTurnGroup turn, {
+    required bool isMobile,
+    required bool isLastTurn,
+    required ChatTurnStreamState? liveStream,
+  }) {
+    final colorScheme = Theme.of(context).colorScheme;
+    final textTheme = Theme.of(context).textTheme;
+    final liveText = liveStream?.streamingText ?? '';
+    final responseText =
+        liveText.trim().isNotEmpty ? liveText : turn.finalAgentResponse;
+    final hasTools = turn.totalToolCount > 0 || turn.totalThoughtCount > 0;
+    final isSessionRunning = widget.session?.status == AgentStatus.running;
+    final lastStep = turn.agentSteps.isNotEmpty ? turn.agentSteps.last : null;
+
+    final allLines = responseText.trimRight().split('\n');
+    final canCollapse =
+        responseText.isNotEmpty && allLines.length > _collapsedTailLines;
+    final isExpanded = _expandedResponseTurns.contains(turn.turnIndex);
+    final hiddenLines = canCollapse ? allLines.length - _collapsedTailLines : 0;
+    final responseModel = turn.agentSteps.reversed
+        .map((s) => s.model)
+        .firstWhere((m) => m.isNotEmpty, orElse: () => '');
+
+    final card = _buildAiCardShell(
+      colorScheme: colorScheme,
+      isMobile: isMobile,
+      children: [
+        if (responseText.isNotEmpty)
+          _AiResponseTypewriter(
+            text: responseText,
+            builder: (ctx, visibleText) => _buildResponseSegmentsColumn(
+              ctx,
+              canCollapse && !isExpanded
+                  ? _lastLinesOf(visibleText, _collapsedTailLines)
+                  : visibleText.trimRight(),
+              turnIndex: turn.turnIndex,
+              isExpanded: isExpanded,
+              isMobile: isMobile,
+            ),
+          ),
+        if (canCollapse)
+          Align(
+            alignment: Alignment.centerLeft,
+            child: TextButton.icon(
+              onPressed: () {
+                setState(() {
+                  if (isExpanded) {
+                    _expandedResponseTurns.remove(turn.turnIndex);
+                  } else {
+                    _expandedResponseTurns.add(turn.turnIndex);
+                  }
+                });
+              },
+              icon: Icon(
+                isExpanded
+                    ? Icons.unfold_less_rounded
+                    : Icons.unfold_more_rounded,
+                size: 16,
+              ),
+              label: Text(
+                isExpanded ? 'Thu gọn' : 'Xem toàn bộ ($hiddenLines dòng ẩn)',
+                style: textTheme.labelSmall?.copyWith(
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+            ),
+          ),
+        if (liveStream != null) ...[
+          const SizedBox(height: 8),
+          _AnimatedThinkingRobotCard(
+            stream: liveStream,
+            lastStep: lastStep,
+          ),
+        ] else if (isLastTurn && isSessionRunning && responseText.isEmpty)
+          Padding(
+            padding: const EdgeInsets.symmetric(vertical: 6),
+            child: Row(
               children: [
-                const Icon(
-                  Icons.check_circle_outline_rounded,
-                  size: 16,
-                  color: Colors.teal,
+                SizedBox(
+                  width: 13,
+                  height: 13,
+                  child: CircularProgressIndicator(
+                    strokeWidth: 2,
+                    color: colorScheme.primary,
+                  ),
                 ),
                 const SizedBox(width: 8),
                 Expanded(
                   child: Text(
-                    'Hoàn tất xử lý',
-                    style: textTheme.labelMedium?.copyWith(
-                      color: Colors.teal,
-                      fontWeight: FontWeight.w700,
+                    lastStep?.vietnameseTitle ?? 'Đang xử lý...',
+                    style: textTheme.bodySmall?.copyWith(
+                      color: colorScheme.onSurfaceVariant,
                     ),
                   ),
                 ),
               ],
             ),
-            if (stream.streamingText.trim().isNotEmpty) ...[
-              const SizedBox(height: 8),
-              SelectableText(
-                stream.streamingText
-                    .trimRight()
-                    .split('\n')
-                    .reversed
-                    .take(_collapsedTailLines)
-                    .toList()
-                    .reversed
-                    .join('\n'),
-                style: textTheme.bodyMedium?.copyWith(
-                  height: 1.5,
-                  color: colorScheme.onSurface,
+          ),
+        if (hasTools || turn.groupedFiles.isNotEmpty) ...[
+          const SizedBox(height: 10),
+          Align(
+            alignment: Alignment.centerLeft,
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                if (hasTools) _buildToolActionsButton(context, turn),
+                if (hasTools && turn.groupedFiles.isNotEmpty)
+                  const SizedBox(width: 8),
+                if (turn.groupedFiles.isNotEmpty)
+                  _buildFilesChip(context, turn),
+              ],
+            ),
+          ),
+        ],
+      ],
+    );
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        card,
+        if (responseModel.isNotEmpty)
+          Padding(
+            padding: const EdgeInsets.only(top: 4, left: 4),
+            child: Tooltip(
+              message: responseModel,
+              child: Text(
+                _formatResponseModel(responseModel),
+                style: textTheme.labelSmall?.copyWith(
+                  color: colorScheme.onSurfaceVariant,
+                  fontWeight: FontWeight.w600,
                 ),
               ),
-            ],
-          ],
-          if (stream.error.isNotEmpty) ...[
-            const SizedBox(height: 8),
-            Text(
-              stream.error,
-              style: textTheme.bodySmall?.copyWith(
-                color: Colors.redAccent,
-              ),
             ),
-          ],
-        ],
+          ),
+      ],
+    );
+  }
+
+  /// Chip ở dưới thẻ AI (bên trái chip tệp thay đổi): bấm để mở dialog tool action
+  Widget _buildToolActionsButton(BuildContext context, _ChatTurnGroup turn) {
+    final colorScheme = Theme.of(context).colorScheme;
+    final parts = <String>[];
+    if (turn.totalToolCount > 0) {
+      final n = turn.totalToolCount;
+      parts.add('$n tool ${n == 1 ? "action" : "actions"}');
+    }
+    if (turn.totalThoughtCount > 0) {
+      parts.add('${turn.totalThoughtCount} thought');
+    }
+    return ActionChip(
+      avatar: Icon(
+        Icons.build_circle_outlined,
+        size: 16,
+        color: colorScheme.primary,
       ),
+      label: Text(parts.join(' • ')),
+      onPressed: () => _showToolActionsDialog(context, turn),
+    );
+  }
+
+  void _showToolActionsDialog(BuildContext context, _ChatTurnGroup turn) {
+    showDialog<void>(
+      context: context,
+      builder: (dialogContext) {
+        final colorScheme = Theme.of(dialogContext).colorScheme;
+        final textTheme = Theme.of(dialogContext).textTheme;
+        return Dialog(
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 720, maxHeight: 620),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(18, 12, 8, 4),
+                  child: Row(
+                    children: [
+                      Icon(
+                        Icons.build_circle_outlined,
+                        size: 18,
+                        color: colorScheme.primary,
+                      ),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Text(
+                          'Tool actions của phản hồi',
+                          style: textTheme.titleSmall?.copyWith(
+                            fontWeight: FontWeight.w700,
+                          ),
+                        ),
+                      ),
+                      IconButton(
+                        icon: const Icon(Icons.close_rounded),
+                        onPressed: () => Navigator.of(dialogContext).pop(),
+                      ),
+                    ],
+                  ),
+                ),
+                const Divider(height: 1),
+                Flexible(
+                  child: SingleChildScrollView(
+                    padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
+                    child: _AntigravityTrajectorySection(
+                      steps: turn.trajectorySteps,
+                      thoughtCount: turn.totalThoughtCount,
+                      toolCount: turn.totalToolCount,
+                      initiallyExpanded: true,
+                      onTapStep: (step) => _showStepDetailModal(context, step),
+                      onDownloadFile: widget.onDownloadFile,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  /// Chip ở dưới cùng của thẻ AI: tóm tắt số file thay đổi, bấm để mở danh sách
+  Widget _buildFilesChip(BuildContext context, _ChatTurnGroup turn) {
+    final colorScheme = Theme.of(context).colorScheme;
+    final count = turn.groupedFiles.length;
+    return ActionChip(
+      avatar: Icon(
+        Icons.description_outlined,
+        size: 16,
+        color: colorScheme.primary,
+      ),
+      label: Text('$count tệp thay đổi'),
+      onPressed: () => _showFilesChangedDialog(context, turn),
+    );
+  }
+
+  void _showFilesChangedDialog(BuildContext context, _ChatTurnGroup turn) {
+    showDialog<void>(
+      context: context,
+      builder: (dialogContext) {
+        final colorScheme = Theme.of(dialogContext).colorScheme;
+        final textTheme = Theme.of(dialogContext).textTheme;
+        final isMobile = MediaQuery.sizeOf(dialogContext).width < 760;
+        return Dialog(
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 720, maxHeight: 620),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(18, 12, 8, 4),
+                  child: Row(
+                    children: [
+                      Icon(
+                        Icons.description_outlined,
+                        size: 18,
+                        color: colorScheme.primary,
+                      ),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Text(
+                          'Tệp thay đổi',
+                          style: textTheme.titleSmall?.copyWith(
+                            fontWeight: FontWeight.w700,
+                          ),
+                        ),
+                      ),
+                      IconButton(
+                        icon: const Icon(Icons.close_rounded),
+                        onPressed: () => Navigator.of(dialogContext).pop(),
+                      ),
+                    ],
+                  ),
+                ),
+                const Divider(height: 1),
+                Flexible(
+                  child: SingleChildScrollView(
+                    padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
+                    child: _GroupedFilesChangedCard(
+                      groupedFiles: turn.groupedFiles,
+                      isMobile: isMobile,
+                      onInspectFileChange: widget.onInspectFileChange,
+                      onDownloadFile: widget.onDownloadFile,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        );
+      },
     );
   }
 
@@ -5846,10 +6099,10 @@ class _AntigravityMarkdownSegment extends StatelessWidget {
                     const EdgeInsets.symmetric(horizontal: 5.5, vertical: 1.5),
                 margin: const EdgeInsets.symmetric(horizontal: 2.5),
                 decoration: BoxDecoration(
-                  color: const Color(0xFF1E293B).withAlpha(190),
+                  color: context.scheme.surfaceContainerHighest.withAlpha(190),
                   borderRadius: BorderRadius.circular(4.5),
                   border: Border.all(
-                    color: const Color(0xFF3B82F6).withAlpha(140),
+                    color: context.scheme.secondary.withAlpha(140),
                     width: 0.8,
                   ),
                 ),
@@ -5861,18 +6114,18 @@ class _AntigravityMarkdownSegment extends StatelessWidget {
                           ? Icons.description_outlined
                           : Icons.open_in_new_rounded,
                       size: 12.5,
-                      color: const Color(0xFF60A5FA),
+                      color: context.scheme.primary,
                     ),
                     const SizedBox(width: 3.5),
                     Text(
                       label,
-                      style: const TextStyle(
+                      style: TextStyle(
                         fontFamily: 'monospace',
                         fontSize: 12.0,
                         fontWeight: FontWeight.w600,
-                        color: Color(0xFF60A5FA),
+                        color: context.scheme.primary,
                         decoration: TextDecoration.underline,
-                        decorationColor: Color(0xFF60A5FA),
+                        decorationColor: context.scheme.primary,
                       ),
                     ),
                   ],
@@ -5896,10 +6149,10 @@ class _AntigravityMarkdownSegment extends StatelessWidget {
               padding:
                   const EdgeInsets.symmetric(horizontal: 5.5, vertical: 1.5),
               decoration: BoxDecoration(
-                color: const Color(0xFF27272A),
+                color: context.scheme.surfaceContainerHigh,
                 borderRadius: BorderRadius.circular(4.5),
                 border: Border.all(
-                  color: const Color(0xFF3F3F46),
+                  color: context.scheme.outlineVariant,
                   width: 0.7,
                 ),
               ),
@@ -5909,11 +6162,11 @@ class _AntigravityMarkdownSegment extends StatelessWidget {
                   scrollDirection: Axis.horizontal,
                   child: Text(
                     codeText,
-                    style: const TextStyle(
+                    style: TextStyle(
                       fontFamily: 'monospace',
                       fontSize: 12.5,
                       fontWeight: FontWeight.w600,
-                      color: Color(0xFFFDE047),
+                      color: context.status.warning,
                     ),
                   ),
                 ),
@@ -5928,7 +6181,7 @@ class _AntigravityMarkdownSegment extends StatelessWidget {
           text: boldText,
           style: baseStyle.copyWith(
             fontWeight: FontWeight.w700,
-            color: Colors.white,
+            color: context.scheme.onPrimary,
           ),
         ));
       } else if (match.group(8) != null) {
@@ -5938,7 +6191,7 @@ class _AntigravityMarkdownSegment extends StatelessWidget {
           text: italicText,
           style: baseStyle.copyWith(
             fontStyle: FontStyle.italic,
-            color: const Color(0xFFA1A1AA),
+            color: context.scheme.onSurfaceVariant,
           ),
         ));
       }
@@ -6042,7 +6295,7 @@ class _GroupedFilesChangedCardState extends State<_GroupedFilesChangedCard> {
                         vertical: 1.5,
                       ),
                       decoration: BoxDecoration(
-                        color: Colors.teal.withAlpha(30),
+                        color: context.status.success.withAlpha(30),
                         borderRadius: BorderRadius.circular(5),
                       ),
                       child: Text(
@@ -6051,7 +6304,7 @@ class _GroupedFilesChangedCardState extends State<_GroupedFilesChangedCard> {
                           fontFamily: 'monospace',
                           fontSize: 10.5,
                           fontWeight: FontWeight.w800,
-                          color: Colors.teal,
+                          color: context.status.success,
                         ),
                       ),
                     ),
@@ -6064,7 +6317,7 @@ class _GroupedFilesChangedCardState extends State<_GroupedFilesChangedCard> {
                         vertical: 1.5,
                       ),
                       decoration: BoxDecoration(
-                        color: Colors.redAccent.withAlpha(30),
+                        color: context.scheme.error.withAlpha(30),
                         borderRadius: BorderRadius.circular(5),
                       ),
                       child: Text(
@@ -6073,7 +6326,7 @@ class _GroupedFilesChangedCardState extends State<_GroupedFilesChangedCard> {
                           fontFamily: 'monospace',
                           fontSize: 10.5,
                           fontWeight: FontWeight.w800,
-                          color: Colors.redAccent,
+                          color: context.scheme.error,
                         ),
                       ),
                     ),
@@ -6143,13 +6396,23 @@ class _GroupedFilesChangedCardState extends State<_GroupedFilesChangedCard> {
                                     ],
                                   ),
                                 ),
+                                if (f.viaBash) ...[
+                                  Text(
+                                    'sửa bởi Bash',
+                                    style: textTheme.labelSmall?.copyWith(
+                                      fontStyle: FontStyle.italic,
+                                      color: colorScheme.onSurfaceVariant,
+                                    ),
+                                  ),
+                                  const SizedBox(width: 6),
+                                ],
                                 if (f.addedLines > 0) ...[
                                   Text(
                                     '+${f.addedLines}',
                                     style: textTheme.labelSmall?.copyWith(
                                       fontFamily: 'monospace',
                                       fontWeight: FontWeight.w800,
-                                      color: Colors.teal,
+                                      color: context.status.success,
                                     ),
                                   ),
                                   const SizedBox(width: 4),
@@ -6160,7 +6423,7 @@ class _GroupedFilesChangedCardState extends State<_GroupedFilesChangedCard> {
                                     style: textTheme.labelSmall?.copyWith(
                                       fontFamily: 'monospace',
                                       fontWeight: FontWeight.w800,
-                                      color: Colors.redAccent,
+                                      color: context.scheme.error,
                                     ),
                                   ),
                                   const SizedBox(width: 6),
@@ -6277,16 +6540,16 @@ class _GroupedFilesChangedCardState extends State<_GroupedFilesChangedCard> {
     Color fg;
     String label;
     if (action == 'WRITE') {
-      bg = Colors.teal.withAlpha(35);
-      fg = Colors.teal;
+      bg = context.status.success.withAlpha(35);
+      fg = context.status.success;
       label = 'NEW';
     } else if (action == 'EDIT') {
-      bg = Colors.amber.withAlpha(35);
-      fg = Colors.amber.shade700;
+      bg = context.status.warning.withAlpha(35);
+      fg = context.status.warning;
       label = 'MOD';
     } else {
-      bg = Colors.blueGrey.withAlpha(30);
-      fg = Colors.blueGrey;
+      bg = context.scheme.onSurfaceVariant.withAlpha(30);
+      fg = context.scheme.onSurfaceVariant;
       label = 'READ';
     }
     return Container(
@@ -6763,6 +7026,78 @@ class _AnimatedThinkingRobotIconState extends State<_AnimatedThinkingRobotIcon>
 }
 
 /// Hiệu ứng đẻ ra từng từ / từng chữ kiểu AI (Streaming Typewriter with Pulsing Cursor)
+/// Gõ từng chữ cho nội dung phản hồi AI.
+/// Dữ liệu mới được nối tiếp vào phần đang hiện (không gõ lại từ đầu).
+/// Nếu nội dung thay đổi không phải là phần nối thêm thì hiện ngay toàn bộ.
+/// Lần đầu hiển thị (lịch sử cũ) cũng hiện ngay, không gõ.
+class _AiResponseTypewriter extends StatefulWidget {
+  const _AiResponseTypewriter({
+    required this.text,
+    required this.builder,
+  });
+
+  final String text;
+  final Widget Function(BuildContext context, String visibleText) builder;
+
+  @override
+  State<_AiResponseTypewriter> createState() => _AiResponseTypewriterState();
+}
+
+class _AiResponseTypewriterState extends State<_AiResponseTypewriter> {
+  static const Duration _tick = Duration(milliseconds: 20);
+  Timer? _timer;
+  late int _visibleLength = widget.text.length;
+
+  @override
+  void didUpdateWidget(covariant _AiResponseTypewriter oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.text == widget.text) return;
+    if (!widget.text.startsWith(oldWidget.text)) {
+      // Không phải nội dung nối thêm (vd. đổi lượt, làm lại): hiện ngay
+      _timer?.cancel();
+      _visibleLength = widget.text.length;
+      return;
+    }
+    if (_visibleLength > widget.text.length) {
+      _visibleLength = widget.text.length;
+    }
+    _ensureTimer();
+  }
+
+  void _ensureTimer() {
+    if (_timer?.isActive == true) return;
+    if (_visibleLength >= widget.text.length) return;
+    _timer = Timer.periodic(_tick, (timer) {
+      if (!mounted) {
+        timer.cancel();
+        return;
+      }
+      final remaining = widget.text.length - _visibleLength;
+      if (remaining <= 0) {
+        timer.cancel();
+        return;
+      }
+      final step = math.max(1, (remaining / 18).ceil());
+      setState(() {
+        _visibleLength = math.min(_visibleLength + step, widget.text.length);
+      });
+      if (_visibleLength >= widget.text.length) timer.cancel();
+    });
+  }
+
+  @override
+  void dispose() {
+    _timer?.cancel();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final len = _visibleLength.clamp(0, widget.text.length);
+    return widget.builder(context, widget.text.substring(0, len));
+  }
+}
+
 class _AiStreamingTypewriterText extends StatefulWidget {
   const _AiStreamingTypewriterText({
     required this.text,
@@ -6864,7 +7199,7 @@ class _AiStreamingTypewriterTextState extends State<_AiStreamingTypewriterText>
     final effectiveText =
         _targetText.substring(0, _displayedLength.clamp(0, _targetText.length));
     final isTyping = _displayedLength < _targetText.length;
-    final cursorColor = widget.cursorColor ?? Colors.deepPurpleAccent;
+    final cursorColor = widget.cursorColor ?? context.scheme.tertiary;
 
     return AnimatedBuilder(
       animation: _cursorBlinkController,
@@ -6917,12 +7252,10 @@ class _AnimatedThinkingRobotCard extends StatefulWidget {
   const _AnimatedThinkingRobotCard({
     required this.stream,
     this.lastStep,
-    this.collapsedTailLines = 10,
   });
 
   final ChatTurnStreamState stream;
   final AgentStep? lastStep;
-  final int collapsedTailLines;
 
   @override
   State<_AnimatedThinkingRobotCard> createState() =>
@@ -6930,19 +7263,11 @@ class _AnimatedThinkingRobotCard extends StatefulWidget {
 }
 
 class _AnimatedThinkingRobotCardState extends State<_AnimatedThinkingRobotCard>
-    with TickerProviderStateMixin {
+    with SingleTickerProviderStateMixin {
   late final AnimationController _pulseController;
   late final Animation<double> _borderGlowAnimation;
 
-  late final AnimationController _rolloutController;
-  late final Animation<double> _rolloutAnimation;
-  late final Animation<Offset> _rolloutSlide;
-  late final Animation<double> _rolloutFade;
-
-  bool _isTraceExpanded = true;
-  DateTime? _lastRolloutTrigger;
-  int _lastLineCount = 0;
-  String _lastAction = '';
+  bool _isTraceExpanded = false;
 
   @override
   void initState() {
@@ -6955,125 +7280,11 @@ class _AnimatedThinkingRobotCardState extends State<_AnimatedThinkingRobotCard>
     _borderGlowAnimation = Tween<double>(begin: 0.35, end: 0.95).animate(
       CurvedAnimation(parent: _pulseController, curve: Curves.easeInOut),
     );
-
-    _rolloutController = AnimationController(
-      vsync: this,
-      duration: const Duration(milliseconds: 380),
-    );
-
-    _rolloutAnimation = CurvedAnimation(
-      parent: _rolloutController,
-      curve: Curves.easeOutCubic,
-    );
-
-    _rolloutSlide = Tween<Offset>(
-      begin: const Offset(0, 0.08),
-      end: Offset.zero,
-    ).animate(_rolloutAnimation);
-
-    _rolloutFade = Tween<double>(
-      begin: 0.15,
-      end: 1.0,
-    ).animate(_rolloutAnimation);
-
-    final text = widget.stream.streamingText;
-    final action = _extractSpecificThinkingDetail(
-      text,
-      widget.stream.userPrompt,
-      widget.lastStep,
-    );
-    _lastAction = action;
-    final lines = text.trimRight().split('\n');
-    _lastLineCount = text.trim().isEmpty ? 0 : lines.length;
-
-    final hasContent = text.trim().isNotEmpty ||
-        widget.stream.thinkingText.trim().isNotEmpty;
-
-    if (hasContent) {
-      Future.delayed(const Duration(milliseconds: 150), () {
-        if (mounted) {
-          _rolloutController.forward(from: 0.0);
-        }
-      });
-    } else {
-      _rolloutController.value = 0.0;
-    }
-  }
-
-  @override
-  void didUpdateWidget(_AnimatedThinkingRobotCard oldWidget) {
-    super.didUpdateWidget(oldWidget);
-
-    final isThinking = widget.stream.activeStepType == 'thinking';
-    final wasThinking = oldWidget.stream.activeStepType == 'thinking';
-
-    // Khi đang ở thinking mode, dùng thinkingText để detect animation
-    if (isThinking) {
-      final oldThinking = oldWidget.stream.thinkingText;
-      final newThinking = widget.stream.thinkingText;
-      if (oldThinking != newThinking) {
-        final now = DateTime.now();
-        if (_lastRolloutTrigger == null ||
-            now.difference(_lastRolloutTrigger!).inMilliseconds > 220) {
-          _triggerRollout();
-        }
-      }
-      // Vừa chuyển sang thinking → animate ngay
-      if (!wasThinking && isThinking && newThinking.trim().isNotEmpty) {
-        _triggerRollout();
-      }
-      return;
-    }
-
-    // Các bước còn lại: theo dõi streamingText
-    final oldText = oldWidget.stream.streamingText;
-    final newText = widget.stream.streamingText;
-
-    final newAction = _extractSpecificThinkingDetail(
-      newText,
-      widget.stream.userPrompt,
-      widget.lastStep,
-    );
-
-    final newLines = newText.trimRight().split('\n');
-    final newLineCount = newText.trim().isEmpty ? 0 : newLines.length;
-
-    bool shouldAnimate = false;
-
-    if (wasThinking && !isThinking) {
-      // Vừa rời khỏi thinking → animate console ngay
-      shouldAnimate = true;
-    } else if (oldText.trim().isEmpty && newText.trim().isNotEmpty) {
-      shouldAnimate = true;
-    } else if (newAction != _lastAction) {
-      _lastAction = newAction;
-      shouldAnimate = true;
-    } else if (newLineCount != _lastLineCount) {
-      _lastLineCount = newLineCount;
-      shouldAnimate = true;
-    } else if (newText != oldText) {
-      final now = DateTime.now();
-      if (_lastRolloutTrigger == null ||
-          now.difference(_lastRolloutTrigger!).inMilliseconds > 220) {
-        shouldAnimate = true;
-      }
-    }
-
-    if (shouldAnimate) {
-      _triggerRollout();
-    }
-  }
-
-  void _triggerRollout() {
-    if (!mounted) return;
-    _lastRolloutTrigger = DateTime.now();
-    _rolloutController.forward(from: 0.0);
   }
 
   @override
   void dispose() {
     _pulseController.dispose();
-    _rolloutController.dispose();
     super.dispose();
   }
 
@@ -7094,7 +7305,7 @@ class _AnimatedThinkingRobotCardState extends State<_AnimatedThinkingRobotCard>
     // Xác định Tool đang dùng
     String toolName = 'Thinking';
     IconData toolIcon = Icons.psychology_rounded;
-    Color toolColor = Colors.deepPurpleAccent;
+    Color toolColor = context.scheme.tertiary;
 
     final activeTool =
         lastStep?.toolCalls.isNotEmpty == true ? lastStep!.toolCalls.last : null;
@@ -7108,45 +7319,45 @@ class _AnimatedThinkingRobotCardState extends State<_AnimatedThinkingRobotCard>
     switch (toolName) {
       case 'run_command':
         toolIcon = Icons.terminal_rounded;
-        toolColor = Colors.blueAccent;
+        toolColor = context.scheme.secondary;
         break;
       case 'edit_file':
         toolIcon = Icons.edit_note_rounded;
-        toolColor = Colors.orangeAccent;
+        toolColor = context.status.warning;
         break;
       case 'write_file':
         toolIcon = Icons.note_add_rounded;
-        toolColor = Colors.tealAccent.shade400;
+        toolColor = context.status.success;
         break;
       case 'read_file':
         toolIcon = Icons.menu_book_rounded;
-        toolColor = Colors.amberAccent;
+        toolColor = context.status.warning;
         break;
       case 'search_web':
         toolIcon = Icons.travel_explore_rounded;
-        toolColor = Colors.lightBlueAccent;
+        toolColor = context.scheme.secondary;
         break;
       case 'invoke_subagent':
         toolIcon = Icons.hub_rounded;
-        toolColor = Colors.pinkAccent;
+        toolColor = context.scheme.error;
         break;
       case 'define_subagent':
       case 'manage_subagents':
         toolIcon = Icons.supervised_user_circle_rounded;
-        toolColor = Colors.purpleAccent;
+        toolColor = context.scheme.tertiary;
         break;
       case 'schedule':
       case 'manage_task':
         toolIcon = Icons.schedule_rounded;
-        toolColor = Colors.cyanAccent;
+        toolColor = context.scheme.secondary;
         break;
       case 'ask_question':
         toolIcon = Icons.help_outline_rounded;
-        toolColor = Colors.deepOrangeAccent;
+        toolColor = context.status.warning;
         break;
       default:
         toolIcon = Icons.psychology_rounded;
-        toolColor = Colors.deepPurpleAccent;
+        toolColor = context.scheme.tertiary;
         break;
     }
 
@@ -7182,45 +7393,22 @@ class _AnimatedThinkingRobotCardState extends State<_AnimatedThinkingRobotCard>
       }
     }
 
-    final rawLines = stream.streamingText.trimRight().split('\n');
-    final int maxTail = widget.collapsedTailLines > 0 ? widget.collapsedTailLines : 10;
-    final recentLines = rawLines.length > maxTail
-        ? rawLines.sublist(rawLines.length - maxTail)
-        : rawLines;
-
     return AnimatedBuilder(
       animation: _pulseController,
       builder: (context, child) {
-        return Container(
-          margin: const EdgeInsets.only(top: 6, bottom: 8),
-          decoration: BoxDecoration(
-            color: colorScheme.surfaceContainerHigh.withAlpha(240),
-            borderRadius: BorderRadius.circular(14),
-            border: Border.all(
-              color: Colors.deepPurpleAccent
-                  .withAlpha((180 * _borderGlowAnimation.value).round()),
-              width: 1.2,
-            ),
-            boxShadow: [
-              BoxShadow(
-                color: Colors.deepPurpleAccent
-                    .withAlpha((40 * _borderGlowAnimation.value).round()),
-                blurRadius: 10 * _borderGlowAnimation.value,
-                spreadRadius: 1,
-              ),
-            ],
-          ),
+        return Padding(
+          padding: EdgeInsets.zero,
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
               // Header Card
               Padding(
-                padding: const EdgeInsets.fromLTRB(12, 10, 12, 8),
+                padding: EdgeInsets.zero,
                 child: Row(
                   children: [
-                    const _AnimatedThinkingRobotIcon(
+                    _AnimatedThinkingRobotIcon(
                       size: 20,
-                      color: Colors.deepPurpleAccent,
+                      color: context.scheme.tertiary,
                     ),
                     const SizedBox(width: 8),
                     Expanded(
@@ -7239,16 +7427,16 @@ class _AnimatedThinkingRobotCardState extends State<_AnimatedThinkingRobotCard>
                                   vertical: 2,
                                 ),
                                 decoration: BoxDecoration(
-                                  gradient: const LinearGradient(
+                                  gradient: LinearGradient(
                                     colors: [
-                                      Colors.deepPurpleAccent,
-                                      Colors.indigoAccent,
+                                      context.scheme.tertiary,
+                                      context.scheme.tertiary,
                                     ],
                                   ),
                                   borderRadius: BorderRadius.circular(6),
                                   boxShadow: [
                                     BoxShadow(
-                                      color: Colors.deepPurpleAccent.withAlpha(
+                                      color: context.scheme.tertiary.withAlpha(
                                         (90 * _borderGlowAnimation.value).round(),
                                       ),
                                       blurRadius: 5,
@@ -7261,19 +7449,19 @@ class _AnimatedThinkingRobotCardState extends State<_AnimatedThinkingRobotCard>
                                     Container(
                                       width: 6,
                                       height: 6,
-                                      decoration: const BoxDecoration(
+                                      decoration: BoxDecoration(
                                         shape: BoxShape.circle,
-                                        color: Colors.greenAccent,
+                                        color: context.status.success,
                                       ),
                                     ),
                                     const SizedBox(width: 5),
-                                    const Text(
+                                    Text(
                                       'AI Thinking',
                                       style: TextStyle(
                                         fontFamily: 'monospace',
                                         fontSize: 10.5,
                                         fontWeight: FontWeight.w800,
-                                        color: Colors.white,
+                                        color: context.scheme.onPrimary,
                                         letterSpacing: 0.3,
                                       ),
                                     ),
@@ -7360,7 +7548,7 @@ class _AnimatedThinkingRobotCardState extends State<_AnimatedThinkingRobotCard>
                       ),
                     ),
                     // Nút thu gọn / mở rộng chi tiết suy nghĩ
-                    if (stream.thinkingText.trim().isNotEmpty || stream.streamingText.trim().isNotEmpty)
+                    if (stream.thinkingText.trim().isNotEmpty)
                       InkWell(
                         borderRadius: BorderRadius.circular(6),
                         onTap: () => setState(() => _isTraceExpanded = !_isTraceExpanded),
@@ -7393,35 +7581,27 @@ class _AnimatedThinkingRobotCardState extends State<_AnimatedThinkingRobotCard>
               ),
 
               // Banner: Đang làm cụ thể những gì (với hiệu ứng đẻ ra từng chữ kiểu AI)
-              Container(
-                margin: const EdgeInsets.symmetric(horizontal: 10, vertical: 2),
-                padding: const EdgeInsets.all(9),
-                decoration: BoxDecoration(
-                  color: Colors.deepPurpleAccent.withAlpha(25),
-                  borderRadius: BorderRadius.circular(8),
-                  border: Border.all(
-                    color: Colors.deepPurpleAccent.withAlpha(70),
-                  ),
-                ),
+              Padding(
+                padding: EdgeInsets.zero,
                 child: Row(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    const Padding(
+                    Padding(
                       padding: EdgeInsets.only(top: 2),
                       child: Icon(
                         Icons.bolt_rounded,
                         size: 14,
-                        color: Colors.deepPurpleAccent,
+                        color: context.scheme.tertiary,
                       ),
                     ),
                     const SizedBox(width: 7),
                     Expanded(
                       child: _AiStreamingTypewriterText(
                         prefix: 'Đang làm: ',
-                        prefixStyle: const TextStyle(
+                        prefixStyle: TextStyle(
                           fontSize: 11.5,
                           fontWeight: FontWeight.w800,
-                          color: Colors.deepPurpleAccent,
+                          color: context.scheme.tertiary,
                         ),
                         text: specificAction,
                         textStyle: TextStyle(
@@ -7430,7 +7610,7 @@ class _AnimatedThinkingRobotCardState extends State<_AnimatedThinkingRobotCard>
                           color: colorScheme.onSurface,
                           height: 1.35,
                         ),
-                        cursorColor: Colors.deepPurpleAccent,
+                        cursorColor: context.scheme.tertiary,
                       ),
                     ),
                   ],
@@ -7442,20 +7622,12 @@ class _AnimatedThinkingRobotCardState extends State<_AnimatedThinkingRobotCard>
                   stream.thinkingText.trim().isNotEmpty &&
                   stream.activeStepType == 'thinking') ...[
                 Padding(
-                  padding: const EdgeInsets.fromLTRB(10, 4, 10, 10),
+                  padding: EdgeInsets.zero,
                   child: AnimatedSize(
                     duration: const Duration(milliseconds: 200),
                     curve: Curves.easeOutCubic,
-                    child: Container(
-                      padding: const EdgeInsets.all(10),
-                      decoration: BoxDecoration(
-                        color: Colors.indigo.withAlpha(28),
-                        borderRadius: BorderRadius.circular(8),
-                        border: Border.all(
-                          color: Colors.indigoAccent.withAlpha(120),
-                          width: 1.0,
-                        ),
-                      ),
+                    child: Padding(
+                      padding: EdgeInsets.zero,
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.stretch,
                         children: [
@@ -7464,9 +7636,9 @@ class _AnimatedThinkingRobotCardState extends State<_AnimatedThinkingRobotCard>
                               Container(
                                 width: 6,
                                 height: 6,
-                                decoration: const BoxDecoration(
+                                decoration: BoxDecoration(
                                   shape: BoxShape.circle,
-                                  color: Colors.indigoAccent,
+                                  color: context.scheme.tertiary,
                                 ),
                               ),
                               const SizedBox(width: 6),
@@ -7476,7 +7648,7 @@ class _AnimatedThinkingRobotCardState extends State<_AnimatedThinkingRobotCard>
                                   fontFamily: 'monospace',
                                   fontSize: 10,
                                   fontWeight: FontWeight.w700,
-                                  color: Colors.indigoAccent,
+                                  color: context.scheme.tertiary,
                                 ),
                               ),
                               if (stream.isRunning &&
@@ -7488,7 +7660,7 @@ class _AnimatedThinkingRobotCardState extends State<_AnimatedThinkingRobotCard>
                                     fontFamily: 'monospace',
                                     fontSize: 9,
                                     fontWeight: FontWeight.w800,
-                                    color: Colors.indigoAccent,
+                                    color: context.scheme.tertiary,
                                     letterSpacing: 0.5,
                                   ),
                                 ),
@@ -7510,109 +7682,7 @@ class _AnimatedThinkingRobotCardState extends State<_AnimatedThinkingRobotCard>
                     ),
                   ),
                 ),
-              ] else if (_isTraceExpanded && stream.streamingText.trim().isNotEmpty) ...[
-              // Console: chỉ hiện khi KHÔNG có thinking (không lẫn lộn hai loại)
-                Padding(
-                  padding: const EdgeInsets.fromLTRB(10, 6, 10, 10),
-                  child: AnimatedSize(
-                    duration: const Duration(milliseconds: 220),
-                    curve: Curves.easeOutCubic,
-                    child: AnimatedBuilder(
-                      animation: _rolloutController,
-                      builder: (context, _) {
-                        return SlideTransition(
-                          position: _rolloutSlide,
-                          child: FadeTransition(
-                            opacity: _rolloutFade,
-                            child: Container(
-                              padding: const EdgeInsets.all(10),
-                              decoration: BoxDecoration(
-                                color: colorScheme.surfaceContainerLowest,
-                                borderRadius: BorderRadius.circular(8),
-                                border: Border.all(
-                                  color: Color.lerp(
-                                    colorScheme.outlineVariant.withAlpha(70),
-                                    Colors.deepPurpleAccent.withAlpha(200),
-                                    (1.0 - _rolloutAnimation.value).clamp(0.0, 1.0),
-                                  )!,
-                                  width: 1.0,
-                                ),
-                              ),
-                              child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.stretch,
-                                children: [
-                                  Row(
-                                    children: [
-                                      Container(
-                                        width: 6,
-                                        height: 6,
-                                        decoration: BoxDecoration(
-                                          shape: BoxShape.circle,
-                                          color: Colors.tealAccent.shade400,
-                                        ),
-                                      ),
-                                      const SizedBox(width: 6),
-                                      Text(
-                                        'Console (${recentLines.length} dòng mới nhất)',
-                                        style: TextStyle(
-                                          fontFamily: 'monospace',
-                                          fontSize: 10,
-                                          fontWeight: FontWeight.w700,
-                                          color: colorScheme.onSurfaceVariant,
-                                        ),
-                                      ),
-                                      const Spacer(),
-                                      if (stream.isRunning) ...[
-                                        Text(
-                                          'LIVE STREAM',
-                                          style: TextStyle(
-                                            fontFamily: 'monospace',
-                                            fontSize: 9,
-                                            fontWeight: FontWeight.w800,
-                                            color: Colors.deepPurpleAccent,
-                                            letterSpacing: 0.5,
-                                          ),
-                                        ),
-                                      ],
-                                    ],
-                                  ),
-                                  const SizedBox(height: 6),
-                                  SelectableText.rich(
-                                    TextSpan(
-                                      children: [
-                                        TextSpan(
-                                          text: recentLines.join('\n'),
-                                          style: textTheme.bodySmall?.copyWith(
-                                            fontFamily: 'monospace',
-                                            fontSize: 11,
-                                            height: 1.45,
-                                            color: colorScheme.onSurfaceVariant,
-                                          ),
-                                        ),
-                                        if (stream.isRunning)
-                                          TextSpan(
-                                            text: ' █',
-                                            style: TextStyle(
-                                              fontFamily: 'monospace',
-                                              fontSize: 11,
-                                              color: Colors.deepPurpleAccent
-                                                  .withAlpha((255 * _borderGlowAnimation.value).round()),
-                                            ),
-                                          ),
-                                      ],
-                                    ),
-                                  ),
-                                ],
-                              ),
-                            ),
-                          ),
-                        );
-                      },
-                    ),
-                  ),
-                ),
-              ] else
-                const SizedBox(height: 6),
+              ],
 
               if (stream.error.isNotEmpty) ...[
                 Padding(
@@ -7620,7 +7690,7 @@ class _AnimatedThinkingRobotCardState extends State<_AnimatedThinkingRobotCard>
                   child: Text(
                     stream.error,
                     style: textTheme.bodySmall?.copyWith(
-                      color: Colors.redAccent,
+                      color: context.scheme.error,
                       fontWeight: FontWeight.w600,
                     ),
                   ),

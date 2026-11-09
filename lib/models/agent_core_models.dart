@@ -334,6 +334,7 @@ class AgentStep {
     required this.phase,
     required this.vietnameseTitle,
     required this.vietnameseDetail,
+    this.model = '',
   });
 
   final int stepIndex;
@@ -352,6 +353,9 @@ class AgentStep {
   final String vietnameseTitle;
   final String vietnameseDetail;
 
+  /// Model thực tế đã trả lời (vd. `claude-haiku-5-5`), rỗng nếu không xác định
+  final String model;
+
   Map<String, dynamic> toJson() => {
         'stepIndex': stepIndex,
         'source': source,
@@ -368,6 +372,7 @@ class AgentStep {
         'phase': phase.name,
         'vietnameseTitle': vietnameseTitle,
         'vietnameseDetail': vietnameseDetail,
+        'model': model,
       };
 
   factory AgentStep.fromJson(Map<String, dynamic> json) {
@@ -399,6 +404,7 @@ class AgentStep {
       phase: AgentWorkflowPhase.fromName(json['phase'] as String?),
       vietnameseTitle: '${json['vietnameseTitle'] ?? ''}',
       vietnameseDetail: '${json['vietnameseDetail'] ?? ''}',
+      model: '${json['model'] ?? ''}',
     );
   }
 }
@@ -503,6 +509,7 @@ class FileTouchRecord {
     this.addedLines = 0,
     this.removedLines = 0,
     this.diffPreview = '',
+    this.source = '',
   });
 
   final String path;
@@ -514,6 +521,9 @@ class FileTouchRecord {
   final int addedLines;
   final int removedLines;
   final String diffPreview;
+
+  /// `bash` khi thay đổi được suy ra từ lệnh Bash, rỗng khi từ tool Edit/Write
+  final String source;
 
   String get basename {
     final parts = path.split('/');
@@ -533,6 +543,7 @@ class FileTouchRecord {
         'addedLines': addedLines,
         'removedLines': removedLines,
         'diffPreview': diffPreview,
+        'source': source,
       };
 
   factory FileTouchRecord.fromJson(Map<String, dynamic> json) {
@@ -547,6 +558,7 @@ class FileTouchRecord {
       addedLines: (json['addedLines'] as num?)?.toInt() ?? 0,
       removedLines: (json['removedLines'] as num?)?.toInt() ?? 0,
       diffPreview: '${json['diffPreview'] ?? ''}',
+      source: '${json['source'] ?? ''}',
     );
   }
 }
@@ -1413,6 +1425,76 @@ class GitCommitDetailResponse {
       files: fileList,
       diff: '${json['diff'] ?? ''}',
       error: json['error']?.toString(),
+    );
+  }
+}
+
+class AIQuestion {
+  final String id;
+  final String conversationId;
+  final int stepIndex;
+  final String question;
+  final String createdAt;
+  final String? answeredAt;
+  final String? answer;
+  final bool isPending;
+
+  AIQuestion({
+    required this.id,
+    required this.conversationId,
+    required this.stepIndex,
+    required this.question,
+    required this.createdAt,
+    this.answeredAt,
+    this.answer,
+    required this.isPending,
+  });
+
+  factory AIQuestion.fromJson(Map<String, dynamic> json) {
+    return AIQuestion(
+      id: '${json['id'] ?? ''}',
+      conversationId: '${json['conversationId'] ?? ''}',
+      stepIndex: (json['stepIndex'] as int?) ?? 0,
+      question: '${json['question'] ?? ''}',
+      createdAt: '${json['createdAt'] ?? ''}',
+      answeredAt: json['answeredAt']?.toString(),
+      answer: json['answer']?.toString(),
+      isPending: json['isPending'] == true,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    return {
+      'id': id,
+      'conversationId': conversationId,
+      'stepIndex': stepIndex,
+      'question': question,
+      'createdAt': createdAt,
+      'answeredAt': answeredAt,
+      'answer': answer,
+      'isPending': isPending,
+    };
+  }
+
+  AIQuestion copyWith({
+    String? id,
+    String? conversationId,
+    int? stepIndex,
+    String? question,
+    String? createdAt,
+    String? answeredAt,
+    String? answer,
+    bool? isPending,
+  }) {
+    return AIQuestion(
+      id: id ?? this.id,
+      conversationId: conversationId ?? this.conversationId,
+      stepIndex: stepIndex ?? this.stepIndex,
+      question: question ?? this.question,
+      createdAt: createdAt ?? this.createdAt,
+      answeredAt: answeredAt ?? this.answeredAt,
+      answer: answer ?? this.answer,
+      isPending: isPending ?? this.isPending,
     );
   }
 }

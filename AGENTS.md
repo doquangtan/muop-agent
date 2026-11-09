@@ -116,7 +116,7 @@ muop-agent/
   4. Phía Flutter Client:
      - Prepend (chèn lên đầu) 50 bước này vào danh sách `steps`.
      - Do dùng `ListView(reverse: true)`, vị trí cuộn của người dùng được giữ nguyên hoàn hảo, không bị nhảy hay giật về đáy.
-     - Nếu `hasMore == false`, hiển thị thông báo "Đầu cuộc hội thoại (Đã nạp toàn bộ lịch sử)".
+     - Banner tải thêm tự nạp lặp lại khi còn nằm trong khung nhìn (`_maybeLoadOlderTurns`); khi `hasMore == false` hoặc trang không thêm bước mới thì banner bị ẩn.
 
 ### 4.4. Trực quan hóa Luồng Parallel Agents (`ParallelAgentFlowScreen`)
 - **Tích hợp Quy chuẩn Parallel ERP Sync (`parallel-erp-sync.md`)**:
@@ -253,3 +253,54 @@ lsof -i :8787
    - Đảm bảo widget tương thích cả màn hình Desktop và Mobile (Responsive Layout).
    - Kiểm tra `flutter analyze` sạch lỗi 100%.
    - **Quy tắc Build**: Luôn build cả hai bản Android và Linux (`make build-all` hoặc lần lượt `make build-apk` và `make build-linux`). Khi build xong bản Linux, kiểm tra nếu app Linux `muop_agent` đang mở thì kill tiến trình cũ và khởi động lại ngay lập tức để người dùng trải nghiệm ngay bản mới.
+3. **Sau mỗi tác vụ chỉnh sửa (bắt buộc, áp dụng cho mọi thay đổi code)**:
+   - **Nếu có sửa `server/`** (Rust): build lại server (`make build-server`) rồi khởi động lại daemon (`make restart-daemon`), sau đó xác nhận cổng `:8787` phản hồi.
+   - **Nếu có sửa `lib/`** (Flutter UI): build cả Linux và Android (`make build-all`), sau đó kiểm tra app Linux `muop_agent` có đang chạy không. Nếu đang chạy thì kill tiến trình cũ và mở lại bản build mới (`make restart-linux`). Nếu không chạy thì chỉ báo đường dẫn bản build.
+   - Nếu một tác vụ sửa cả hai phía thì thực hiện đủ cả hai nhánh trên.
+   - Không kết thúc tác vụ khi chưa build/restart theo quy tắc này; nếu bước nào không thực hiện được thì phải nêu rõ trong báo cáo cuối.
+
+## 8. GHI CHÚ BÀN GIAO (TRẠNG THÁI HIỆN TẠI — cập nhật theo từng đợt chỉnh sửa)
+
+> Mục này ghi các quyết định kiến trúc và việc còn dở để người/agent tiếp theo không phải đọc lại toàn bộ lịch sử. Khi thay đổi các phần dưới đây, cập nhật luôn mục này.
+
+### 8.1. Lưu trữ dữ liệu (SQLite)
+- Server dùng một DB SQLite duy nhất: `~/.local/share/muop-agent/muop-agent.db` (WAL), mở qua `server/src/store.rs` bằng `rusqlite`.
+- Bảng `agy_turn_models(conversation_id, started_at, model)`: model đã dùng cho từng lượt agy (transcript của agy không lưu model). Thay cho file `agy-turn-models.jsonl`, file cũ được import một lần rồi xóa.
+- Bảng `conversation_models(conversation_id, model, updated_at)`: model người dùng chọn theo conversation. API: `GET /api/conversation/model?id=<cid>` và `POST /api/conversation/model` với body `{conversationId, model}`.
+- **Chưa làm (chờ quyết định)**: địa chỉ server phía Flutter vẫn lưu ở `muop_agent_remote_config.json` trong thư mục temp (`brain_scanner_service.dart`). Client chưa nối với API `conversation/model`, nên lựa chọn model hiện chỉ nằm trong bộ nhớ app.
+
+### 8.2. Provider, source và model
+- Session có trường `source`: `claude-cli` (từ transcript Claude) hoặc `agy`. Server trả `source` trong phản hồi `chat:send` (`ChatSendResponse.source`).
+- Model id: `claude-cli:<model-id>` (ID đầy đủ có version, ví dụ `claude-haiku-5-5`) hoặc `agy:<model>`. Alias `sonnet/opus/haiku` được ánh xạ sang ID đầy đủ trong `claude_code::normalize_model`, vì CLI tự phân giải alias sang bản cũ.
+- Claude CLI được gọi với `--append-system-prompt` (ghi đường dẫn project) và `--add-dir <cwd>`.
+- `AgentStep.model` lấy từ `message.model` của assistant (bỏ `<synthetic>`), dùng để hiển thị nhãn model dưới thẻ AI.
+- Thứ tự chọn model khi mở conversation (`dashboard_screen.dart`, `_syncDefaultSelections`): model người dùng đã chọn → model của lượt phản hồi gần nhất → mặc định (`claude-cli:claude-sonnet-5-5` hoặc model đầu tiên cùng provider).
+- `_activeSource` (dashboard) xác định provider: session trên server → `source` từ phản hồi chat → suy ra từ model đang chọn.
+
+### 8.3. Đồng bộ realtime (dashboard)
+- `_applySnapshot` giữ lại các stream đang chạy phía client mà snapshot chưa có (đặc biệt `pending_optimistic`), không ghi đè cả map.
+- `_currentSessionStream` trả `pending_optimistic` khi chưa có `_selectedSessionId`.
+- Listener `chatStream` chuyển sang cid thật khi stream đang chạy có id và đang ở new-conversation mode hoặc chưa chọn session.
+- Snapshot cắt còn tối đa 100 step cho session Claude (`SNAPSHOT_STEP_LIMIT`). Cache dựng block của `ChatCanvasView` phải dựa trên chữ ký nội dung (số step, step cuối, `updatedAt`, `status`, `isRunning` của stream), không chỉ số lượng step.
+
+### 8.4. Thay đổi file (`filesTouched`)
+- Ghi nhận từ tool `Edit`/`Write`/`MultiEdit`/`NotebookEdit` (`record_side_effects`), `source` để trống.
+- Thay đổi làm bằng `Bash` được suy ra bởi `detect_bash_file_changes`: `git status --porcelain` (cache 5 giây) và mtime nằm trong khoảng từ bước gọi Bash đến bước kế tiếp. Các bản ghi này có `source: "bash"`. Bỏ qua thư mục build/cache và file nhị phân (`is_build_or_binary_path`).
+- Hạn chế: không có số dòng +/- cho thay đổi từ Bash; file lock (`Cargo.lock`, `pubspec.lock`) vẫn được tính.
+
+### 8.5. Giao diện chat (`lib/ui/widgets/chat_canvas_view.dart`)
+- Mỗi lượt là một thẻ AI (`aiTurnCard`) căn trái, bề rộng tối đa bằng bong bóng user (660 desktop, 320 mobile). Nhãn model nhỏ nằm ngoài thẻ, phía dưới bên trái.
+- Trong thẻ: hàng nút tool action và chip "N tệp thay đổi" (`Row`), nội dung phản hồi có hiệu ứng gõ từng chữ (`_AiResponseTypewriter`, chỉ gõ phần nối thêm), thinking đang chạy (`_AnimatedThinkingRobotCard`) nằm trong thẻ khi `session.status == running`.
+- Dialog: tool action (`_showToolActionsDialog`) và tệp thay đổi (`_showFilesChangedDialog`). Dòng file do Bash có ghi chú "sửa bởi Bash".
+- Thinking card: không border, nền, padding; console ẩn mặc định (`_isTraceExpanded = false`).
+
+### 8.6. Nợ kỹ thuật đã biết
+- Đã chuyển toàn bộ UI sang Material 3 theme động (`lib/ui/theme/app_theme.dart`): màu lấy từ `context.scheme` và `context.status`, không còn `Colors.<tên>` hay mã hex trong `lib/ui` (trừ bảng seed và màu bóng đổ). Khi thêm màu mới, dùng token; không hardcode.
+- Màu chủ đạo (seed) chọn ở dashboard (nút palette) chỉ lưu trong bộ nhớ app. Lưu bền vững phụ thuộc quyết định phía client (mục 8.1).
+- Không có test tự động cho UI. `test/widget_test.dart` là mặc định của Flutter.
+- Lệnh `claude` trong `~/.local/bin/claude` có thể là symlink hỏng; server dự phòng bằng `claude` trong PATH (`claude_code::claude_bin`).
+- Chưa có quy trình kiểm tra trực quan tự động. Sau khi sửa UI cần mở app để kiểm tra bố cục.
+
+### 8.7. Skill liên quan
+- `.claude/skills/design/SKILL.md`: quyết định thiết kế và vấn đề đã gặp của app này.
+- `.claude/skills/design-uiux/SKILL.md`: nguyên tắc UI/UX khi chỉnh sửa giao diện Flutter.

@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import 'ui/dashboard_screen.dart';
+import 'ui/theme/app_theme.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
@@ -16,6 +17,7 @@ class MuopAgentMonitorApp extends StatefulWidget {
 
 class _MuopAgentMonitorAppState extends State<MuopAgentMonitorApp> {
   ThemeMode _themeMode = ThemeMode.dark;
+  Color _seedColor = kDefaultThemeSeed;
 
   void _toggleTheme() {
     setState(() {
@@ -24,31 +26,29 @@ class _MuopAgentMonitorAppState extends State<MuopAgentMonitorApp> {
     });
   }
 
+  void _setSeedColor(Color color) {
+    setState(() => _seedColor = color);
+  }
+
   @override
   Widget build(BuildContext context) {
-    const seedColor = Color(0xFF0B57D0);
-
     return MaterialApp(
       title: 'Mướp Agent Monitor — Parallel ERP Agents',
       debugShowCheckedModeBanner: false,
       themeMode: _themeMode,
-      theme: ThemeData(
-        useMaterial3: true,
-        colorScheme: ColorScheme.fromSeed(
-          seedColor: seedColor,
-          brightness: Brightness.light,
-        ),
+      theme: buildAppTheme(
+        seedColor: _seedColor,
+        brightness: Brightness.light,
       ),
-      darkTheme: ThemeData(
-        useMaterial3: true,
-        colorScheme: ColorScheme.fromSeed(
-          seedColor: seedColor,
-          brightness: Brightness.dark,
-        ),
+      darkTheme: buildAppTheme(
+        seedColor: _seedColor,
+        brightness: Brightness.dark,
       ),
       home: DashboardScreen(
         isDarkMode: _themeMode == ThemeMode.dark,
         onToggleTheme: _toggleTheme,
+        seedColor: _seedColor,
+        onSeedColorChanged: _setSeedColor,
       ),
     );
   }

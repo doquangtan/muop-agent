@@ -29,12 +29,12 @@ pub const AGENTS_CONFIG_DIR_PATH: &str =
 
 /// Danh sách model gửi xuống UI. Id có tiền tố provider để chọn đúng backend:
 /// - `agy:<model>` → Antigravity CLI (`agy`)
-/// - `claude-cli:<alias>` → Claude Code CLI (`claude --model <alias>`)
+/// - `claude-cli:<model-id>` → Claude Code CLI (`claude --model <model-id>`, ID đầy đủ có version)
 pub fn default_models() -> Vec<String> {
     vec![
-        "claude-cli:sonnet".to_string(),
-        "claude-cli:opus".to_string(),
-        "claude-cli:haiku".to_string(),
+        "claude-cli:claude-sonnet-5-5".to_string(),
+        "claude-cli:claude-opus-5-5".to_string(),
+        "claude-cli:claude-haiku-5-5".to_string(),
         "agy:gemini-3.8-flash-high".to_string(),
         "agy:gemini-3.8-flash-medium".to_string(),
         "agy:claude-sonnet-5-5-high".to_string(),
@@ -1041,7 +1041,7 @@ fn scan_agent_subdir(dir: &Path, kind: &str, specs: &mut Vec<CustomAgentSpec>) {
     }
 }
 
-fn parse_markdown_frontmatter(
+pub(crate) fn parse_markdown_frontmatter(
     raw: &str,
     default_name: &str,
     kind: &str,
@@ -1359,6 +1359,7 @@ pub fn scan_all_sessions(
                         phase: "completed".to_string(),
                         vietnamese_title: "Tiến trình Agent bị gián đoạn".to_string(),
                         vietnamese_detail: "Tiến trình xử lý của Agent đã bị ngắt do server restart hoặc dừng đột ngột. Bạn có thể tiếp tục bằng cách gửi tin nhắn tiếp theo.".to_string(),
+                        model: String::new(),
                     });
                 }
             }
@@ -1603,6 +1604,7 @@ pub fn get_single_session_with_streams(
                     phase: "completed".to_string(),
                     vietnamese_title: "Tiến trình Agent bị gián đoạn".to_string(),
                     vietnamese_detail: "Tiến trình xử lý của Agent đã bị ngắt do server restart hoặc dừng đột ngột. Bạn có thể tiếp tục bằng cách gửi tin nhắn tiếp theo.".to_string(),
+                    model: String::new(),
                 });
             }
         }
@@ -2224,6 +2226,36 @@ fn get_transcript_cache() -> &'static Mutex<HashMap<String, CachedTranscript>> {
     TRANSCRIPT_CACHE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
+/// Ghi model đã dùng cho một lượt agy. Transcript của agy không lưu model nên server tự ghi nhận
+/// vào SQLite (xem `store`).
+pub fn record_agy_turn_model(conversation_id: &str, started_at: &str, model: &str) {
+    crate::store::record_agy_turn_model(conversation_id, started_at, model);
+}
+
+fn load_agy_turn_models(conversation_id: &str) -> Vec<(DateTime<Utc>, String)> {
+    let mut turns: Vec<(DateTime<Utc>, String)> = crate::store::agy_turn_models(conversation_id)
+        .into_iter()
+        .filter_map(|(started, model)| {
+            let started = DateTime::parse_from_rfc3339(&started)
+                .ok()?
+                .with_timezone(&Utc);
+            Some((started, model))
+        })
+        .collect();
+    turns.sort_by_key(|(started, _)| *started);
+    turns
+}
+
+fn agy_turn_model_at(turns: &[(DateTime<Utc>, String)], at: DateTime<Utc>) -> String {
+    // Step được làm tròn theo giây nên cho phép lệch 1 giây khi so với thời điểm bắt đầu lượt
+    turns
+        .iter()
+        .rev()
+        .find(|(started, _)| *started <= at + chrono::Duration::seconds(1))
+        .map(|(_, model)| model.clone())
+        .unwrap_or_default()
+}
+
 fn parse_single_agent_step(
     map: &Value,
     step_index: usize,
@@ -2343,6 +2375,7 @@ fn parse_single_agent_step(
         phase,
         vietnamese_title: vn_title,
         vietnamese_detail: vn_detail,
+        model: String::new(),
     }
 }
 
@@ -2394,6 +2427,7 @@ fn parse_transcript_file(
     let mut total_step_count: usize = 0;
     let mut has_verify = false;
     let mut has_edit_or_parallel = false;
+    let agy_turns = load_agy_turn_models(id);
 
     for line_res in reader.lines() {
         let line = match line_res {
@@ -2416,11 +2450,14 @@ fn parse_transcript_file(
 
         total_step_count += 1;
 
-        let step = parse_single_agent_step(&map, step_index, file_modified);
+        let mut step = parse_single_agent_step(&map, step_index, file_modified);
         let step_time = match DateTime::parse_from_rfc3339(&step.created_at) {
             Ok(dt) => dt.with_timezone(&Utc),
             Err(_) => file_modified,
         };
+        if step.step_type == "PLANNER_RESPONSE" {
+            step.model = agy_turn_model_at(&agy_turns, step_time);
+        }
 
         if created_at.is_none() {
             created_at = Some(step_time);
@@ -2475,6 +2512,7 @@ fn parse_transcript_file(
                         added_lines,
                         removed_lines,
                         diff_preview: safe_truncate(&diff_preview, 200).to_string(),
+                        source: String::new(),
                     });
                     if files_deque.len() > 80 {
                         files_deque.pop_front();

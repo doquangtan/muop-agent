@@ -198,12 +198,12 @@ class BrainScannerService {
   static const int defaultBridgePort = 8787;
 
   /// Id model phải khớp với `scanner::default_models` ở Rust Server.
-  /// - `claude-cli:<alias>` → Claude Code CLI (`claude --model <alias>`)
+  /// - `claude-cli:<model-id>` → Claude Code CLI (`claude --model <model-id>`, ID đầy đủ có version)
   /// - `agy:<model>` → Antigravity CLI (`agy`)
   static const List<String> defaultModels = [
-    'claude-cli:sonnet',
-    'claude-cli:opus',
-    'claude-cli:haiku',
+    'claude-cli:claude-sonnet-5-5',
+    'claude-cli:claude-opus-5-5',
+    'claude-cli:claude-haiku-5-5',
     'agy:gemini-3.8-flash-high',
     'agy:gemini-3.8-flash-medium',
     'agy:claude-sonnet-5-5-high',
@@ -235,6 +235,8 @@ class BrainScannerService {
       StreamController<List<ProjectWorkspace>>.broadcast();
   final StreamController<List<ModelQuotaGroup>> _quotasUpdateController =
       StreamController<List<ModelQuotaGroup>>.broadcast();
+  final StreamController<ConversationSession> _filesChangeController =
+      StreamController<ConversationSession>.broadcast();
 
   Stream<AgentMonitorSnapshot> get snapshotStream => _snapshotController.stream;
   Stream<ChatTurnStreamState> get chatStream => _chatStreamController.stream;
@@ -245,6 +247,7 @@ class BrainScannerService {
       _projectsUpdateController.stream;
   Stream<List<ModelQuotaGroup>> get quotasUpdateStream =>
       _quotasUpdateController.stream;
+  Stream<ConversationSession> get filesChangeStream => _filesChangeController.stream;
   bool get isSocketConnected => _isSocketConnected;
 
   File get _configFile =>
@@ -438,6 +441,23 @@ class BrainScannerService {
       } catch (_) {}
     });
 
+    // Event file changes từ server phát vào room conversation
+    socket.on('fileschange', (data) {
+      if (_filesChangeController.isClosed || data == null) return;
+      try {
+        Map<String, dynamic> sessionMap;
+        if (data is Map<String, dynamic>) {
+          sessionMap = data;
+        } else if (data is String) {
+          sessionMap = jsonDecode(data) as Map<String, dynamic>;
+        } else {
+          sessionMap = Map<String, dynamic>.from(data as Map);
+        }
+        final session = ConversationSession.fromJson(sessionMap);
+        _filesChangeController.add(session);
+      } catch (_) {}
+    });
+
     _socket = socket;
     socket.connect();
   }
@@ -445,6 +465,20 @@ class BrainScannerService {
   void requestRealtimeSnapshot() {
     if (_socket != null && _socket!.connected) {
       _socket!.emit('request-snapshot');
+    }
+  }
+
+  /// Join vào room conversation để nhận file changes updates từ server
+  void joinConversation(String conversationId) {
+    if (_socket != null && _socket!.connected) {
+      _socket!.emit('join-conversation', {'conversationId': conversationId});
+    }
+  }
+
+  /// Leave khỏi room conversation cũ
+  void leaveConversation(String conversationId) {
+    if (_socket != null && _socket!.connected) {
+      _socket!.emit('leave-conversation', {'conversationId': conversationId});
     }
   }
 
@@ -465,6 +499,7 @@ class BrainScannerService {
     _sessionUpdateController.close();
     _projectsUpdateController.close();
     _quotasUpdateController.close();
+    _filesChangeController.close();
   }
 
   /// Kiểm tra kết nối tới Rust Server qua HTTP `/api/ping`
@@ -728,6 +763,42 @@ class BrainScannerService {
         final body = await resp.transform(utf8.decoder).join();
         final map = jsonDecode(body) as Map<String, dynamic>;
         return ProjectAgentsResponse.fromJson(map);
+      }
+      return null;
+    } catch (_) {
+      return null;
+    } finally {
+      client.close(force: true);
+    }
+  }
+
+  /// Lấy skill, agent và command của Claude Code CLI theo dự án (`/api/claude/extensions`)
+  Future<List<CustomAgentSpec>?> fetchClaudeExtensions({
+    required String address,
+    String? projectPath,
+  }) async {
+    final baseUrl = normalizeBaseUrl(address);
+    final client = HttpClient()
+      ..connectionTimeout = const Duration(seconds: 4);
+    try {
+      final queryParams = <String, String>{};
+      if (projectPath != null && projectPath.trim().isNotEmpty) {
+        queryParams['path'] = projectPath.trim();
+      }
+      final uri = Uri.parse('$baseUrl/api/claude/extensions').replace(
+        queryParameters: queryParams.isNotEmpty ? queryParams : null,
+      );
+      final req = await client.getUrl(uri);
+      final resp = await req.close().timeout(const Duration(seconds: 6));
+      if (resp.statusCode == HttpStatus.ok) {
+        final body = await resp.transform(utf8.decoder).join();
+        final map = jsonDecode(body) as Map<String, dynamic>;
+        final raw = map['items'];
+        if (raw is! List) return const [];
+        return raw
+            .whereType<Map>()
+            .map((e) => CustomAgentSpec.fromJson(Map<String, dynamic>.from(e)))
+            .toList();
       }
       return null;
     } catch (_) {
@@ -1039,43 +1110,42 @@ class BrainScannerService {
           .lastOrNull ??
           'downloaded_file';
 
+      // Android: dùng systemTemp (app cache dir) — không cần quyền external storage.
+      // Desktop: ưu tiên ~/Downloads, fallback về systemTemp.
       Directory targetDir = Directory.systemTemp;
-      if (Platform.isAndroid) {
-        final androidDownload = Directory('/storage/emulated/0/Download');
-        if (await androidDownload.exists()) {
-          targetDir = androidDownload;
-        }
-      } else {
+      if (!Platform.isAndroid) {
         final home = Platform.environment['HOME'] ?? '';
         if (home.isNotEmpty) {
-          final desktopDownload = Directory('$home/Downloads');
-          if (await desktopDownload.exists()) {
-            targetDir = desktopDownload;
-          }
+          final dl = Directory('$home/Downloads');
+          if (await dl.exists()) targetDir = dl;
         }
       }
 
       File outFile = File('${targetDir.path}/$filename');
-      IOSink? sink;
+
+      // RandomAccessFile.writeFrom() ghi mỗi chunk thẳng ra disk và await từng lần,
+      // không buffer toàn bộ file → tránh flush() block ở cuối gây "đứng im ở 100%".
+      late RandomAccessFile raf;
       try {
-        sink = outFile.openWrite();
+        raf = await outFile.open(mode: FileMode.write);
       } catch (_) {
+        // Fallback về systemTemp nếu thư mục đích không ghi được
         outFile = File('${Directory.systemTemp.path}/$filename');
-        sink = outFile.openWrite();
+        raf = await outFile.open(mode: FileMode.write);
       }
 
       final totalBytes = resp.contentLength;
       int received = 0;
 
-      await for (final chunk in resp) {
-        sink.add(chunk);
-        received += chunk.length;
-        if (onProgress != null) {
-          onProgress(received, totalBytes);
+      try {
+        await for (final chunk in resp) {
+          await raf.writeFrom(chunk);
+          received += chunk.length;
+          onProgress?.call(received, totalBytes);
         }
+      } finally {
+        await raf.close();
       }
-      await sink.flush();
-      await sink.close();
 
       return FileDownloadResult(
         ok: true,
@@ -1660,5 +1730,49 @@ class BrainScannerService {
       projectPath: '/home/john/Documents/muop-ecosystem/muop-erp-server',
       isSimulated: true,
     );
+  }
+
+  /// Lấy danh sách câu hỏi từ AI cho conversation
+  Future<List<AIQuestion>> fetchAIQuestions(String conversationId) async {
+    final baseUrl = normalizeBaseUrl(_connectedBaseUrl);
+    final client = HttpClient()
+      ..connectionTimeout = const Duration(seconds: 4);
+    try {
+      final uri = Uri.parse('$baseUrl/api/ai-questions?conversationId=$conversationId');
+      final req = await client.getUrl(uri);
+      final resp = await req.close().timeout(const Duration(seconds: 6));
+      if (resp.statusCode == 200) {
+        final body = await resp.transform(utf8.decoder).join();
+        final json = jsonDecode(body);
+        final questions = (json['questions'] as List?)?.map((q) => AIQuestion.fromJson(q)).toList() ?? [];
+        return questions;
+      }
+    } catch (_) {
+    } finally {
+      client.close(force: true);
+    }
+    return [];
+  }
+
+  /// Gửi câu trả lời cho câu hỏi từ AI
+  Future<bool> submitAIAnswer(String questionId, String answer) async {
+    final baseUrl = normalizeBaseUrl(_connectedBaseUrl);
+    final client = HttpClient()
+      ..connectionTimeout = const Duration(seconds: 4);
+    try {
+      final uri = Uri.parse('$baseUrl/api/ai-questions/answer');
+      final req = await client.postUrl(uri);
+      req.headers.contentType = ContentType.json;
+      req.add(jsonEncode({
+        'questionId': questionId,
+        'answer': answer,
+      }).codeUnits);
+      final resp = await req.close().timeout(const Duration(seconds: 6));
+      return resp.statusCode == 200;
+    } catch (_) {
+    } finally {
+      client.close(force: true);
+    }
+    return false;
   }
 }

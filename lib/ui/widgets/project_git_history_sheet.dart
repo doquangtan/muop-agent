@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import '../../models/agent_models.dart';
 import '../../services/brain_scanner_service.dart';
+import '../theme/app_theme.dart';
 
 /// Modal / Bottom Sheet hiển thị trực quan Git Tree, Lịch sử Commit và Unified Diff của Dự án
 class ProjectGitHistorySheet extends StatefulWidget {
@@ -185,7 +186,7 @@ class _ProjectGitHistorySheetState extends State<ProjectGitHistorySheet> {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(res.message),
-          backgroundColor: Colors.teal,
+          backgroundColor: context.status.success,
           behavior: SnackBarBehavior.floating,
         ),
       );
@@ -194,7 +195,7 @@ class _ProjectGitHistorySheetState extends State<ProjectGitHistorySheet> {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(res.message),
-          backgroundColor: Colors.redAccent,
+          backgroundColor: context.scheme.error,
           behavior: SnackBarBehavior.floating,
         ),
       );
@@ -242,13 +243,13 @@ class _ProjectGitHistorySheetState extends State<ProjectGitHistorySheet> {
             Container(
               padding: const EdgeInsets.all(6),
               decoration: BoxDecoration(
-                color: Colors.deepPurpleAccent.withAlpha(25),
+                color: context.scheme.tertiary.withAlpha(25),
                 borderRadius: BorderRadius.circular(8),
               ),
-              child: const Icon(
+              child: Icon(
                 Icons.account_tree_rounded,
                 size: 18,
-                color: Colors.deepPurpleAccent,
+                color: context.scheme.tertiary,
               ),
             ),
             const SizedBox(width: 10),
@@ -346,7 +347,7 @@ class _ProjectGitHistorySheetState extends State<ProjectGitHistorySheet> {
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              const Icon(Icons.error_outline_rounded, size: 48, color: Colors.redAccent),
+              Icon(Icons.error_outline_rounded, size: 48, color: context.scheme.error),
               const SizedBox(height: 12),
               Text(
                 'Lỗi nạp kho lưu trữ Git',
@@ -446,7 +447,7 @@ class _ProjectGitHistorySheetState extends State<ProjectGitHistorySheet> {
                       value: branches.contains(_selectedBranch) ? _selectedBranch : null,
                       hint: Row(
                         children: [
-                          const Icon(Icons.merge_type_rounded, size: 16, color: Colors.teal),
+                          Icon(Icons.merge_type_rounded, size: 16, color: context.status.success),
                           const SizedBox(width: 6),
                           Text(
                             _selectedBranch.isNotEmpty ? _selectedBranch : 'Tất cả Branches',
@@ -590,9 +591,9 @@ class _ProjectGitHistorySheetState extends State<ProjectGitHistorySheet> {
 
     // Màu node dựa trên trạng thái (HEAD: xanh teal, merge: tím, commit thường: xanh dương/primary)
     final nodeColor = commit.isHead
-        ? Colors.teal
+        ? context.status.success
         : isMerge
-            ? Colors.deepPurpleAccent
+            ? context.scheme.tertiary
             : colorScheme.primary;
 
     return InkWell(
@@ -625,13 +626,13 @@ class _ProjectGitHistorySheetState extends State<ProjectGitHistorySheet> {
                       shape: BoxShape.circle,
                       color: nodeColor,
                       border: Border.all(
-                        color: commit.isHead ? Colors.white : colorScheme.surface,
+                        color: commit.isHead ? context.scheme.onPrimary : colorScheme.surface,
                         width: 2,
                       ),
                       boxShadow: commit.isHead
                           ? [
                               BoxShadow(
-                                color: Colors.teal.withAlpha(140),
+                                color: context.status.success.withAlpha(140),
                                 blurRadius: 6,
                                 spreadRadius: 1,
                               )
@@ -639,11 +640,11 @@ class _ProjectGitHistorySheetState extends State<ProjectGitHistorySheet> {
                           : null,
                     ),
                     child: isMerge
-                        ? const Center(
+                        ? Center(
                             child: Icon(
                               Icons.alt_route_rounded,
                               size: 8,
-                              color: Colors.white,
+                              color: context.scheme.onPrimary,
                             ),
                           )
                         : null,
@@ -724,17 +725,17 @@ class _ProjectGitHistorySheetState extends State<ProjectGitHistorySheet> {
                           padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
                           decoration: BoxDecoration(
                             color: isHeadRef
-                                ? Colors.teal.withAlpha(35)
+                                ? context.status.success.withAlpha(35)
                                 : isTag
-                                    ? Colors.amber.withAlpha(35)
-                                    : Colors.blueAccent.withAlpha(35),
+                                    ? context.status.warning.withAlpha(35)
+                                    : context.scheme.secondary.withAlpha(35),
                             borderRadius: BorderRadius.circular(4),
                             border: Border.all(
                               color: isHeadRef
-                                  ? Colors.teal
+                                  ? context.status.success
                                   : isTag
-                                      ? Colors.amber.shade700
-                                      : Colors.blueAccent,
+                                      ? context.status.warning
+                                      : context.scheme.secondary,
                               width: 0.8,
                             ),
                           ),
@@ -744,10 +745,10 @@ class _ProjectGitHistorySheetState extends State<ProjectGitHistorySheet> {
                               fontSize: 9.5,
                               fontWeight: FontWeight.w700,
                               color: isHeadRef
-                                  ? Colors.teal
+                                  ? context.status.success
                                   : isTag
-                                      ? Colors.amber.shade700
-                                      : Colors.blueAccent,
+                                      ? context.status.warning
+                                      : context.scheme.secondary,
                             ),
                           ),
                         );
@@ -833,7 +834,7 @@ class _ProjectGitHistorySheetState extends State<ProjectGitHistorySheet> {
       return Center(
         child: Text(
           _detailErrorMessage!,
-          style: const TextStyle(color: Colors.redAccent),
+          style: TextStyle(color: context.scheme.error),
         ),
       );
     }
@@ -986,19 +987,19 @@ class _ProjectGitHistorySheetState extends State<ProjectGitHistorySheet> {
         String statusLabel;
         switch (f.status) {
           case 'A':
-            statusColor = Colors.teal;
+            statusColor = context.status.success;
             statusLabel = 'A';
             break;
           case 'D':
-            statusColor = Colors.redAccent;
+            statusColor = context.scheme.error;
             statusLabel = 'D';
             break;
           case 'R':
-            statusColor = Colors.deepPurpleAccent;
+            statusColor = context.scheme.tertiary;
             statusLabel = 'R';
             break;
           default:
-            statusColor = Colors.amber.shade700;
+            statusColor = context.status.warning;
             statusLabel = 'M';
         }
 
@@ -1045,22 +1046,22 @@ class _ProjectGitHistorySheetState extends State<ProjectGitHistorySheet> {
                 if (f.additions > 0)
                   Text(
                     '+${f.additions}',
-                    style: const TextStyle(
+                    style: TextStyle(
                       fontFamily: 'monospace',
                       fontSize: 11,
                       fontWeight: FontWeight.bold,
-                      color: Colors.teal,
+                      color: context.status.success,
                     ),
                   ),
                 const SizedBox(width: 6),
                 if (f.deletions > 0)
                   Text(
                     '-${f.deletions}',
-                    style: const TextStyle(
+                    style: TextStyle(
                       fontFamily: 'monospace',
                       fontSize: 11,
                       fontWeight: FontWeight.bold,
-                      color: Colors.redAccent,
+                      color: context.scheme.error,
                     ),
                   ),
               ],
@@ -1130,14 +1131,14 @@ class _ProjectGitHistorySheetState extends State<ProjectGitHistorySheet> {
                   Color textColor = colorScheme.onSurface;
 
                   if (line.startsWith('+') && !line.startsWith('+++')) {
-                    bgColor = Colors.green.withAlpha(35);
-                    textColor = Colors.green.shade700;
+                    bgColor = context.status.success.withAlpha(35);
+                    textColor = context.status.success;
                   } else if (line.startsWith('-') && !line.startsWith('---')) {
-                    bgColor = Colors.red.withAlpha(35);
-                    textColor = Colors.redAccent;
+                    bgColor = context.scheme.error.withAlpha(35);
+                    textColor = context.scheme.error;
                   } else if (line.startsWith('@@')) {
-                    bgColor = Colors.blue.withAlpha(30);
-                    textColor = Colors.blueAccent;
+                    bgColor = context.scheme.secondary.withAlpha(30);
+                    textColor = context.scheme.secondary;
                   } else if (line.startsWith('diff --git')) {
                     bgColor = colorScheme.surfaceContainerHighest;
                     textColor = colorScheme.primary;
@@ -1330,12 +1331,12 @@ class _MobileCommitDetailSheetState extends State<_MobileCommitDetailSheet> {
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              const Icon(Icons.error_outline_rounded, size: 40, color: Colors.redAccent),
+              Icon(Icons.error_outline_rounded, size: 40, color: context.scheme.error),
               const SizedBox(height: 10),
               Text(
                 _errorMessage!,
                 textAlign: TextAlign.center,
-                style: const TextStyle(color: Colors.redAccent),
+                style: TextStyle(color: context.scheme.error),
               ),
               const SizedBox(height: 14),
               FilledButton.icon(
@@ -1489,19 +1490,19 @@ class _MobileCommitDetailSheetState extends State<_MobileCommitDetailSheet> {
                           String statusLabel;
                           switch (f.status) {
                             case 'A':
-                              statusColor = Colors.teal;
+                              statusColor = context.status.success;
                               statusLabel = 'A';
                               break;
                             case 'D':
-                              statusColor = Colors.redAccent;
+                              statusColor = context.scheme.error;
                               statusLabel = 'D';
                               break;
                             case 'R':
-                              statusColor = Colors.deepPurpleAccent;
+                              statusColor = context.scheme.tertiary;
                               statusLabel = 'R';
                               break;
                             default:
-                              statusColor = Colors.amber.shade700;
+                              statusColor = context.status.warning;
                               statusLabel = 'M';
                           }
 
@@ -1547,11 +1548,11 @@ class _MobileCommitDetailSheetState extends State<_MobileCommitDetailSheet> {
                                 if (f.additions > 0) ...[
                                   Text(
                                     '+${f.additions}',
-                                    style: const TextStyle(
+                                    style: TextStyle(
                                       fontFamily: 'monospace',
                                       fontSize: 10.5,
                                       fontWeight: FontWeight.bold,
-                                      color: Colors.teal,
+                                      color: context.status.success,
                                     ),
                                   ),
                                   const SizedBox(width: 4),
@@ -1559,11 +1560,11 @@ class _MobileCommitDetailSheetState extends State<_MobileCommitDetailSheet> {
                                 if (f.deletions > 0) ...[
                                   Text(
                                     '-${f.deletions}',
-                                    style: const TextStyle(
+                                    style: TextStyle(
                                       fontFamily: 'monospace',
                                       fontSize: 10.5,
                                       fontWeight: FontWeight.bold,
-                                      color: Colors.redAccent,
+                                      color: context.scheme.error,
                                     ),
                                   ),
                                 ],
@@ -1625,14 +1626,14 @@ class _MobileCommitDetailSheetState extends State<_MobileCommitDetailSheet> {
                                     Color textColor = colorScheme.onSurface;
 
                                     if (line.startsWith('+') && !line.startsWith('+++')) {
-                                      bgColor = Colors.green.withAlpha(35);
-                                      textColor = Colors.green.shade700;
+                                      bgColor = context.status.success.withAlpha(35);
+                                      textColor = context.status.success;
                                     } else if (line.startsWith('-') && !line.startsWith('---')) {
-                                      bgColor = Colors.red.withAlpha(35);
-                                      textColor = Colors.redAccent;
+                                      bgColor = context.scheme.error.withAlpha(35);
+                                      textColor = context.scheme.error;
                                     } else if (line.startsWith('@@')) {
-                                      bgColor = Colors.blue.withAlpha(30);
-                                      textColor = Colors.blueAccent;
+                                      bgColor = context.scheme.secondary.withAlpha(30);
+                                      textColor = context.scheme.secondary;
                                     } else if (line.startsWith('diff --git')) {
                                       bgColor = colorScheme.surfaceContainerHighest;
                                       textColor = colorScheme.primary;

@@ -62,6 +62,9 @@ pub struct AgentStep {
     pub phase: String,
     pub vietnamese_title: String,
     pub vietnamese_detail: String,
+    /// Model thực tế đã trả lời (vd. `claude-haiku-5-5`), rỗng nếu không xác định
+    #[serde(default)]
+    pub model: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -98,6 +101,9 @@ pub struct FileTouchRecord {
     pub removed_lines: usize,
     #[serde(default)]
     pub diff_preview: String,
+    /// Nguồn ghi nhận: `bash` khi suy ra từ lệnh Bash, rỗng khi từ tool Edit/Write
+    #[serde(default)]
+    pub source: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -263,6 +269,15 @@ pub struct ChatStopRequest {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct ConversationModelRequest {
+    #[serde(default)]
+    pub conversation_id: String,
+    #[serde(default)]
+    pub model: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ServerFileEntry {
     pub name: String,
     pub path: String,
@@ -382,6 +397,13 @@ pub struct ProjectAgentsResponse {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct ClaudeExtensionsResponse {
+    pub ok: bool,
+    pub items: Vec<CustomAgentSpec>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct GitCommitSummary {
     pub hash: String,
     pub short_hash: String,
@@ -441,6 +463,33 @@ pub struct GitCommitDetailResponse {
     pub error: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AIQuestion {
+    pub id: String,
+    pub conversation_id: String,
+    pub step_index: usize,
+    pub question: String,
+    pub created_at: String,
+    pub answered_at: Option<String>,
+    pub answer: Option<String>,
+    pub is_pending: bool,
+}
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AIQuestionResponse {
+    pub question_id: String,
+    pub answer: String,
+}
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AIQuestionsResponse {
+    pub ok: bool,
+    pub conversation_id: String,
+    pub questions: Vec<AIQuestion>,
+    #[serde(default)]
+    pub error: Option<String>,
+}
 

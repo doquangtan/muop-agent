@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../models/agent_models.dart';
 import '../services/brain_scanner_service.dart';
 import 'widgets/server_file_browser_sheet.dart';
+import 'theme/app_theme.dart';
 
 /// Màn hình Trực quan hóa Luồng Thực thi Song song (Parallel Agent Flow Screen)
 /// Phản ánh kiến trúc Dual-Repo song song: Coordinator ➔ erp-server-agent & erp-app-agent ➔ erp-contract-verifier
@@ -160,10 +161,10 @@ class _ParallelAgentFlowScreenState extends State<ParallelAgentFlowScreen>
           children: [
             Row(
               children: [
-                const Icon(
+                Icon(
                   Icons.alt_route_rounded,
                   size: 18,
-                  color: Colors.deepPurpleAccent,
+                  color: context.scheme.tertiary,
                 ),
                 const SizedBox(width: 8),
                 Flexible(
@@ -217,13 +218,13 @@ class _ParallelAgentFlowScreenState extends State<ParallelAgentFlowScreen>
                 padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
                 decoration: BoxDecoration(
                   color: isRunning
-                      ? Colors.orange.withAlpha((30 + pulse * 25).toInt())
-                      : Colors.teal.withAlpha(35),
+                      ? context.status.warning.withAlpha((30 + pulse * 25).toInt())
+                      : context.status.success.withAlpha(35),
                   borderRadius: BorderRadius.circular(20),
                   border: Border.all(
                     color: isRunning
-                        ? Colors.orange.withAlpha((120 + pulse * 135).toInt())
-                        : Colors.teal.withAlpha(140),
+                        ? context.status.warning.withAlpha((120 + pulse * 135).toInt())
+                        : context.status.success.withAlpha(140),
                     width: isRunning ? 1.5 : 1.0,
                   ),
                 ),
@@ -234,12 +235,12 @@ class _ParallelAgentFlowScreenState extends State<ParallelAgentFlowScreen>
                       width: 7,
                       height: 7,
                       decoration: BoxDecoration(
-                        color: isRunning ? Colors.orange : Colors.teal,
+                        color: isRunning ? context.status.warning : context.status.success,
                         shape: BoxShape.circle,
                         boxShadow: isRunning
                             ? [
                                 BoxShadow(
-                                  color: Colors.orange.withAlpha((150 * pulse).toInt()),
+                                  color: context.status.warning.withAlpha((150 * pulse).toInt()),
                                   blurRadius: 5 * pulse,
                                   spreadRadius: 1 * pulse,
                                 ),
@@ -254,7 +255,7 @@ class _ParallelAgentFlowScreenState extends State<ParallelAgentFlowScreen>
                         fontSize: 10,
                         fontWeight: FontWeight.w900,
                         letterSpacing: 0.5,
-                        color: isRunning ? Colors.orange : Colors.teal,
+                        color: isRunning ? context.status.warning : context.status.success,
                       ),
                     ),
                   ],
@@ -265,7 +266,7 @@ class _ParallelAgentFlowScreenState extends State<ParallelAgentFlowScreen>
 
           if (isRunning && widget.onStopTurn != null)
             IconButton(
-              icon: const Icon(Icons.stop_circle_outlined, color: Colors.redAccent),
+              icon: Icon(Icons.stop_circle_outlined, color: context.scheme.error),
               tooltip: 'Dừng tác vụ',
               onPressed: widget.onStopTurn,
             ),
@@ -374,15 +375,15 @@ class _ParallelAgentFlowScreenState extends State<ParallelAgentFlowScreen>
               Container(
                 padding: const EdgeInsets.all(14),
                 decoration: BoxDecoration(
-                  color: Colors.deepPurple.withAlpha(25),
+                  color: context.scheme.tertiary.withAlpha(25),
                   borderRadius: BorderRadius.circular(12),
-                  border: Border.all(color: Colors.deepPurpleAccent.withAlpha(90)),
+                  border: Border.all(color: context.scheme.tertiary.withAlpha(90)),
                 ),
                 child: Row(
                   children: [
-                    const Icon(
+                    Icon(
                       Icons.info_outline_rounded,
-                      color: Colors.deepPurpleAccent,
+                      color: context.scheme.tertiary,
                       size: 20,
                     ),
                     const SizedBox(width: 12),
@@ -394,7 +395,7 @@ class _ParallelAgentFlowScreenState extends State<ParallelAgentFlowScreen>
                             'Quy chuẩn Đồng bộ Song song (parallel-erp-sync)',
                             style: textTheme.labelLarge?.copyWith(
                               fontWeight: FontWeight.w700,
-                              color: Colors.deepPurpleAccent,
+                              color: context.scheme.tertiary,
                             ),
                           ),
                           const SizedBox(height: 2),
@@ -420,7 +421,7 @@ class _ParallelAgentFlowScreenState extends State<ParallelAgentFlowScreen>
                 subtitle:
                     'Phân tích Canonical API, JSON DTO, RBAC & Socket.IO. Coordinator thống nhất hợp đồng trước khi phân chia.',
                 icon: Icons.architecture_rounded,
-                nodeColor: Colors.blueAccent,
+                nodeColor: context.scheme.secondary,
                 status: isPhase1Active
                     ? 'IN PROGRESS'
                     : (session != null && session.steps.isNotEmpty
@@ -436,8 +437,8 @@ class _ParallelAgentFlowScreenState extends State<ParallelAgentFlowScreen>
                   ),
                   child: Row(
                     children: [
-                      const Icon(Icons.description_outlined,
-                          size: 16, color: Colors.blueAccent),
+                      Icon(Icons.description_outlined,
+                          size: 16, color: context.scheme.secondary),
                       const SizedBox(width: 8),
                       Expanded(
                         child: Text(
@@ -463,7 +464,7 @@ class _ParallelAgentFlowScreenState extends State<ParallelAgentFlowScreen>
                 subtitle:
                     'Agent xuất trình kế hoạch và chờ phê duyệt. Không tự ý sửa mã nguồn khi chưa được xác nhận.',
                 icon: Icons.how_to_reg_rounded,
-                nodeColor: Colors.amber,
+                nodeColor: context.status.warning,
                 status: isPhase2Active
                     ? 'AWAITING APPROVAL'
                     : (hasPendingPlans ? 'PENDING' : 'APPROVED / PASSED'),
@@ -472,9 +473,9 @@ class _ParallelAgentFlowScreenState extends State<ParallelAgentFlowScreen>
                 child: Container(
                   padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
                   decoration: BoxDecoration(
-                    color: Colors.amber.withAlpha(25),
+                    color: context.status.warning.withAlpha(25),
                     borderRadius: BorderRadius.circular(8),
-                    border: Border.all(color: Colors.amber.withAlpha(110)),
+                    border: Border.all(color: context.status.warning.withAlpha(110)),
                   ),
                   child: Row(
                     children: [
@@ -483,7 +484,7 @@ class _ParallelAgentFlowScreenState extends State<ParallelAgentFlowScreen>
                             ? Icons.hourglass_top_rounded
                             : Icons.check_circle_outline_rounded,
                         size: 16,
-                        color: Colors.amber,
+                        color: context.status.warning,
                       ),
                       const SizedBox(width: 8),
                       Expanded(
@@ -516,14 +517,14 @@ class _ParallelAgentFlowScreenState extends State<ParallelAgentFlowScreen>
                       borderRadius: BorderRadius.circular(16),
                       border: Border.all(
                         color: isPhase3Active
-                            ? Colors.deepPurpleAccent.withAlpha((140 + pulse * 115).toInt())
+                            ? context.scheme.tertiary.withAlpha((140 + pulse * 115).toInt())
                             : colorScheme.outlineVariant,
                         width: isPhase3Active ? 2.0 : 1.2,
                       ),
                       boxShadow: isPhase3Active
                           ? [
                               BoxShadow(
-                                color: Colors.deepPurpleAccent.withAlpha((40 * pulse).toInt()),
+                                color: context.scheme.tertiary.withAlpha((40 * pulse).toInt()),
                                 blurRadius: 10 * pulse,
                                 spreadRadius: 1,
                               ),
@@ -540,14 +541,14 @@ class _ParallelAgentFlowScreenState extends State<ParallelAgentFlowScreen>
                               width: 28,
                               height: 28,
                               decoration: BoxDecoration(
-                                color: isPhase3Active ? Colors.deepPurpleAccent : Colors.grey.shade700,
+                                color: isPhase3Active ? context.scheme.tertiary : context.scheme.onSurfaceVariant,
                                 shape: BoxShape.circle,
                               ),
-                              child: const Center(
+                              child: Center(
                                 child: Text(
                                   '3',
                                   style: TextStyle(
-                                    color: Colors.white,
+                                    color: context.scheme.onPrimary,
                                     fontWeight: FontWeight.bold,
                                     fontSize: 13,
                                   ),
@@ -566,7 +567,7 @@ class _ParallelAgentFlowScreenState extends State<ParallelAgentFlowScreen>
                                           'THỰC THI SONG SONG (PARALLEL AGENTS)',
                                           style: textTheme.titleSmall?.copyWith(
                                             fontWeight: FontWeight.w800,
-                                            color: Colors.deepPurpleAccent,
+                                            color: context.scheme.tertiary,
                                             letterSpacing: 0.5,
                                           ),
                                         ),
@@ -576,16 +577,16 @@ class _ParallelAgentFlowScreenState extends State<ParallelAgentFlowScreen>
                                         Container(
                                           padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
                                           decoration: BoxDecoration(
-                                            color: Colors.orange.withAlpha(35),
+                                            color: context.status.warning.withAlpha(35),
                                             borderRadius: BorderRadius.circular(6),
-                                            border: Border.all(color: Colors.orange),
+                                            border: Border.all(color: context.status.warning),
                                           ),
                                           child: Text(
                                             'PARALLEL ACTIVE',
                                             style: textTheme.labelSmall?.copyWith(
                                               fontSize: 9,
                                               fontWeight: FontWeight.w900,
-                                              color: Colors.orange,
+                                              color: context.status.warning,
                                             ),
                                           ),
                                         ),
@@ -610,7 +611,7 @@ class _ParallelAgentFlowScreenState extends State<ParallelAgentFlowScreen>
                           _buildInteractiveAgentCard(
                             context,
                             lane: coordinatorLane,
-                            accentColor: Colors.deepPurpleAccent,
+                            accentColor: context.scheme.tertiary,
                             icon: Icons.hub_rounded,
                             isMobile: isMobile,
                             subtitle: 'Orchestrator Lead • Phân chia nhiệm vụ song song',
@@ -628,7 +629,7 @@ class _ParallelAgentFlowScreenState extends State<ParallelAgentFlowScreen>
                                       Icons.south_west_rounded,
                                       size: 16,
                                       color: isPhase3Active
-                                          ? Colors.cyanAccent
+                                          ? context.scheme.secondary
                                           : colorScheme.outlineVariant,
                                     ),
                                     const SizedBox(width: 32),
@@ -636,7 +637,7 @@ class _ParallelAgentFlowScreenState extends State<ParallelAgentFlowScreen>
                                       Icons.south_east_rounded,
                                       size: 16,
                                       color: isPhase3Active
-                                          ? Colors.tealAccent
+                                          ? context.status.success
                                           : colorScheme.outlineVariant,
                                     ),
                                   ],
@@ -653,7 +654,7 @@ class _ParallelAgentFlowScreenState extends State<ParallelAgentFlowScreen>
                             _buildInteractiveAgentCard(
                               context,
                               lane: serverLane,
-                              accentColor: Colors.cyan,
+                              accentColor: context.scheme.secondary,
                               icon: Icons.dns_rounded,
                               isMobile: isMobile,
                               subtitle: 'Backend Go • Hexagonal Clean Arch',
@@ -663,7 +664,7 @@ class _ParallelAgentFlowScreenState extends State<ParallelAgentFlowScreen>
                             _buildInteractiveAgentCard(
                               context,
                               lane: appLane,
-                              accentColor: Colors.teal,
+                              accentColor: context.status.success,
                               icon: Icons.phone_android_rounded,
                               isMobile: isMobile,
                               subtitle: 'Frontend Flutter • Material 3 & Riverpod',
@@ -677,7 +678,7 @@ class _ParallelAgentFlowScreenState extends State<ParallelAgentFlowScreen>
                                     ? _buildInteractiveAgentCard(
                                         context,
                                         lane: serverLane,
-                                        accentColor: Colors.cyan,
+                                        accentColor: context.scheme.secondary,
                                         icon: Icons.dns_rounded,
                                         isMobile: isMobile,
                                         subtitle: 'Backend Go • Hexagonal Clean Arch',
@@ -690,7 +691,7 @@ class _ParallelAgentFlowScreenState extends State<ParallelAgentFlowScreen>
                                     ? _buildInteractiveAgentCard(
                                         context,
                                         lane: appLane,
-                                        accentColor: Colors.teal,
+                                        accentColor: context.status.success,
                                         icon: Icons.phone_android_rounded,
                                         isMobile: isMobile,
                                         subtitle: 'Frontend Flutter • Material 3 & Riverpod',
@@ -716,7 +717,7 @@ class _ParallelAgentFlowScreenState extends State<ParallelAgentFlowScreen>
                             _buildInteractiveAgentCard(
                               context,
                               lane: sub,
-                              accentColor: Colors.indigoAccent,
+                              accentColor: context.scheme.tertiary,
                               icon: Icons.psychology_rounded,
                               isMobile: isMobile,
                               subtitle: sub.role,
@@ -740,7 +741,7 @@ class _ParallelAgentFlowScreenState extends State<ParallelAgentFlowScreen>
                 subtitle:
                     'Kiểm tra chéo Canonical Endpoint, JSON payload, RBAC, Socket.IO. Xác nhận go build & flutter analyze sạch lỗi 100%.',
                 icon: Icons.verified_rounded,
-                nodeColor: Colors.green,
+                nodeColor: context.status.success,
                 status: isPhase4Active
                     ? 'VERIFYING...'
                     : ((verifierLane?.status == AgentStatus.completed ||
@@ -757,14 +758,14 @@ class _ParallelAgentFlowScreenState extends State<ParallelAgentFlowScreen>
                         child: Container(
                           padding: const EdgeInsets.all(10),
                           decoration: BoxDecoration(
-                            color: Colors.green.withAlpha(25),
+                            color: context.status.success.withAlpha(25),
                             borderRadius: BorderRadius.circular(8),
-                            border: Border.all(color: Colors.green.withAlpha(100)),
+                            border: Border.all(color: context.status.success.withAlpha(100)),
                           ),
                           child: Row(
                             children: [
-                              const Icon(Icons.task_alt_rounded,
-                                  size: 16, color: Colors.green),
+                              Icon(Icons.task_alt_rounded,
+                                  size: 16, color: context.status.success),
                               const SizedBox(width: 8),
                               Expanded(
                                 child: Text(
@@ -773,13 +774,13 @@ class _ParallelAgentFlowScreenState extends State<ParallelAgentFlowScreen>
                                       : 'Hợp đồng đồng bộ 100% • Sẵn sàng phát hành lên Production.',
                                   style: textTheme.bodySmall?.copyWith(
                                     fontWeight: FontWeight.w600,
-                                    color: Colors.green.shade700,
+                                    color: context.status.success,
                                     fontSize: 11,
                                   ),
                                 ),
                               ),
-                              const Icon(Icons.chevron_right_rounded,
-                                  size: 16, color: Colors.green),
+                              Icon(Icons.chevron_right_rounded,
+                                  size: 16, color: context.status.success),
                             ],
                           ),
                         ),
@@ -844,7 +845,7 @@ class _ParallelAgentFlowScreenState extends State<ParallelAgentFlowScreen>
             borderRadius: BorderRadius.circular(14),
             side: BorderSide(
               color: laneRunning
-                  ? Colors.orange.withAlpha(180)
+                  ? context.status.warning.withAlpha(180)
                   : colorScheme.outlineVariant,
               width: laneRunning ? 1.5 : 1.0,
             ),
@@ -862,7 +863,7 @@ class _ParallelAgentFlowScreenState extends State<ParallelAgentFlowScreen>
                       Container(
                         padding: const EdgeInsets.all(8),
                         decoration: BoxDecoration(
-                          color: (laneRunning ? Colors.orange : colorScheme.primary)
+                          color: (laneRunning ? context.status.warning : colorScheme.primary)
                               .withAlpha(30),
                           shape: BoxShape.circle,
                         ),
@@ -875,7 +876,7 @@ class _ParallelAgentFlowScreenState extends State<ParallelAgentFlowScreen>
                                       ? Icons.hub_rounded
                                       : Icons.phone_android_rounded,
                           size: 18,
-                          color: laneRunning ? Colors.orange : colorScheme.primary,
+                          color: laneRunning ? context.status.warning : colorScheme.primary,
                         ),
                       ),
                       const SizedBox(width: 10),
@@ -908,25 +909,25 @@ class _ParallelAgentFlowScreenState extends State<ParallelAgentFlowScreen>
                         ),
                         decoration: BoxDecoration(
                           color: laneRunning
-                              ? Colors.orange.withAlpha(35)
-                              : Colors.teal.withAlpha(35),
+                              ? context.status.warning.withAlpha(35)
+                              : context.status.success.withAlpha(35),
                           borderRadius: BorderRadius.circular(6),
                           border: Border.all(
                             color: laneRunning
-                                ? Colors.orange.withAlpha(160)
-                                : Colors.teal.withAlpha(120),
+                                ? context.status.warning.withAlpha(160)
+                                : context.status.success.withAlpha(120),
                           ),
                         ),
                         child: Row(
                           mainAxisSize: MainAxisSize.min,
                           children: [
                             if (laneRunning) ...[
-                              const SizedBox(
+                              SizedBox(
                                 width: 10,
                                 height: 10,
                                 child: CircularProgressIndicator(
                                   strokeWidth: 1.6,
-                                  color: Colors.orange,
+                                  color: context.status.warning,
                                 ),
                               ),
                               const SizedBox(width: 5),
@@ -936,7 +937,7 @@ class _ParallelAgentFlowScreenState extends State<ParallelAgentFlowScreen>
                               style: textTheme.labelSmall?.copyWith(
                                 fontSize: 9.5,
                                 fontWeight: FontWeight.w800,
-                                color: laneRunning ? Colors.orange : Colors.teal,
+                                color: laneRunning ? context.status.warning : context.status.success,
                               ),
                             ),
                           ],
@@ -961,7 +962,7 @@ class _ParallelAgentFlowScreenState extends State<ParallelAgentFlowScreen>
                             Icon(
                               laneRunning ? Icons.bolt_rounded : Icons.check_circle_rounded,
                               size: 14,
-                              color: laneRunning ? Colors.orange : Colors.teal,
+                              color: laneRunning ? context.status.warning : context.status.success,
                             ),
                             const SizedBox(width: 6),
                             Container(
@@ -1010,7 +1011,7 @@ class _ParallelAgentFlowScreenState extends State<ParallelAgentFlowScreen>
                     child: LinearProgressIndicator(
                       value: laneRunning ? null : lane.progress,
                       backgroundColor: colorScheme.surfaceContainerHighest,
-                      color: laneRunning ? Colors.orange : Colors.teal,
+                      color: laneRunning ? context.status.warning : context.status.success,
                       minHeight: 4,
                     ),
                   ),
@@ -1024,7 +1025,7 @@ class _ParallelAgentFlowScreenState extends State<ParallelAgentFlowScreen>
                           '${lane.filesModified.length} tệp đã sửa',
                           style: textTheme.labelSmall?.copyWith(
                             fontWeight: FontWeight.w700,
-                            color: Colors.teal,
+                            color: context.status.success,
                           ),
                         )
                       else
@@ -1080,7 +1081,7 @@ class _ParallelAgentFlowScreenState extends State<ParallelAgentFlowScreen>
           borderRadius: BorderRadius.circular(12),
           border: Border.all(
             color: isRunning
-                ? Colors.orange
+                ? context.status.warning
                 : accentColor.withAlpha(120),
             width: isRunning ? 1.5 : 1.0,
           ),
@@ -1090,24 +1091,24 @@ class _ParallelAgentFlowScreenState extends State<ParallelAgentFlowScreen>
           children: [
             Row(
               children: [
-                Icon(icon, size: 16, color: isRunning ? Colors.orange : accentColor),
+                Icon(icon, size: 16, color: isRunning ? context.status.warning : accentColor),
                 const SizedBox(width: 8),
                 Expanded(
                   child: Text(
                     lane.name,
                     style: textTheme.labelLarge?.copyWith(
                       fontWeight: FontWeight.w800,
-                      color: isRunning ? Colors.orange : accentColor,
+                      color: isRunning ? context.status.warning : accentColor,
                     ),
                   ),
                 ),
                 if (isRunning) ...[
-                  const SizedBox(
+                  SizedBox(
                     width: 12,
                     height: 12,
                     child: CircularProgressIndicator(
                       strokeWidth: 1.8,
-                      color: Colors.orange,
+                      color: context.status.warning,
                     ),
                   ),
                   const SizedBox(width: 6),
@@ -1115,7 +1116,7 @@ class _ParallelAgentFlowScreenState extends State<ParallelAgentFlowScreen>
                 Container(
                   padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
                   decoration: BoxDecoration(
-                    color: (isRunning ? Colors.orange : Colors.teal).withAlpha(30),
+                    color: (isRunning ? context.status.warning : context.status.success).withAlpha(30),
                     borderRadius: BorderRadius.circular(4),
                   ),
                   child: Text(
@@ -1123,7 +1124,7 @@ class _ParallelAgentFlowScreenState extends State<ParallelAgentFlowScreen>
                     style: textTheme.labelSmall?.copyWith(
                       fontSize: 8.5,
                       fontWeight: FontWeight.w800,
-                      color: isRunning ? Colors.orange : Colors.teal,
+                      color: isRunning ? context.status.warning : context.status.success,
                     ),
                   ),
                 ),
@@ -1151,7 +1152,7 @@ class _ParallelAgentFlowScreenState extends State<ParallelAgentFlowScreen>
                   Icon(
                     isRunning ? Icons.bolt_rounded : Icons.terminal_rounded,
                     size: 13,
-                    color: isRunning ? Colors.orange : colorScheme.primary,
+                    color: isRunning ? context.status.warning : colorScheme.primary,
                   ),
                   const SizedBox(width: 6),
                   Expanded(
@@ -1186,7 +1187,7 @@ class _ParallelAgentFlowScreenState extends State<ParallelAgentFlowScreen>
                     '${lane.filesModified.length} tệp sửa',
                     style: textTheme.labelSmall?.copyWith(
                       fontSize: 10,
-                      color: Colors.teal,
+                      color: context.status.success,
                       fontWeight: FontWeight.w700,
                     ),
                   ),
@@ -1197,7 +1198,7 @@ class _ParallelAgentFlowScreenState extends State<ParallelAgentFlowScreen>
                   style: textTheme.labelSmall?.copyWith(
                     fontSize: 9.5,
                     fontWeight: FontWeight.w700,
-                    color: isRunning ? Colors.orange : colorScheme.primary,
+                    color: isRunning ? context.status.warning : colorScheme.primary,
                   ),
                 ),
               ],
@@ -1250,7 +1251,7 @@ class _ParallelAgentFlowScreenState extends State<ParallelAgentFlowScreen>
                         Container(
                           padding: const EdgeInsets.all(10),
                           decoration: BoxDecoration(
-                            color: (isRunning ? Colors.orange : colorScheme.primary)
+                            color: (isRunning ? context.status.warning : colorScheme.primary)
                                 .withAlpha(35),
                             borderRadius: BorderRadius.circular(12),
                           ),
@@ -1260,7 +1261,7 @@ class _ParallelAgentFlowScreenState extends State<ParallelAgentFlowScreen>
                                 : lane.name.contains('verifier')
                                     ? Icons.verified_user_rounded
                                     : Icons.phone_android_rounded,
-                            color: isRunning ? Colors.orange : colorScheme.primary,
+                            color: isRunning ? context.status.warning : colorScheme.primary,
                             size: 22,
                           ),
                         ),
@@ -1288,11 +1289,11 @@ class _ParallelAgentFlowScreenState extends State<ParallelAgentFlowScreen>
                           padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
                           decoration: BoxDecoration(
                             color: isRunning
-                                ? Colors.orange.withAlpha(35)
-                                : Colors.teal.withAlpha(35),
+                                ? context.status.warning.withAlpha(35)
+                                : context.status.success.withAlpha(35),
                             borderRadius: BorderRadius.circular(6),
                             border: Border.all(
-                              color: isRunning ? Colors.orange : Colors.teal,
+                              color: isRunning ? context.status.warning : context.status.success,
                             ),
                           ),
                           child: Text(
@@ -1300,7 +1301,7 @@ class _ParallelAgentFlowScreenState extends State<ParallelAgentFlowScreen>
                             style: textTheme.labelSmall?.copyWith(
                               fontSize: 10,
                               fontWeight: FontWeight.w900,
-                              color: isRunning ? Colors.orange : Colors.teal,
+                              color: isRunning ? context.status.warning : context.status.success,
                             ),
                           ),
                         ),
@@ -1330,7 +1331,7 @@ class _ParallelAgentFlowScreenState extends State<ParallelAgentFlowScreen>
                             borderRadius: BorderRadius.circular(12),
                             border: Border.all(
                               color: isRunning
-                                  ? Colors.orange.withAlpha(160)
+                                  ? context.status.warning.withAlpha(160)
                                   : colorScheme.outlineVariant,
                             ),
                           ),
@@ -1342,7 +1343,7 @@ class _ParallelAgentFlowScreenState extends State<ParallelAgentFlowScreen>
                                   Icon(
                                     isRunning ? Icons.bolt_rounded : Icons.check_circle_rounded,
                                     size: 16,
-                                    color: isRunning ? Colors.orange : Colors.teal,
+                                    color: isRunning ? context.status.warning : context.status.success,
                                   ),
                                   const SizedBox(width: 8),
                                   Text(
@@ -1356,12 +1357,12 @@ class _ParallelAgentFlowScreenState extends State<ParallelAgentFlowScreen>
                                   ),
                                   const Spacer(),
                                   if (isRunning)
-                                    const SizedBox(
+                                    SizedBox(
                                       width: 12,
                                       height: 12,
                                       child: CircularProgressIndicator(
                                         strokeWidth: 2,
-                                        color: Colors.orange,
+                                        color: context.status.warning,
                                       ),
                                     ),
                                 ],
@@ -1457,10 +1458,10 @@ class _ParallelAgentFlowScreenState extends State<ParallelAgentFlowScreen>
                                     child: Row(
                                       mainAxisSize: MainAxisSize.min,
                                       children: [
-                                        const Icon(
+                                        Icon(
                                           Icons.edit_document,
                                           size: 13,
-                                          color: Colors.teal,
+                                          color: context.status.success,
                                         ),
                                         const SizedBox(width: 6),
                                         Text(
@@ -1494,7 +1495,7 @@ class _ParallelAgentFlowScreenState extends State<ParallelAgentFlowScreen>
                               Text(
                                 'Đang ghi nhận...',
                                 style: textTheme.labelSmall?.copyWith(
-                                  color: Colors.orange,
+                                  color: context.status.warning,
                                   fontWeight: FontWeight.w700,
                                 ),
                               ),
@@ -1959,13 +1960,13 @@ class _ParallelAgentFlowScreenState extends State<ParallelAgentFlowScreen>
       return Container(
         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
         decoration: BoxDecoration(
-          color: Colors.teal.withAlpha(18),
+          color: context.status.success.withAlpha(18),
           borderRadius: BorderRadius.circular(14),
-          border: Border.all(color: Colors.teal.withAlpha(80)),
+          border: Border.all(color: context.status.success.withAlpha(80)),
         ),
         child: Row(
           children: [
-            const Icon(Icons.check_circle_rounded, color: Colors.teal, size: 20),
+            Icon(Icons.check_circle_rounded, color: context.status.success, size: 20),
             const SizedBox(width: 10),
             Expanded(
               child: Column(
@@ -1975,7 +1976,7 @@ class _ParallelAgentFlowScreenState extends State<ParallelAgentFlowScreen>
                     'Subagents ở chế độ Chờ / Đã hoàn thành',
                     style: textTheme.labelLarge?.copyWith(
                       fontWeight: FontWeight.w700,
-                      color: Colors.teal,
+                      color: context.status.success,
                     ),
                   ),
                   Text(
@@ -1996,9 +1997,9 @@ class _ParallelAgentFlowScreenState extends State<ParallelAgentFlowScreen>
     return Container(
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
-        color: Colors.orange.withAlpha(20),
+        color: context.status.warning.withAlpha(20),
         borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: Colors.orange.withAlpha(130), width: 1.5),
+        border: Border.all(color: context.status.warning.withAlpha(130), width: 1.5),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -2012,11 +2013,11 @@ class _ParallelAgentFlowScreenState extends State<ParallelAgentFlowScreen>
                     width: 10,
                     height: 10,
                     decoration: BoxDecoration(
-                      color: Colors.orange,
+                      color: context.status.warning,
                       shape: BoxShape.circle,
                       boxShadow: [
                         BoxShadow(
-                          color: Colors.orange.withAlpha((140 * _pulseController.value).toInt()),
+                          color: context.status.warning.withAlpha((140 * _pulseController.value).toInt()),
                           blurRadius: 6,
                           spreadRadius: 2,
                         ),
@@ -2030,24 +2031,24 @@ class _ParallelAgentFlowScreenState extends State<ParallelAgentFlowScreen>
                 '${runningLanes.length} Subagent đang chạy song song',
                 style: textTheme.titleSmall?.copyWith(
                   fontWeight: FontWeight.w800,
-                  color: Colors.orange,
+                  color: context.status.warning,
                 ),
               ),
               const Spacer(),
               Container(
                 padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
                 decoration: BoxDecoration(
-                  color: Colors.orange.withAlpha(40),
+                  color: context.status.warning.withAlpha(40),
                   borderRadius: BorderRadius.circular(12),
-                  border: Border.all(color: Colors.orange.withAlpha(160)),
+                  border: Border.all(color: context.status.warning.withAlpha(160)),
                 ),
-                child: const Text(
+                child: Text(
                   'REALTIME EXECUTING',
                   style: TextStyle(
                     fontSize: 9.5,
                     fontWeight: FontWeight.w900,
                     letterSpacing: 0.5,
-                    color: Colors.orange,
+                    color: context.status.warning,
                   ),
                 ),
               ),
@@ -2062,7 +2063,7 @@ class _ParallelAgentFlowScreenState extends State<ParallelAgentFlowScreen>
                 decoration: BoxDecoration(
                   color: colorScheme.surfaceContainerHigh,
                   borderRadius: BorderRadius.circular(12),
-                  border: Border.all(color: Colors.orange.withAlpha(90)),
+                  border: Border.all(color: context.status.warning.withAlpha(90)),
                 ),
                 child: Row(
                   children: [
@@ -2112,11 +2113,11 @@ class _ParallelAgentFlowScreenState extends State<ParallelAgentFlowScreen>
                       style: OutlinedButton.styleFrom(
                         visualDensity: VisualDensity.compact,
                         padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-                        side: BorderSide(color: Colors.orange.withAlpha(150)),
+                        side: BorderSide(color: context.status.warning.withAlpha(150)),
                       ),
                       onPressed: () => _showAgentDetailModal(context, lane),
-                      icon: const Icon(Icons.tune_rounded, size: 14, color: Colors.orange),
-                      label: const Text('Xem Lane', style: TextStyle(fontSize: 11, color: Colors.orange)),
+                      icon: Icon(Icons.tune_rounded, size: 14, color: context.status.warning),
+                      label: Text('Xem Lane', style: TextStyle(fontSize: 11, color: context.status.warning)),
                     ),
                   ],
                 ),
@@ -2145,7 +2146,7 @@ class _ParallelAgentFlowScreenState extends State<ParallelAgentFlowScreen>
         icon,
         size: 14,
         color: isSelected
-            ? (isOrange ? Colors.orange : colorScheme.primary)
+            ? (isOrange ? context.status.warning : colorScheme.primary)
             : colorScheme.onSurfaceVariant,
       ),
       label: Text(
@@ -2154,15 +2155,15 @@ class _ParallelAgentFlowScreenState extends State<ParallelAgentFlowScreen>
           fontSize: 12,
           fontWeight: isSelected ? FontWeight.w700 : FontWeight.w500,
           color: isSelected
-              ? (isOrange ? Colors.orange : colorScheme.primary)
+              ? (isOrange ? context.status.warning : colorScheme.primary)
               : colorScheme.onSurfaceVariant,
         ),
       ),
       backgroundColor: colorScheme.surfaceContainer,
-      selectedColor: (isOrange ? Colors.orange : colorScheme.primary).withAlpha(35),
+      selectedColor: (isOrange ? context.status.warning : colorScheme.primary).withAlpha(35),
       side: BorderSide(
         color: isSelected
-            ? (isOrange ? Colors.orange : colorScheme.primary)
+            ? (isOrange ? context.status.warning : colorScheme.primary)
             : colorScheme.outlineVariant,
       ),
       onSelected: (_) {
@@ -2187,23 +2188,23 @@ class _ParallelAgentFlowScreenState extends State<ParallelAgentFlowScreen>
     IconData typeIcon;
     switch (item.type) {
       case 'dispatch':
-        badgeColor = Colors.deepPurpleAccent;
+        badgeColor = context.scheme.tertiary;
         badgeText = 'GIAO VIỆC';
         typeIcon = Icons.assignment_outlined;
         break;
       case 'report':
-        badgeColor = Colors.teal;
+        badgeColor = context.status.success;
         badgeText = 'BÁO CÁO';
         typeIcon = Icons.assignment_turned_in_outlined;
         break;
       case 'message':
-        badgeColor = Colors.blueAccent;
+        badgeColor = context.scheme.secondary;
         badgeText = 'TRAO ĐỔI';
         typeIcon = Icons.chat_bubble_outline_rounded;
         break;
       case 'action':
       default:
-        badgeColor = Colors.orange;
+        badgeColor = context.status.warning;
         badgeText = 'ĐANG XỬ LÝ';
         typeIcon = Icons.bolt_rounded;
         break;
@@ -2219,7 +2220,7 @@ class _ParallelAgentFlowScreenState extends State<ParallelAgentFlowScreen>
         borderRadius: BorderRadius.circular(14),
         side: BorderSide(
           color: item.status == AgentStatus.running
-              ? Colors.orange.withAlpha(140)
+              ? context.status.warning.withAlpha(140)
               : colorScheme.outlineVariant,
           width: item.status == AgentStatus.running ? 1.5 : 1.0,
         ),
@@ -2354,15 +2355,15 @@ class _ParallelAgentFlowScreenState extends State<ParallelAgentFlowScreen>
                     Container(
                       padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
                       decoration: BoxDecoration(
-                        color: Colors.blueAccent.withAlpha(25),
+                        color: context.scheme.secondary.withAlpha(25),
                         borderRadius: BorderRadius.circular(4),
                       ),
                       child: Text(
                         item.targetRepo!,
-                        style: const TextStyle(
+                        style: TextStyle(
                           fontSize: 10,
                           fontWeight: FontWeight.w600,
-                          color: Colors.blueAccent,
+                          color: context.scheme.secondary,
                         ),
                       ),
                     ),
@@ -2802,22 +2803,22 @@ class _ParallelAgentFlowScreenState extends State<ParallelAgentFlowScreen>
     IconData icon;
     final lower = agentName.toLowerCase();
     if (lower.contains('coordinator')) {
-      bg = Colors.deepPurple;
+      bg = context.scheme.tertiary;
       icon = Icons.hub_rounded;
     } else if (lower.contains('server')) {
-      bg = Colors.blue;
+      bg = context.scheme.secondary;
       icon = Icons.dns_rounded;
     } else if (lower.contains('app')) {
-      bg = Colors.teal;
+      bg = context.status.success;
       icon = Icons.phone_android_rounded;
     } else if (lower.contains('verifier')) {
-      bg = Colors.green;
+      bg = context.status.success;
       icon = Icons.verified_user_rounded;
     } else if (lower.contains('research')) {
-      bg = Colors.amber;
+      bg = context.status.warning;
       icon = Icons.travel_explore_rounded;
     } else {
-      bg = Colors.indigo;
+      bg = context.scheme.tertiary;
       icon = Icons.smart_toy_rounded;
     }
     return Container(
@@ -2907,7 +2908,7 @@ class _ParallelAgentFlowScreenState extends State<ParallelAgentFlowScreen>
                       color: colorScheme.surfaceContainerHigh,
                       borderRadius: BorderRadius.circular(12),
                       border: Border.all(
-                        color: Colors.teal.withAlpha(90),
+                        color: context.status.success.withAlpha(90),
                       ),
                     ),
                     child: Row(
@@ -2915,12 +2916,12 @@ class _ParallelAgentFlowScreenState extends State<ParallelAgentFlowScreen>
                       children: [
                         Container(
                           padding: const EdgeInsets.all(4),
-                          decoration: const BoxDecoration(
-                            color: Colors.teal,
+                          decoration: BoxDecoration(
+                            color: context.status.success,
                             shape: BoxShape.circle,
                           ),
-                          child: const Icon(Icons.check,
-                              size: 14, color: Colors.white),
+                          child: Icon(Icons.check,
+                              size: 14, color: context.scheme.onPrimary),
                         ),
                         const SizedBox(width: 12),
                         Expanded(
@@ -2983,7 +2984,7 @@ class _ParallelAgentFlowScreenState extends State<ParallelAgentFlowScreen>
             border: Border.all(
               color: isActive
                   ? nodeColor.withAlpha((140 + pulse * 115).toInt())
-                  : (isCompleted ? Colors.teal.withAlpha(120) : colorScheme.outlineVariant),
+                  : (isCompleted ? context.status.success.withAlpha(120) : colorScheme.outlineVariant),
               width: isActive ? 2.0 : 1.0,
             ),
             boxShadow: isActive
@@ -3007,16 +3008,16 @@ class _ParallelAgentFlowScreenState extends State<ParallelAgentFlowScreen>
                     decoration: BoxDecoration(
                       color: isActive
                           ? nodeColor
-                          : (isCompleted ? Colors.teal : Colors.grey.shade700),
+                          : (isCompleted ? context.status.success : context.scheme.onSurfaceVariant),
                       shape: BoxShape.circle,
                     ),
                     child: Center(
                       child: isCompleted && !isActive
-                          ? const Icon(Icons.check, size: 14, color: Colors.white)
+                          ? Icon(Icons.check, size: 14, color: context.scheme.onPrimary)
                           : Text(
                               '$stepNumber',
-                              style: const TextStyle(
-                                color: Colors.white,
+                              style: TextStyle(
+                                color: context.scheme.onPrimary,
                                 fontWeight: FontWeight.bold,
                                 fontSize: 12.5,
                               ),
@@ -3038,7 +3039,7 @@ class _ParallelAgentFlowScreenState extends State<ParallelAgentFlowScreen>
                   Container(
                     padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2.5),
                     decoration: BoxDecoration(
-                      color: (isActive ? nodeColor : (isCompleted ? Colors.teal : Colors.grey))
+                      color: (isActive ? nodeColor : (isCompleted ? context.status.success : context.scheme.onSurfaceVariant))
                           .withAlpha(30),
                       borderRadius: BorderRadius.circular(6),
                     ),
@@ -3047,7 +3048,7 @@ class _ParallelAgentFlowScreenState extends State<ParallelAgentFlowScreen>
                       style: textTheme.labelSmall?.copyWith(
                         fontSize: 9.5,
                         fontWeight: FontWeight.w900,
-                        color: isActive ? nodeColor : (isCompleted ? Colors.teal : Colors.grey),
+                        color: isActive ? nodeColor : (isCompleted ? context.status.success : context.scheme.onSurfaceVariant),
                       ),
                     ),
                   ),
@@ -3085,7 +3086,7 @@ class _ParallelAgentFlowScreenState extends State<ParallelAgentFlowScreen>
         child: Icon(
           Icons.arrow_downward_rounded,
           size: 20,
-          color: isActive ? Colors.deepPurpleAccent : colorScheme.outlineVariant,
+          color: isActive ? context.scheme.tertiary : colorScheme.outlineVariant,
         ),
       ),
     );

@@ -2,6 +2,7 @@ mod chat;
 mod claude_code;
 mod models;
 mod scanner;
+mod store;
 mod tray;
 
 use axum::{
@@ -15,8 +16,8 @@ use axum::{
 use chat::AppState;
 use chrono::{DateTime, Utc};
 use models::{
-    ChatSendRequest, ChatStopRequest, ServerDirListResponse, ServerFileEntry,
-    ServerFileReadResponse,
+    ChatSendRequest, ChatStopRequest, ClaudeExtensionsResponse, ConversationModelRequest,
+    ServerDirListResponse, ServerFileEntry, ServerFileReadResponse,
 };
 use serde_json::json;
 use socketioxide::{
@@ -73,6 +74,7 @@ fn setup_socket_handlers(io: &SocketIo, state: AppState) {
                 async move {
                     let res = chat::start_chat_turn(st.clone(), req).await;
                     st.broadcast_session_update(&res.conversation_id);
+                    st.emit_session_files_to_room(&res.conversation_id);
                     let _ = ack.send(&res);
                 }
             },
@@ -86,6 +88,38 @@ fn setup_socket_handlers(io: &SocketIo, state: AppState) {
                 async move {
                     let stopped = chat::stop_chat_turn(&st, &req.conversation_id);
                     let _ = ack.send(&json!({ "ok": true, "stopped": stopped }));
+                }
+            },
+        );
+
+        // Join vào room conversation để nhận file changes updates
+        socket.on(
+            "join-conversation",
+            move |s: SocketRef, Data::<serde_json::Value>(data)| {
+                async move {
+                    if let Some(conv_id) = data.get("conversationId").and_then(|x| x.as_str()) {
+                        let room = format!("conv:{}", conv_id);
+                        let _ = s.join(room.clone());
+                        tracing::info!("📍 Socket {} joined room: {}", s.id, room);
+                        let _ = s.emit("joined-conversation", &json!({
+                            "ok": true,
+                            "conversationId": conv_id,
+                        }));
+                    }
+                }
+            },
+        );
+
+        // Leave khỏi room conversation
+        socket.on(
+            "leave-conversation",
+            move |s: SocketRef, Data::<serde_json::Value>(data)| {
+                async move {
+                    if let Some(conv_id) = data.get("conversationId").and_then(|x| x.as_str()) {
+                        let room = format!("conv:{}", conv_id);
+                        let _ = s.leave(room.clone());
+                        tracing::info!("📍 Socket {} left room: {}", s.id, room);
+                    }
                 }
             },
         );
@@ -186,12 +220,52 @@ async fn handle_chat_send(
 ) -> impl IntoResponse {
     let result = chat::start_chat_turn(state.clone(), req).await;
     state.broadcast_session_update(&result.conversation_id);
+    state.emit_session_files_to_room(&result.conversation_id);
     let status = if result.ok {
         StatusCode::OK
     } else {
         StatusCode::BAD_REQUEST
     };
     (status, Json(result))
+}
+
+/// Model đã lưu của một conversation (`model` = null nếu chưa có)
+async fn handle_conversation_model_get(
+    Query(params): Query<HashMap<String, String>>,
+) -> impl IntoResponse {
+    let cid = params.get("id").map(|s| s.trim().to_string()).unwrap_or_default();
+    if cid.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": "Missing conversation id"})),
+        );
+    }
+    let model = store::conversation_model(&cid);
+    (
+        StatusCode::OK,
+        Json(json!({"conversationId": cid, "model": model})),
+    )
+}
+
+/// Lưu model đã chọn cho một conversation
+async fn handle_conversation_model_set(
+    Json(req): Json<ConversationModelRequest>,
+) -> impl IntoResponse {
+    let cid = req.conversation_id.trim();
+    let model = req.model.trim();
+    if cid.is_empty() || model.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"ok": false, "error": "Thiếu conversationId hoặc model"})),
+        );
+    }
+    let saved = store::set_conversation_model(cid, model);
+    let status = if saved {
+        StatusCode::OK
+    } else {
+        StatusCode::INTERNAL_SERVER_ERROR
+    };
+    (status, Json(json!({"ok": saved, "conversationId": cid, "model": model})))
 }
 
 async fn handle_chat_stop(
@@ -248,6 +322,20 @@ async fn handle_project_agents(
             rules,
             error: None,
         }),
+    )
+}
+
+async fn handle_claude_extensions(
+    Query(params): Query<HashMap<String, String>>,
+) -> impl IntoResponse {
+    let project_path = params
+        .get("path")
+        .map(|s| s.trim().to_string())
+        .unwrap_or_default();
+    let items = claude_code::scan_claude_extensions(&project_path);
+    (
+        StatusCode::OK,
+        Json(ClaudeExtensionsResponse { ok: true, items }),
     )
 }
 
@@ -317,6 +405,7 @@ async fn handle_plan_action(
 
         let result = chat::start_chat_turn(state.clone(), send_req).await;
         state.broadcast_session_update(conv_id);
+        state.emit_session_files_to_room(conv_id);
 
         (
             StatusCode::OK,
@@ -351,6 +440,7 @@ async fn handle_plan_action(
 
         let result = chat::start_chat_turn(state.clone(), send_req).await;
         state.broadcast_session_update(conv_id);
+        state.emit_session_files_to_room(conv_id);
 
         (
             StatusCode::OK,
@@ -1126,9 +1216,23 @@ async fn handle_file_download(Query(params): Query<HashMap<String, String>>) -> 
         _ => "application/octet-stream",
     };
 
-    match tokio::fs::read(file_path).await {
-        Ok(bytes) => {
-            let len = bytes.len();
+    // Lấy kích thước file để gửi Content-Length (giúp client hiển thị progress đúng)
+    let file_size = match tokio::fs::metadata(file_path).await {
+        Ok(m) => m.len(),
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "ok": false, "error": format!("Không đọc được metadata: {}", e) })),
+            )
+                .into_response();
+        }
+    };
+
+    // Mở file và stream trực tiếp ra response — không load toàn bộ vào RAM
+    match tokio::fs::File::open(file_path).await {
+        Ok(file) => {
+            let stream = tokio_util::io::ReaderStream::new(file);
+            let body = Body::from_stream(stream);
             Response::builder()
                 .status(StatusCode::OK)
                 .header(header::CONTENT_TYPE, mime)
@@ -1136,17 +1240,113 @@ async fn handle_file_download(Query(params): Query<HashMap<String, String>>) -> 
                     header::CONTENT_DISPOSITION,
                     format!("inline; filename=\"{}\"", filename),
                 )
-                .header(header::CONTENT_LENGTH, len.to_string())
-                .header(header::CACHE_CONTROL, "public, max-age=3600")
-                .body(Body::from(bytes))
+                .header(header::CONTENT_LENGTH, file_size.to_string())
+                .header(header::CACHE_CONTROL, "no-cache")
+                .body(body)
                 .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
         }
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({ "ok": false, "error": format!("Không thể đọc tệp: {}", e) })),
+            Json(json!({ "ok": false, "error": format!("Không thể mở tệp: {}", e) })),
         )
             .into_response(),
     }
+}
+
+async fn handle_ai_questions(
+    Query(params): Query<HashMap<String, String>>,
+    State(state): State<AppState>,
+) -> impl IntoResponse {
+    let conversation_id = match params.get("conversationId").map(|s| s.trim()).filter(|s| !s.is_empty()) {
+        Some(id) => id.to_string(),
+        None => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({ "ok": false, "error": "Thiếu conversationId" })),
+            )
+                .into_response();
+        }
+    };
+
+    let questions = state
+        .ai_questions
+        .lock()
+        .map(|g| g.get(&conversation_id).cloned().unwrap_or_default())
+        .unwrap_or_default();
+
+    (
+        StatusCode::OK,
+        Json(json!({
+            "ok": true,
+            "conversationId": conversation_id,
+            "questions": questions
+        })),
+    )
+        .into_response()
+}
+
+async fn handle_ai_question_answer(
+    State(state): State<AppState>,
+    body: axum::body::Body,
+) -> impl IntoResponse {
+    use axum::body::to_bytes;
+
+    let bytes = match to_bytes(body, usize::MAX).await {
+        Ok(b) => b,
+        Err(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({ "ok": false, "error": "Không thể đọc body" })),
+            )
+                .into_response();
+        }
+    };
+
+    let req: serde_json::Result<models::AIQuestionResponse> = serde_json::from_slice(&bytes);
+    let req = match req {
+        Ok(r) => r,
+        Err(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({ "ok": false, "error": "JSON không hợp lệ" })),
+            )
+                .into_response();
+        }
+    };
+
+    let question_id = req.question_id.clone();
+    let answer = req.answer.clone();
+
+    // Cập nhật câu hỏi với câu trả lời
+    if let Ok(mut questions_map) = state.ai_questions.lock() {
+        for (_conv_id, questions) in questions_map.iter_mut() {
+            for question in questions.iter_mut() {
+                if question.id == question_id {
+                    question.answer = Some(answer.clone());
+                    question.answered_at = Some(Utc::now().to_rfc3339());
+                    question.is_pending = false;
+
+                    // Phát event socket để cập nhật UI
+                    if let Ok(val) = serde_json::to_value(question) {
+                        if let Some(ns) = state.io.of("/") {
+                            let _ = ns.emit("ai-question:answered", &val);
+                        }
+                    }
+                    break;
+                }
+            }
+        }
+    }
+
+    (
+        StatusCode::OK,
+        Json(json!({
+            "ok": true,
+            "questionId": question_id,
+            "answer": answer
+        })),
+    )
+        .into_response()
 }
 
 #[tokio::main]
@@ -1222,8 +1422,13 @@ async fn main() {
         .route("/api/ping", get(handle_ping))
         .route("/api/chat/send", post(handle_chat_send))
         .route("/api/chat/stop", post(handle_chat_stop))
+        .route(
+            "/api/conversation/model",
+            get(handle_conversation_model_get).post(handle_conversation_model_set),
+        )
         .route("/api/project/create", post(handle_project_create))
         .route("/api/project/agents", get(handle_project_agents))
+        .route("/api/claude/extensions", get(handle_claude_extensions))
         .route("/api/git/push", post(handle_git_push))
         .route("/api/git/history", get(handle_git_history))
         .route("/api/git/commit", get(handle_git_commit))
@@ -1232,6 +1437,8 @@ async fn main() {
         .route("/api/files/list", get(handle_files_list))
         .route("/api/files/read", get(handle_file_read))
         .route("/api/files/download", get(handle_file_download))
+        .route("/api/ai-questions", get(handle_ai_questions))
+        .route("/api/ai-questions/answer", post(handle_ai_question_answer))
         .layer(io_layer)
         .layer(CorsLayer::permissive())
         .with_state(app_state);

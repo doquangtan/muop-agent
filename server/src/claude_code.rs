@@ -4,9 +4,10 @@
 //! Các session được cache theo (mtime, size) nên chỉ parse lại khi file thay đổi.
 
 use crate::models::{
-    AgentStep, ChatTurnStreamState, CommandExecutionRecord, ConversationSession, FileTouchRecord,
-    ModelQuotaBucket, ModelQuotaGroup, SessionStepsPageResponse, ToolCallInfo,
+    AgentStep, ChatTurnStreamState, CommandExecutionRecord, ConversationSession, CustomAgentSpec,
+    FileTouchRecord, ModelQuotaBucket, ModelQuotaGroup, SessionStepsPageResponse, ToolCallInfo,
 };
+use crate::scanner::parse_markdown_frontmatter;
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::fs;
@@ -25,6 +26,7 @@ const USAGE_URL: &str = "https://api.anthropic.com/api/oauth/usage";
 struct LimitsCache {
     fetched_at: Instant,
     group: Option<ModelQuotaGroup>,
+    last_successful: Option<ModelQuotaGroup>,
 }
 
 static LIMITS_CACHE: OnceLock<Mutex<Option<LimitsCache>>> = OnceLock::new();
@@ -70,8 +72,8 @@ fn read_oauth_credentials() -> Result<(String, String), String> {
 }
 
 /// Gọi endpoint usage (cùng nguồn với `/usage` của Claude Code). Token được đưa qua stdin của curl
-/// (`-K -`) để không lộ trên dòng lệnh.
-fn fetch_usage_json(token: &str) -> Result<Value, String> {
+/// (`-K -`) để không lộ trên dòng lệnh. Trả về Err(msg, is_rate_limited) để phân biệt.
+fn fetch_usage_json(token: &str) -> Result<Value, (String, bool)> {
     let config = format!(
         "header = \"Authorization: Bearer {}\"\nheader = \"anthropic-beta: oauth-2025-04-20\"\nuser-agent = \"muop-agent\"\n",
         token
@@ -82,17 +84,24 @@ fn fetch_usage_json(token: &str) -> Result<Value, String> {
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .spawn()
-        .map_err(|e| format!("Không chạy được curl: {}", e))?;
+        .map_err(|e| (format!("Không chạy được curl: {}", e), false))?;
     if let Some(mut stdin) = child.stdin.take() {
         let _ = stdin.write_all(config.as_bytes());
     }
     let out = child
         .wait_with_output()
-        .map_err(|e| format!("curl lỗi: {}", e))?;
+        .map_err(|e| (format!("curl lỗi: {}", e), false))?;
     let v: Value = serde_json::from_slice(&out.stdout)
-        .map_err(|_| "Không đọc được phản hồi usage từ Anthropic".to_string())?;
-    if v.get("error").is_some() {
-        return Err("Anthropic từ chối yêu cầu usage (token có thể đã hết hiệu lực)".to_string());
+        .map_err(|_| ("Không đọc được phản hồi usage từ Anthropic".to_string(), false))?;
+    if let Some(err) = v.get("error") {
+        let error_type = err.get("type").and_then(|x| x.as_str()).unwrap_or("unknown");
+        let error_msg = err.get("message").and_then(|x| x.as_str()).unwrap_or(error_type);
+
+        if error_type == "rate_limit_error" {
+            return Err(("Anthropic API bị rate limit, thử lại sau".to_string(), true));
+        }
+
+        return Err((format!("Lỗi từ Anthropic: {}", error_msg), false));
     }
     Ok(v)
 }
@@ -154,31 +163,37 @@ fn build_limit_group(usage: &Value, plan: &str) -> ModelQuotaGroup {
     }
 }
 
-fn fetch_limit_group_uncached() -> Option<ModelQuotaGroup> {
+fn fetch_limit_group_uncached() -> (Option<ModelQuotaGroup>, bool) {
     let creds_path = home_dir().join(".claude/.credentials.json");
     if !creds_path.exists() {
-        return None;
+        return (None, false);
     }
-    let group = match read_oauth_credentials() {
+    match read_oauth_credentials() {
         Ok((token, plan)) => match fetch_usage_json(&token) {
-            Ok(usage) => build_limit_group(&usage, &plan),
-            Err(msg) => ModelQuotaGroup {
-                display_name: format!("{} ({})", CLAUDE_LIMIT_GROUP_PREFIX, plan),
+            Ok(usage) => (Some(build_limit_group(&usage, &plan)), false),
+            Err((msg, is_rate_limited)) => {
+                let group = ModelQuotaGroup {
+                    display_name: format!("{} ({})", CLAUDE_LIMIT_GROUP_PREFIX, plan),
+                    description: msg,
+                    buckets: Vec::new(),
+                };
+                (Some(group), is_rate_limited)
+            }
+        },
+        Err(msg) => (
+            Some(ModelQuotaGroup {
+                display_name: CLAUDE_LIMIT_GROUP_PREFIX.to_string(),
                 description: msg,
                 buckets: Vec::new(),
-            },
-        },
-        Err(msg) => ModelQuotaGroup {
-            display_name: CLAUDE_LIMIT_GROUP_PREFIX.to_string(),
-            description: msg,
-            buckets: Vec::new(),
-        },
-    };
-    Some(group)
+            }),
+            false,
+        ),
+    }
 }
 
 /// Limit Claude Code CLI dưới dạng `ModelQuotaGroup` để dùng chung luồng quota với Antigravity.
 /// Kết quả được cache `LIMITS_CACHE_TTL`. Trả về `None` nếu chưa từng đăng nhập Claude Code CLI.
+/// Khi rate limited, dùng kết quả lần trước nếu có; khi fetch thành công, lưu lại kết quả.
 pub fn fetch_limit_group() -> Option<ModelQuotaGroup> {
     if let Ok(cache) = limits_cache().lock() {
         if let Some(c) = cache.as_ref() {
@@ -187,11 +202,30 @@ pub fn fetch_limit_group() -> Option<ModelQuotaGroup> {
             }
         }
     }
-    let group = fetch_limit_group_uncached();
+    let (group, is_rate_limited) = fetch_limit_group_uncached();
     if let Ok(mut cache) = limits_cache().lock() {
+        if let Some(ref g) = group {
+            // Nếu fetch thành công (không rate limit), lưu lại kết quả mới
+            if !is_rate_limited && !g.buckets.is_empty() {
+                *cache = Some(LimitsCache {
+                    fetched_at: Instant::now(),
+                    group: Some(g.clone()),
+                    last_successful: Some(g.clone()),
+                });
+                return Some(g.clone());
+            }
+            // Nếu rate limited nhưng có kết quả trước đó, dùng lại kết quả cũ
+            if is_rate_limited {
+                if let Some(ref prev) = cache.as_ref().and_then(|c| c.last_successful.clone()) {
+                    return Some(prev.clone());
+                }
+            }
+        }
+        // Cập nhật cache cho lỗi hoặc trạng thái mới
         *cache = Some(LimitsCache {
             fetched_at: Instant::now(),
             group: group.clone(),
+            last_successful: cache.as_ref().and_then(|c| c.last_successful.clone()),
         });
     }
     group
@@ -208,6 +242,106 @@ fn home_dir() -> PathBuf {
 
 pub fn projects_dir() -> PathBuf {
     home_dir().join(".claude/projects")
+}
+
+/// Quét extension của Claude Code theo hai phạm vi: `<project>/.claude` (ưu tiên)
+/// rồi `~/.claude`. Gồm skills (`skills/<name>/SKILL.md`), agents (`agents/**/*.md`)
+/// và commands (`commands/**/*.md`, thư mục con thành namespace `dir:name`).
+pub fn scan_claude_extensions(project_path: &str) -> Vec<CustomAgentSpec> {
+    let mut roots = Vec::new();
+    if !project_path.trim().is_empty() {
+        roots.push(Path::new(project_path.trim()).join(".claude"));
+    }
+    roots.push(home_dir().join(".claude"));
+
+    let mut specs: Vec<CustomAgentSpec> = Vec::new();
+    for root in &roots {
+        scan_claude_skill_dir(&root.join("skills"), &mut specs);
+        scan_claude_md_dir(&root.join("agents"), "", "agent", &mut specs);
+        scan_claude_md_dir(&root.join("commands"), "", "command", &mut specs);
+    }
+    specs.sort_by(|a, b| a.kind.cmp(&b.kind).then_with(|| a.name.cmp(&b.name)));
+    specs
+}
+
+fn push_claude_spec(specs: &mut Vec<CustomAgentSpec>, spec: CustomAgentSpec) {
+    if !specs
+        .iter()
+        .any(|s| s.kind == spec.kind && s.name == spec.name)
+    {
+        specs.push(spec);
+    }
+}
+
+fn scan_claude_skill_dir(dir: &Path, specs: &mut Vec<CustomAgentSpec>) {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let skill_file = entry.path().join("SKILL.md");
+        let Ok(raw) = fs::read_to_string(&skill_file) else {
+            continue;
+        };
+        let folder = entry.file_name().to_string_lossy().to_string();
+        let (name, description, _) = parse_markdown_frontmatter(&raw, &folder, "skill");
+        push_claude_spec(
+            specs,
+            CustomAgentSpec {
+                name,
+                description,
+                kind: "skill".to_string(),
+                file_path: skill_file.to_string_lossy().to_string(),
+                body_content: String::new(),
+            },
+        );
+    }
+}
+
+fn scan_claude_md_dir(dir: &Path, prefix: &str, kind: &str, specs: &mut Vec<CustomAgentSpec>) {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let file_name = entry.file_name().to_string_lossy().to_string();
+        if path.is_dir() {
+            let nested = if prefix.is_empty() {
+                file_name
+            } else {
+                format!("{prefix}:{file_name}")
+            };
+            scan_claude_md_dir(&path, &nested, kind, specs);
+            continue;
+        }
+        if path.extension().and_then(|e| e.to_str()) != Some("md") {
+            continue;
+        }
+        let Ok(raw) = fs::read_to_string(&path) else {
+            continue;
+        };
+        let stem = path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or_default()
+            .to_string();
+        let base = if prefix.is_empty() {
+            stem
+        } else {
+            format!("{prefix}:{stem}")
+        };
+        let (frontmatter_name, description, _) = parse_markdown_frontmatter(&raw, &base, kind);
+        let name = if kind == "agent" { frontmatter_name } else { base };
+        push_claude_spec(
+            specs,
+            CustomAgentSpec {
+                name,
+                description,
+                kind: kind.to_string(),
+                file_path: path.to_string_lossy().to_string(),
+                body_content: String::new(),
+            },
+        );
+    }
 }
 
 /// Đường dẫn binary `claude`. Ưu tiên biến môi trường `MUOP_CLAUDE_BIN`,
@@ -233,14 +367,23 @@ pub fn claude_bin() -> String {
     "claude".to_string()
 }
 
-/// Chuẩn hoá tên model gửi xuống CLI. Các model cũ của Antigravity (gemini-*) hoặc rỗng
-/// sẽ được đưa về alias mặc định `sonnet`.
+/// Model mặc định của Claude Code CLI (ID đầy đủ có version)
+pub const CLAUDE_DEFAULT_MODEL: &str = "claude-sonnet-5-5";
+
+/// Chuẩn hoá tên model gửi xuống CLI.
+/// Alias ngắn (`sonnet`/`opus`/`haiku`) được ánh xạ sang ID đầy đủ có version,
+/// vì CLI tự phân giải alias sang bản model cũ (vd. `haiku` → claude-haiku-4-5).
+/// Rỗng, `default` hoặc model cũ của Antigravity (gemini-*) → model mặc định.
 pub fn normalize_model(raw: &str) -> String {
     let m = raw.trim();
-    if m.is_empty() || m == "default" || m.starts_with("gemini") {
-        return "sonnet".to_string();
+    match m {
+        "" | "default" => CLAUDE_DEFAULT_MODEL.to_string(),
+        "sonnet" => "claude-sonnet-5-5".to_string(),
+        "opus" => "claude-opus-5-5".to_string(),
+        "haiku" => "claude-haiku-5-5".to_string(),
+        _ if m.starts_with("gemini") => CLAUDE_DEFAULT_MODEL.to_string(),
+        _ => m.to_string(),
     }
-    m.to_string()
 }
 
 fn fingerprint(path: &Path) -> Option<(u64, u64)> {
@@ -355,6 +498,152 @@ fn make_step(
         phase: "completed".to_string(),
         vietnamese_title: vi_title.to_string(),
         vietnamese_detail: vi_detail.to_string(),
+        model: String::new(),
+    }
+}
+
+/// Cache kết quả `git status` theo repo (TTL ngắn) để khi quét nhiều session không gọi git lặp lại
+static GIT_STATUS_CACHE: OnceLock<Mutex<HashMap<String, (Instant, Vec<(PathBuf, bool)>)>>> =
+    OnceLock::new();
+
+/// Danh sách file đã thay đổi trong repo (đường dẫn tuyệt đối, có phải file mới không)
+fn git_changed_files(repo: &str) -> Vec<(PathBuf, bool)> {
+    let cache = GIT_STATUS_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    if let Ok(map) = cache.lock() {
+        if let Some((at, list)) = map.get(repo) {
+            if at.elapsed() < Duration::from_secs(5) {
+                return list.clone();
+            }
+        }
+    }
+    let root = Command::new("git")
+        .args(["-C", repo, "rev-parse", "--show-toplevel"])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string());
+    let Some(root) = root else {
+        return Vec::new();
+    };
+    let mut result: Vec<(PathBuf, bool)> = Vec::new();
+    if let Ok(out) = Command::new("git")
+        .args(["-C", repo, "status", "--porcelain", "--untracked-files=all"])
+        .output()
+    {
+        if out.status.success() {
+            for line in String::from_utf8_lossy(&out.stdout).lines() {
+                if line.len() < 4 {
+                    continue;
+                }
+                let status = &line[..2];
+                let mut rel = &line[3..];
+                if let Some(pos) = rel.find(" -> ") {
+                    rel = &rel[pos + 4..];
+                }
+                let rel = rel.trim_matches('"');
+                let is_new = status == "??" || status.starts_with('A');
+                result.push((PathBuf::from(&root).join(rel), is_new));
+            }
+        }
+    }
+    if let Ok(mut map) = cache.lock() {
+        map.insert(repo.to_string(), (Instant::now(), result.clone()));
+    }
+    result
+}
+
+/// Thư mục build/cache và đuôi file nhị phân: không liệt kê khi suy ra thay đổi từ Bash
+const BUILD_DIR_NAMES: &[&str] = &[
+    "build",
+    ".dart_tool",
+    "target",
+    "node_modules",
+    ".gradle",
+    ".idea",
+    "Pods",
+    "DerivedData",
+];
+const BINARY_EXTENSIONS: &[&str] = &[
+    "apk", "aab", "ipa", "so", "exe", "dll", "dylib", "bin", "o", "a", "obj", "jar", "class",
+    "zip", "tar", "gz", "7z", "png", "jpg", "jpeg", "gif", "webp", "ico", "bmp", "pdf", "ttf",
+    "otf", "woff", "woff2", "db", "sqlite", "sqlite3", "wasm", "pyc",
+];
+
+fn is_build_or_binary_path(path: &Path) -> bool {
+    let in_build_dir = path.components().any(|c| {
+        matches!(c, std::path::Component::Normal(n)
+            if n.to_str().map_or(false, |s| BUILD_DIR_NAMES.contains(&s)))
+    });
+    if in_build_dir {
+        return true;
+    }
+    path.extension()
+        .and_then(|e| e.to_str())
+        .map_or(false, |e| BINARY_EXTENSIONS.contains(&e.to_ascii_lowercase().as_str()))
+}
+
+/// Bổ sung thay đổi file do lệnh Bash tạo ra (sed -i, python, cat >, ...). Các lệnh này không có
+/// tool Edit/Write nên không được ghi nhận khi duyệt tool call. Lấy các file đã thay đổi trong repo
+/// (git status) có mtime nằm trong khoảng từ bước gọi Bash đến bước kế tiếp.
+fn detect_bash_file_changes(repo: &str, steps: &[AgentStep], files: &mut Vec<FileTouchRecord>) {
+    if repo.is_empty() {
+        return;
+    }
+    let parse_ts = |s: &str| {
+        chrono::DateTime::parse_from_rfc3339(s)
+            .ok()
+            .map(|d| d.with_timezone(&chrono::Utc))
+    };
+    let mut windows: Vec<(usize, chrono::DateTime<chrono::Utc>, chrono::DateTime<chrono::Utc>)> =
+        Vec::new();
+    for (i, step) in steps.iter().enumerate() {
+        if !step.tool_calls.iter().any(|t| t.name == "Bash") {
+            continue;
+        }
+        let Some(start) = parse_ts(&step.created_at) else {
+            continue;
+        };
+        let end = steps
+            .get(i + 1)
+            .and_then(|n| parse_ts(&n.created_at))
+            .unwrap_or_else(chrono::Utc::now);
+        windows.push((step.step_index, start, end));
+    }
+    if windows.is_empty() {
+        return;
+    }
+    for (abs, is_new) in git_changed_files(repo) {
+        let Some(mtime) = fs::metadata(&abs).ok().and_then(|m| m.modified().ok()) else {
+            continue;
+        };
+        if is_build_or_binary_path(&abs) {
+            continue;
+        }
+        let mtime = chrono::DateTime::<chrono::Utc>::from(mtime);
+        let Some((step_index, start, _)) = windows.iter().find(|(_, start, end)| {
+            mtime >= *start && mtime <= *end + chrono::Duration::seconds(1)
+        }) else {
+            continue;
+        };
+        let path = abs.to_string_lossy().to_string();
+        if files
+            .iter()
+            .any(|f| f.step_index == *step_index && f.path == path)
+        {
+            continue;
+        }
+        files.push(FileTouchRecord {
+            path,
+            action: if is_new { "created" } else { "modified" }.to_string(),
+            repo: String::new(),
+            agent_name: "Coordinator".to_string(),
+            step_index: *step_index,
+            timestamp: start.to_rfc3339(),
+            added_lines: 0,
+            removed_lines: 0,
+            diff_preview: String::new(),
+            source: "bash".to_string(),
+        });
     }
 }
 
@@ -536,7 +825,14 @@ fn parse_session_file(path: &Path) -> Option<ConversationSession> {
                 if text_parts.is_empty() && thinking_parts.is_empty() && tool_calls.is_empty() {
                     continue;
                 }
-                steps.push(make_step(
+                // Model thực tế do Claude báo trong message (bỏ qua giá trị đặc biệt như `<synthetic>`)
+                let model_name = msg
+                    .get("model")
+                    .and_then(|x| x.as_str())
+                    .filter(|m| !m.is_empty() && !m.starts_with('<'))
+                    .unwrap_or("")
+                    .to_string();
+                let mut step = make_step(
                     idx,
                     "PLANNER_RESPONSE",
                     "MODEL",
@@ -548,7 +844,9 @@ fn parse_session_file(path: &Path) -> Option<ConversationSession> {
                     inp,
                     out,
                     cache,
-                ));
+                );
+                step.model = model_name;
+                steps.push(step);
             }
             _ => {}
         }
@@ -588,6 +886,7 @@ fn parse_session_file(path: &Path) -> Option<ConversationSession> {
         .unwrap_or("")
         .to_string();
 
+    detect_bash_file_changes(&project_path, &steps, &mut files);
     files.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
     files.truncate(100);
     commands.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
@@ -662,6 +961,7 @@ fn record_side_effects(
                 added_lines: added,
                 removed_lines: removed,
                 diff_preview: String::new(),
+                source: String::new(),
             });
         }
         "Bash" => {

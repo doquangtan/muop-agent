@@ -3,22 +3,29 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import '../models/agent_core_models.dart';
 import '../models/agent_models.dart';
 import '../services/brain_scanner_service.dart';
 import 'parallel_agent_flow_screen.dart';
+import 'widgets/ai_question_dialog.dart';
 import 'widgets/chat_canvas_view.dart';
 import 'widgets/project_git_history_sheet.dart';
 import 'widgets/server_file_browser_sheet.dart';
+import 'theme/app_theme.dart';
 
 class DashboardScreen extends StatefulWidget {
   const DashboardScreen({
     super.key,
     required this.isDarkMode,
     required this.onToggleTheme,
+    required this.seedColor,
+    required this.onSeedColorChanged,
   });
 
   final bool isDarkMode;
   final VoidCallback onToggleTheme;
+  final Color seedColor;
+  final ValueChanged<Color> onSeedColorChanged;
 
   @override
   State<DashboardScreen> createState() => _DashboardScreenState();
@@ -46,7 +53,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
   ProjectWorkspace? _activeChatProject;
   String _selectedAgent = 'Coordinator';
-  String _selectedModel = 'claude-cli:sonnet';
+  String _selectedModel = 'claude-cli:claude-sonnet-5-5';
+  // Model người dùng đã chọn theo từng conversation ('__new__' cho cuộc chat mới chưa có id)
+  final Map<String, String> _modelBySession = {};
   bool _isNewConversationMode = false;
   bool _isSendingPrompt = false;
   bool _showDesktopSidebar = true;
@@ -64,6 +73,11 @@ class _DashboardScreenState extends State<DashboardScreen> {
   StreamSubscription<ConversationSession>? _sessionUpdateSub;
   StreamSubscription<List<ProjectWorkspace>>? _projectsSub;
   StreamSubscription<List<ModelQuotaGroup>>? _quotasSub;
+  StreamSubscription<ConversationSession>? _filesChangeSub;
+
+  List<AIQuestion> _pendingAIQuestions = [];
+  Timer? _aiQuestionRefreshTimer;
+  String? _currentConversationRoom;
 
   @override
   void initState() {
@@ -80,15 +94,106 @@ class _DashboardScreenState extends State<DashboardScreen> {
   @override
   void dispose() {
     _fallbackTimer?.cancel();
+    _aiQuestionRefreshTimer?.cancel();
     _snapshotSub?.cancel();
     _chatStreamSub?.cancel();
     _socketStatusSub?.cancel();
     _sessionUpdateSub?.cancel();
     _projectsSub?.cancel();
     _quotasSub?.cancel();
+    _filesChangeSub?.cancel();
+    if (_currentConversationRoom != null) {
+      _scanner.leaveConversation(_currentConversationRoom!);
+    }
     _scanner.dispose();
     _searchController.dispose();
     super.dispose();
+  }
+
+  void _startAIQuestionPoller() {
+    _aiQuestionRefreshTimer?.cancel();
+    _aiQuestionRefreshTimer = Timer.periodic(const Duration(seconds: 3), (_) {
+      _refreshAIQuestions();
+    });
+  }
+
+  void _stopAIQuestionPoller() {
+    _aiQuestionRefreshTimer?.cancel();
+    _aiQuestionRefreshTimer = null;
+  }
+
+  Future<void> _refreshAIQuestions() async {
+    final activeSession = _activeSession;
+    if (activeSession == null) {
+      setState(() => _pendingAIQuestions = []);
+      return;
+    }
+
+    final questions = await _scanner.fetchAIQuestions(activeSession.id);
+    if (!mounted) return;
+
+    setState(() {
+      _pendingAIQuestions = questions.where((q) => q.isPending).toList();
+    });
+
+    // Hiển thị dialog nếu có câu hỏi mới chờ trả lời
+    for (final question in _pendingAIQuestions) {
+      if (question.answer == null && question.isPending) {
+        _showAIQuestionDialog(question);
+        break;
+      }
+    }
+  }
+
+  void _showAIQuestionDialog(AIQuestion question) {
+    if (!mounted) return;
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => AIQuestionDialog(
+        question: question,
+        onAnswered: () {
+          _refreshAIQuestions();
+        },
+      ),
+    );
+  }
+
+  void _setupFileChangesListener() {
+    // Cancel listener cũ nếu có
+    _filesChangeSub?.cancel();
+
+    final activeSession = _activeSession;
+    if (activeSession == null) {
+      // Leave room cũ nếu không có active session
+      if (_currentConversationRoom != null) {
+        _scanner.leaveConversation(_currentConversationRoom!);
+        _currentConversationRoom = null;
+      }
+      return;
+    }
+
+    // Leave room cũ nếu đổi sang conversation khác
+    if (_currentConversationRoom != activeSession.id) {
+      if (_currentConversationRoom != null) {
+        _scanner.leaveConversation(_currentConversationRoom!);
+      }
+      // Join room mới
+      _scanner.joinConversation(activeSession.id);
+      _currentConversationRoom = activeSession.id;
+    }
+
+    // Lắng nghe file changes từ server
+    _filesChangeSub = _scanner.filesChangeStream.listen((updatedSession) {
+      if (!mounted) return;
+      // Update session data khi nhận file changes
+      setState(() {
+        final idx = _sessions.indexWhere((s) => s.id == updatedSession.id);
+        if (idx >= 0) {
+          _sessions[idx] = updatedSession;
+        }
+      });
+    });
   }
 
   void _bindRealtimeSocketStreams() {
@@ -144,14 +249,16 @@ class _DashboardScreenState extends State<DashboardScreen> {
           ..._activeStreams,
           streamState.conversationId: streamState,
         };
-        // Chỉ chuyển khỏi new conversation mode nếu stream này thực sự xuất phát
-        // từ yêu cầu prompt mới mà người dùng vừa gửi đi (pending_optimistic)
-        if (_isNewConversationMode &&
+        // Chuyển sang conversation thật khi stream của prompt vừa gửi (pending_optimistic)
+        // đã có id, kể cả khi lúc gửi chưa có id nên chưa chọn được session nào
+        if ((_isNewConversationMode || _selectedSessionId == null) &&
             _activeStreams.containsKey('pending_optimistic') &&
             streamState.conversationId.isNotEmpty &&
             streamState.isRunning) {
           _isNewConversationMode = false;
           _selectedSessionId = streamState.conversationId;
+          _activeStreams = Map<String, ChatTurnStreamState>.from(_activeStreams)
+            ..remove('pending_optimistic');
         }
       });
     });
@@ -320,7 +427,16 @@ class _DashboardScreenState extends State<DashboardScreen> {
       if (snapshot.modelQuotas.isNotEmpty) {
         _modelQuotas = snapshot.modelQuotas;
       }
-      _activeStreams = snapshot.activeStreams;
+      // Giữ lại các stream đang chạy phía client mà snapshot chưa có (vd. 'pending_optimistic'
+      // hoặc stream vừa bắt đầu), tránh làm mất thẻ thinking khi snapshot định kỳ về
+      final mergedStreams =
+          Map<String, ChatTurnStreamState>.from(snapshot.activeStreams);
+      for (final entry in _activeStreams.entries) {
+        if (entry.value.isRunning && !mergedStreams.containsKey(entry.key)) {
+          mergedStreams[entry.key] = entry.value;
+        }
+      }
+      _activeStreams = mergedStreams;
       // Nếu session đang chọn đã hoàn tất hoặc bị gián đoạn, mở khóa composer
       final curActive = _sessions.where((s) => s.id == _selectedSessionId).firstOrNull;
       if (curActive != null &&
@@ -332,6 +448,15 @@ class _DashboardScreenState extends State<DashboardScreen> {
       _syncDefaultSelections();
       _isLoading = false;
     });
+    // Bắt đầu poll AI questions cho session đang chọn
+    if (_activeSession != null) {
+      _startAIQuestionPoller();
+      _refreshAIQuestions();
+    } else {
+      _stopAIQuestionPoller();
+    }
+    // Setup file changes listener và join conversation room
+    _setupFileChangesListener();
   }
 
   Future<void> _loadFullSessionDetail(String sessionId) async {
@@ -382,6 +507,41 @@ class _DashboardScreenState extends State<DashboardScreen> {
   }
 
   /// Suy ra provider từ id model, khớp với `resolve_model` phía Rust Server
+  /// Model của lượt phản hồi gần nhất trong conversation, đổi sang id dạng `claude-cli:<id>` hoặc `agy:<id>`.
+  /// Bỏ hậu tố ngày (vd. `-20251001`) với Claude. Trả null nếu không khớp danh sách model.
+  String? _modelFromLastResponse(ConversationSession? session) {
+    if (session == null) return null;
+    String raw = '';
+    for (final step in session.steps.reversed) {
+      if (step.model.isNotEmpty) {
+        raw = step.model;
+        break;
+      }
+    }
+    if (raw.isEmpty) return null;
+    if (session.source == 'agy') {
+      final candidate = 'agy:$raw';
+      return _availableModels.contains(candidate) ? candidate : null;
+    }
+    final id = raw.replaceFirst(RegExp(r'-\d{8}$'), '');
+    final candidate = 'claude-cli:$id';
+    return _availableModels.contains(candidate) ? candidate : null;
+  }
+
+  /// Model mặc định theo provider: ưu tiên Claude Sonnet 5.5 (claude-cli), còn lại lấy model đầu tiên cùng provider
+  String _defaultModelFor(String source) {
+    const claudeDefault = 'claude-cli:claude-sonnet-5-5';
+    if (source == 'claude-cli') {
+      if (_availableModels.contains(claudeDefault)) return claudeDefault;
+      final claude = _availableModels.where((m) => m.startsWith('claude-cli:'));
+      if (claude.isNotEmpty) return claude.first;
+    } else {
+      final agy = _availableModels.where((m) => m.startsWith('agy:'));
+      if (agy.isNotEmpty) return agy.first;
+    }
+    return _availableModels.isNotEmpty ? _availableModels.first : claudeDefault;
+  }
+
   static String _sourceFromModel(String model) {
     if (model.startsWith('claude-cli:') ||
         model == 'sonnet' ||
@@ -390,6 +550,13 @@ class _DashboardScreenState extends State<DashboardScreen> {
       return 'claude-cli';
     }
     return 'agy';
+  }
+
+  /// Khoá ghi nhớ model: id conversation đang chọn, hoặc '__new__' khi chưa có conversation
+  String get _modelMemoryKey {
+    if (_isNewConversationMode) return '__new__';
+    final id = _selectedSessionId;
+    return (id == null || id.isEmpty) ? '__new__' : id;
   }
 
   /// Provider của cuộc chat đang chọn.
@@ -426,6 +593,15 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
     // Xác định model phù hợp dựa trên session được chọn
     final currentSess = _activeSession;
+    // Thứ tự ưu tiên: model người dùng đã chọn cho conversation này → model của lượt phản hồi
+    // gần nhất trong conversation → model mặc định
+    final remembered = _modelBySession[_modelMemoryKey];
+    if (remembered != null && _availableModels.contains(remembered)) {
+      _selectedModel = remembered;
+    } else {
+      _selectedModel =
+          _modelFromLastResponse(currentSess) ?? _defaultModelFor(_activeSource);
+    }
     // Cuộc chat đang chọn (kể cả khi vừa tạo, chưa có trong snapshot) luôn dùng model đúng provider
     if (_activeSource == 'claude-cli') {
       // Session claude-cli chỉ có thể dùng claude-cli models
@@ -453,7 +629,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
       if (_availableModels.isNotEmpty) {
         _selectedModel = _availableModels.first;
       } else {
-        _selectedModel = 'claude-cli:sonnet';
+        _selectedModel = 'claude-cli:claude-sonnet-5-5';
       }
     }
 
@@ -500,7 +676,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
     });
 
     final effectiveModel = (_selectedModel.isEmpty || _selectedModel == 'default')
-        ? 'claude-cli:sonnet'
+        ? 'claude-cli:claude-sonnet-5-5'
         : _selectedModel;
 
     final result = await _scanner.sendRemoteChatPrompt(
@@ -523,6 +699,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
         }
         if (result.conversationId.isNotEmpty) {
           _selectedSessionId = result.conversationId;
+          // Ghi nhớ model đã dùng cho conversation này để lần sau mở lại vẫn giữ nguyên
+          _modelBySession[result.conversationId] = effectiveModel;
           if (optKey != result.conversationId && _activeStreams.containsKey(optKey)) {
             final old = _activeStreams[optKey];
             final nextStreams = Map<String, ChatTurnStreamState>.from(_activeStreams);
@@ -551,7 +729,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text('Không thể gửi tin nhắn tới Agent: ${result.error}'),
-          backgroundColor: Colors.redAccent,
+          backgroundColor: context.scheme.error,
         ),
       );
     }
@@ -575,12 +753,12 @@ class _DashboardScreenState extends State<DashboardScreen> {
       SnackBar(
         content: Row(
           children: [
-            const SizedBox(
+            SizedBox(
               width: 14,
               height: 14,
               child: CircularProgressIndicator(
                 strokeWidth: 2,
-                color: Colors.white,
+                color: context.scheme.onPrimary,
               ),
             ),
             const SizedBox(width: 10),
@@ -612,7 +790,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
           content: Text(
             '✅ Kế hoạch [${plan.fileName}] đã được duyệt thành công! Các Agent đang thực thi.',
           ),
-          backgroundColor: Colors.green.shade800,
+          backgroundColor: context.status.success,
           duration: const Duration(seconds: 3),
         ),
       );
@@ -621,7 +799,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text('❌ Không thể duyệt kế hoạch: ${res.message}'),
-          backgroundColor: Colors.red.shade800,
+          backgroundColor: context.scheme.error,
           duration: const Duration(seconds: 4),
         ),
       );
@@ -660,7 +838,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text('❌ Gửi phản hồi thất bại: ${res.message}'),
-          backgroundColor: Colors.red.shade800,
+          backgroundColor: context.scheme.error,
           duration: const Duration(seconds: 4),
         ),
       );
@@ -675,6 +853,13 @@ class _DashboardScreenState extends State<DashboardScreen> {
       address: _serverAddress,
       projectPath: projectPath,
       branch: branch,
+    );
+  }
+
+  Future<List<CustomAgentSpec>?> _handleFetchClaudeExtensions(String projectPath) {
+    return _scanner.fetchClaudeExtensions(
+      address: _serverAddress,
+      projectPath: projectPath,
     );
   }
 
@@ -700,11 +885,13 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
     if (!mounted || page == null) return false;
 
+    var addedSteps = false;
     if (page.steps.isNotEmpty) {
       final existingIds = active.steps.map((s) => s.stepIndex).toSet();
       final olderSteps =
           page.steps.where((s) => !existingIds.contains(s.stepIndex)).toList();
       if (olderSteps.isNotEmpty) {
+        addedSteps = true;
         final merged = [...olderSteps, ...active.steps];
         merged.sort((a, b) => a.stepIndex.compareTo(b.stepIndex));
         setState(() {
@@ -715,7 +902,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
         });
       }
     }
-    return page.hasMore;
+    return page.hasMore && addedSteps;
   }
 
   void _openParallelAgentFlowScreen() {
@@ -887,7 +1074,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text('Không thể tải file: ${res.error}'),
-          backgroundColor: Colors.redAccent,
+          backgroundColor: context.scheme.error,
         ),
       );
     }
@@ -1144,7 +1331,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                               ScaffoldMessenger.of(this.context).showSnackBar(
                                 SnackBar(
                                   content: Text('🎉 ${res.message}'),
-                                  backgroundColor: Colors.teal.shade800,
+                                  backgroundColor: this.context.status.success,
                                 ),
                               );
                             }
@@ -1156,12 +1343,12 @@ class _DashboardScreenState extends State<DashboardScreen> {
                           }
                         },
                   icon: isCreating
-                      ? const SizedBox(
+                      ? SizedBox(
                           width: 14,
                           height: 14,
                           child: CircularProgressIndicator(
                             strokeWidth: 2,
-                            color: Colors.white,
+                            color: context.scheme.onPrimary,
                           ),
                         )
                       : const Icon(Icons.add_circle_outline_rounded, size: 18),
@@ -1226,11 +1413,11 @@ class _DashboardScreenState extends State<DashboardScreen> {
                     Container(
                       padding: const EdgeInsets.all(12),
                       decoration: BoxDecoration(
-                        color: (_isSocketLive ? Colors.teal : Colors.orange)
+                        color: (_isSocketLive ? context.status.success : context.status.warning)
                             .withAlpha(25),
                         borderRadius: BorderRadius.circular(10),
                         border: Border.all(
-                          color: (_isSocketLive ? Colors.teal : Colors.orange)
+                          color: (_isSocketLive ? context.status.success : context.status.warning)
                               .withAlpha(120),
                         ),
                       ),
@@ -1245,7 +1432,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                                     : Icons.sync_problem_rounded,
                                 size: 16,
                                 color:
-                                    _isSocketLive ? Colors.teal : Colors.orange,
+                                    _isSocketLive ? context.status.success : context.status.warning,
                               ),
                               const SizedBox(width: 6),
                               Expanded(
@@ -1256,8 +1443,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
                                   style: textTheme.labelMedium?.copyWith(
                                     fontWeight: FontWeight.w800,
                                     color: _isSocketLive
-                                        ? Colors.teal
-                                        : Colors.orange,
+                                        ? context.status.success
+                                        : context.status.warning,
                                   ),
                                 ),
                               ),
@@ -1375,8 +1562,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
                         style: textTheme.bodySmall?.copyWith(
                           fontWeight: FontWeight.w700,
                           color: pingResult!.isOnline
-                              ? Colors.teal
-                              : Colors.redAccent,
+                              ? context.status.success
+                              : context.scheme.error,
                         ),
                       ),
                     ],
@@ -1438,8 +1625,66 @@ class _DashboardScreenState extends State<DashboardScreen> {
       return _activeStreams['pending_optimistic'];
     }
     final cid = _selectedSessionId;
-    if (cid == null) return null;
+    if (cid == null) return _activeStreams['pending_optimistic'];
     return _activeStreams[cid] ?? _activeStreams['pending_optimistic'];
+  }
+
+  Widget _buildAIQuestionBanner(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+      color: context.status.warning.withAlpha(36),
+      child: Row(
+        children: [
+          Icon(Icons.help_outline, color: context.status.warning, size: 20),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  '❓ AI có ${_pendingAIQuestions.length} câu hỏi chờ trả lời',
+                  style: TextStyle(
+                    fontWeight: FontWeight.w500,
+                    fontSize: 13,
+                    color: context.status.warning,
+                  ),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  _pendingAIQuestions.first.question,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    fontSize: 12,
+                    color: context.status.warning,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(width: 12),
+          ElevatedButton(
+            onPressed: () {
+              if (_pendingAIQuestions.isNotEmpty) {
+                _showAIQuestionDialog(_pendingAIQuestions.first);
+              }
+            },
+            style: ElevatedButton.styleFrom(
+              backgroundColor: context.status.warning,
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+            ),
+            child: Text(
+              'Trả lời',
+              style: TextStyle(
+                fontSize: 12,
+                fontWeight: FontWeight.w500,
+                color: context.scheme.onPrimary,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
   }
 
   @override
@@ -1488,6 +1733,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
                       isMobile: isMobile,
                     ),
                     Divider(height: 1, color: colorScheme.outlineVariant),
+                    if (_pendingAIQuestions.isNotEmpty)
+                      _buildAIQuestionBanner(context),
                     Expanded(
                       child: _isLoading &&
                               activeSession == null &&
@@ -1517,7 +1764,10 @@ class _DashboardScreenState extends State<DashboardScreen> {
                                     setState(() => _selectedAgent = a);
                                   },
                                   onSelectModel: (m) {
-                                    setState(() => _selectedModel = m);
+                                    setState(() {
+                                      _selectedModel = m;
+                                      _modelBySession[_modelMemoryKey] = m;
+                                    });
                                   },
                                   onStartNewConversation: () =>
                                       _startNewConversationInProject(
@@ -1536,6 +1786,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                                   onApprovePlan: _handleApprovePlan,
                                   onRejectPlan: _handleRejectPlan,
                                   onLoadOlderHistory: _handleLoadOlderHistory,
+                                  onFetchClaudeExtensions: _handleFetchClaudeExtensions,
                                   onOpenParallelFlow: _openParallelAgentFlowScreen,
                                   onOpenCreateProject: () =>
                                       _showCreateProjectDialog(context),
@@ -1667,11 +1918,11 @@ class _DashboardScreenState extends State<DashboardScreen> {
             child: Container(
               padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 4),
               decoration: BoxDecoration(
-                color: (_isSocketLive ? Colors.teal : Colors.orange)
+                color: (_isSocketLive ? context.status.success : context.status.warning)
                     .withAlpha(25),
                 borderRadius: BorderRadius.circular(8),
                 border: Border.all(
-                  color: (_isSocketLive ? Colors.teal : Colors.orange)
+                  color: (_isSocketLive ? context.status.success : context.status.warning)
                       .withAlpha(90),
                 ),
               ),
@@ -1683,8 +1934,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
                     height: 6.5,
                     decoration: BoxDecoration(
                       color: _isSocketLive || _isRemoteConnected
-                          ? Colors.teal
-                          : Colors.orange,
+                          ? context.status.success
+                          : context.status.warning,
                       shape: BoxShape.circle,
                     ),
                   ),
@@ -1699,8 +1950,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
                       fontSize: 10.5,
                       fontWeight: FontWeight.w700,
                       color: _isSocketLive || _isRemoteConnected
-                          ? Colors.teal
-                          : Colors.orange,
+                          ? context.status.success
+                          : context.status.warning,
                     ),
                   ),
                 ],
@@ -1727,6 +1978,16 @@ class _DashboardScreenState extends State<DashboardScreen> {
             icon: const Icon(Icons.add_rounded, size: 20),
           ),
           IconButton(
+            tooltip: 'Chọn màu chủ đạo',
+            visualDensity: VisualDensity.compact,
+            onPressed: () => _showThemeColorPicker(context),
+            icon: Icon(
+              Icons.palette_outlined,
+              size: 18,
+              color: context.scheme.primary,
+            ),
+          ),
+          IconButton(
             tooltip: 'Đổi giao diện Sáng/Tối',
             visualDensity: VisualDensity.compact,
             onPressed: widget.onToggleTheme,
@@ -1739,6 +2000,86 @@ class _DashboardScreenState extends State<DashboardScreen> {
           ),
         ],
       ),
+    );
+  }
+
+  /// Bottom sheet chọn màu chủ đạo (seed) — toàn bộ bảng màu M3 được sinh lại từ màu này
+  void _showThemeColorPicker(BuildContext context) {
+    showModalBottomSheet<void>(
+      context: context,
+      showDragHandle: true,
+      builder: (sheetContext) {
+        final scheme = Theme.of(sheetContext).colorScheme;
+        return SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(20, 4, 20, 20),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'Màu chủ đạo',
+                  style: Theme.of(sheetContext).textTheme.titleMedium?.copyWith(
+                        fontWeight: FontWeight.w700,
+                      ),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  'Bảng màu giao diện được sinh tự động từ màu đã chọn.',
+                  style: Theme.of(sheetContext).textTheme.bodySmall?.copyWith(
+                        color: scheme.onSurfaceVariant,
+                      ),
+                ),
+                const SizedBox(height: 16),
+                Wrap(
+                  spacing: 14,
+                  runSpacing: 14,
+                  children: [
+                    for (final preset in kThemeSeedPresets)
+                      Tooltip(
+                        message: preset.name,
+                        child: InkWell(
+                          customBorder: const CircleBorder(),
+                          onTap: () {
+                            widget.onSeedColorChanged(preset.color);
+                            Navigator.of(sheetContext).pop();
+                          },
+                          child: Container(
+                            width: 44,
+                            height: 44,
+                            decoration: BoxDecoration(
+                              shape: BoxShape.circle,
+                              color: preset.color,
+                              border: Border.all(
+                                color: preset.color.toARGB32() ==
+                                        widget.seedColor.toARGB32()
+                                    ? scheme.onSurface
+                                    : Colors.transparent,
+                                width: 2.5,
+                              ),
+                            ),
+                            child: preset.color.toARGB32() ==
+                                    widget.seedColor.toARGB32()
+                                ? Icon(
+                                    Icons.check_rounded,
+                                    color: ThemeData.estimateBrightnessForColor(
+                                              preset.color,
+                                            ) ==
+                                            Brightness.dark
+                                        ? Colors.white
+                                        : Colors.black,
+                                  )
+                                : null,
+                          ),
+                        ),
+                      ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+        );
+      },
     );
   }
 
@@ -2050,10 +2391,10 @@ class _DashboardScreenState extends State<DashboardScreen> {
                   vertical: 1.5,
                 ),
                 decoration: BoxDecoration(
-                  color: Colors.amber.withAlpha(35),
+                  color: context.status.warning.withAlpha(35),
                   borderRadius: BorderRadius.circular(4),
                   border: Border.all(
-                    color: Colors.amber.shade700.withAlpha(120),
+                    color: context.status.warning.withAlpha(120),
                   ),
                 ),
                 child: Row(
@@ -2062,7 +2403,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                     Icon(
                       Icons.cloud_upload_outlined,
                       size: 10,
-                      color: Colors.amber.shade700,
+                      color: context.status.warning,
                     ),
                     const SizedBox(width: 2),
                     Text(
@@ -2070,7 +2411,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                       style: TextStyle(
                         fontSize: 9.5,
                         fontWeight: FontWeight.bold,
-                        color: Colors.amber.shade700,
+                        color: context.status.warning,
                       ),
                     ),
                   ],
@@ -2283,10 +2624,10 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 ),
                 const SizedBox(width: 8),
               ] else if (session.isInterrupted) ...[
-                const Icon(
+                Icon(
                   Icons.pause_circle_outline_rounded,
                   size: 13,
-                  color: Colors.amber,
+                  color: context.status.warning,
                 ),
                 const SizedBox(width: 8),
               ] else ...[
@@ -2295,11 +2636,11 @@ class _DashboardScreenState extends State<DashboardScreen> {
                   size: 13,
                   color: session.source == 'claude-cli'
                       ? (isSelected
-                          ? const Color(0xFFE07B54)
-                          : const Color(0xFFE07B54).withAlpha(170))
+                          ? context.status.warning
+                          : context.status.warning.withAlpha(170))
                       : (isSelected
-                          ? const Color(0xFF4A90E2)
-                          : const Color(0xFF4A90E2).withAlpha(170)),
+                          ? context.scheme.primary
+                          : context.scheme.primary.withAlpha(170)),
                 ),
                 const SizedBox(width: 8),
               ],
