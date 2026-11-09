@@ -249,6 +249,9 @@ pub struct ChatSendResponse {
     pub conversation_id: String,
     pub project_path: String,
     pub error: String,
+    /// Nguồn provider đã xử lý lượt chat: `claude-cli` hoặc `agy`
+    #[serde(default)]
+    pub source: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

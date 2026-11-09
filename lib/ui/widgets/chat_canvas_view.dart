@@ -6986,8 +6986,10 @@ class _AnimatedThinkingRobotCardState extends State<_AnimatedThinkingRobotCard>
     final lines = text.trimRight().split('\n');
     _lastLineCount = text.trim().isEmpty ? 0 : lines.length;
 
-    if (text.trim().isNotEmpty) {
-      // Hiện title trước, sau đó animation chạy ra nội dung 10 dòng gần nhất
+    final hasContent = text.trim().isNotEmpty ||
+        widget.stream.thinkingText.trim().isNotEmpty;
+
+    if (hasContent) {
       Future.delayed(const Duration(milliseconds: 150), () {
         if (mounted) {
           _rolloutController.forward(from: 0.0);
@@ -7002,6 +7004,28 @@ class _AnimatedThinkingRobotCardState extends State<_AnimatedThinkingRobotCard>
   void didUpdateWidget(_AnimatedThinkingRobotCard oldWidget) {
     super.didUpdateWidget(oldWidget);
 
+    final isThinking = widget.stream.activeStepType == 'thinking';
+    final wasThinking = oldWidget.stream.activeStepType == 'thinking';
+
+    // Khi đang ở thinking mode, dùng thinkingText để detect animation
+    if (isThinking) {
+      final oldThinking = oldWidget.stream.thinkingText;
+      final newThinking = widget.stream.thinkingText;
+      if (oldThinking != newThinking) {
+        final now = DateTime.now();
+        if (_lastRolloutTrigger == null ||
+            now.difference(_lastRolloutTrigger!).inMilliseconds > 220) {
+          _triggerRollout();
+        }
+      }
+      // Vừa chuyển sang thinking → animate ngay
+      if (!wasThinking && isThinking && newThinking.trim().isNotEmpty) {
+        _triggerRollout();
+      }
+      return;
+    }
+
+    // Các bước còn lại: theo dõi streamingText
     final oldText = oldWidget.stream.streamingText;
     final newText = widget.stream.streamingText;
 
@@ -7016,19 +7040,18 @@ class _AnimatedThinkingRobotCardState extends State<_AnimatedThinkingRobotCard>
 
     bool shouldAnimate = false;
 
-    if (oldText.trim().isEmpty && newText.trim().isNotEmpty) {
-      // Lần đầu có content sau khi title đã hiển thị
+    if (wasThinking && !isThinking) {
+      // Vừa rời khỏi thinking → animate console ngay
+      shouldAnimate = true;
+    } else if (oldText.trim().isEmpty && newText.trim().isNotEmpty) {
       shouldAnimate = true;
     } else if (newAction != _lastAction) {
-      // Đổi bước / action cụ thể
       _lastAction = newAction;
       shouldAnimate = true;
     } else if (newLineCount != _lastLineCount) {
-      // Có dòng mới được sinh ra
       _lastLineCount = newLineCount;
       shouldAnimate = true;
     } else if (newText != oldText) {
-      // Content mới đang stream
       final now = DateTime.now();
       if (_lastRolloutTrigger == null ||
           now.difference(_lastRolloutTrigger!).inMilliseconds > 220) {
@@ -7337,7 +7360,7 @@ class _AnimatedThinkingRobotCardState extends State<_AnimatedThinkingRobotCard>
                       ),
                     ),
                     // Nút thu gọn / mở rộng chi tiết suy nghĩ
-                    if (stream.streamingText.trim().isNotEmpty)
+                    if (stream.thinkingText.trim().isNotEmpty || stream.streamingText.trim().isNotEmpty)
                       InkWell(
                         borderRadius: BorderRadius.circular(6),
                         onTap: () => setState(() => _isTraceExpanded = !_isTraceExpanded),
@@ -7414,63 +7437,81 @@ class _AnimatedThinkingRobotCardState extends State<_AnimatedThinkingRobotCard>
                 ),
               ),
 
-              // Thinking block: Hiển thị quá trình suy luận của Claude
-              if (stream.thinkingText.trim().isNotEmpty) ...[
+              // Thinking block: Chỉ hiện khi đang ở bước thinking, ẩn hoàn toàn ở các bước khác
+              if (_isTraceExpanded &&
+                  stream.thinkingText.trim().isNotEmpty &&
+                  stream.activeStepType == 'thinking') ...[
                 Padding(
-                  padding: const EdgeInsets.fromLTRB(10, 4, 10, 8),
-                  child: Container(
-                    padding: const EdgeInsets.all(10),
-                    decoration: BoxDecoration(
-                      color: Colors.indigo.withAlpha(30),
-                      borderRadius: BorderRadius.circular(8),
-                      border: Border.all(
-                        color: Colors.indigoAccent.withAlpha(100),
-                        width: 1.0,
+                  padding: const EdgeInsets.fromLTRB(10, 4, 10, 10),
+                  child: AnimatedSize(
+                    duration: const Duration(milliseconds: 200),
+                    curve: Curves.easeOutCubic,
+                    child: Container(
+                      padding: const EdgeInsets.all(10),
+                      decoration: BoxDecoration(
+                        color: Colors.indigo.withAlpha(28),
+                        borderRadius: BorderRadius.circular(8),
+                        border: Border.all(
+                          color: Colors.indigoAccent.withAlpha(120),
+                          width: 1.0,
+                        ),
                       ),
-                    ),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.stretch,
-                      children: [
-                        Row(
-                          children: [
-                            Container(
-                              width: 6,
-                              height: 6,
-                              decoration: BoxDecoration(
-                                shape: BoxShape.circle,
-                                color: Colors.indigoAccent,
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        children: [
+                          Row(
+                            children: [
+                              Container(
+                                width: 6,
+                                height: 6,
+                                decoration: const BoxDecoration(
+                                  shape: BoxShape.circle,
+                                  color: Colors.indigoAccent,
+                                ),
                               ),
-                            ),
-                            const SizedBox(width: 6),
-                            Text(
-                              'Thinking (Suy luận)',
-                              style: TextStyle(
-                                fontFamily: 'monospace',
-                                fontSize: 10,
-                                fontWeight: FontWeight.w700,
-                                color: colorScheme.onSurfaceVariant,
+                              const SizedBox(width: 6),
+                              Text(
+                                'Thought Process',
+                                style: TextStyle(
+                                  fontFamily: 'monospace',
+                                  fontSize: 10,
+                                  fontWeight: FontWeight.w700,
+                                  color: Colors.indigoAccent,
+                                ),
                               ),
-                            ),
-                          ],
-                        ),
-                        const SizedBox(height: 6),
-                        SelectableText(
-                          stream.thinkingText.trim(),
-                          style: textTheme.bodySmall?.copyWith(
-                            fontFamily: 'monospace',
-                            fontSize: 10.5,
-                            height: 1.45,
-                            color: colorScheme.onSurfaceVariant,
+                              if (stream.isRunning &&
+                                  stream.activeStepType == 'thinking') ...[
+                                const SizedBox(width: 8),
+                                Text(
+                                  'LIVE',
+                                  style: TextStyle(
+                                    fontFamily: 'monospace',
+                                    fontSize: 9,
+                                    fontWeight: FontWeight.w800,
+                                    color: Colors.indigoAccent,
+                                    letterSpacing: 0.5,
+                                  ),
+                                ),
+                              ],
+                            ],
                           ),
-                        ),
-                      ],
+                          const SizedBox(height: 6),
+                          SelectableText(
+                            stream.thinkingText.trim(),
+                            style: textTheme.bodySmall?.copyWith(
+                              fontFamily: 'monospace',
+                              fontSize: 10.5,
+                              height: 1.45,
+                              color: colorScheme.onSurfaceVariant,
+                            ),
+                          ),
+                        ],
+                      ),
                     ),
                   ),
                 ),
-              ],
-
-              // Nội dung chi tiết suy nghĩ (khoảng 10 dòng content mới nhất với animation chạy ra)
-              if (_isTraceExpanded && stream.streamingText.trim().isNotEmpty) ...[
+              ] else if (_isTraceExpanded && stream.streamingText.trim().isNotEmpty) ...[
+              // Console: chỉ hiện khi KHÔNG có thinking (không lẫn lộn hai loại)
                 Padding(
                   padding: const EdgeInsets.fromLTRB(10, 6, 10, 10),
                   child: AnimatedSize(

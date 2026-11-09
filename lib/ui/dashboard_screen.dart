@@ -41,6 +41,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
   List<String> _availableAgents = BrainScannerService.defaultAgents;
   List<ModelQuotaGroup> _modelQuotas = [];
   Map<String, ChatTurnStreamState> _activeStreams = {};
+  // Provider (claude-cli / agy) của các cuộc chat vừa gửi, dùng khi session chưa có trong snapshot
+  final Map<String, String> _sourceByConversation = {};
 
   ProjectWorkspace? _activeChatProject;
   String _selectedAgent = 'Coordinator';
@@ -379,6 +381,32 @@ class _DashboardScreenState extends State<DashboardScreen> {
     }
   }
 
+  /// Suy ra provider từ id model, khớp với `resolve_model` phía Rust Server
+  static String _sourceFromModel(String model) {
+    if (model.startsWith('claude-cli:') ||
+        model == 'sonnet' ||
+        model == 'opus' ||
+        model == 'haiku') {
+      return 'claude-cli';
+    }
+    return 'agy';
+  }
+
+  /// Provider của cuộc chat đang chọn.
+  /// Ưu tiên `source` của session trên server; nếu session vừa tạo chưa có trong
+  /// snapshot thì dùng `source` từ phản hồi `chat:send`; cuối cùng suy ra từ model.
+  String get _activeSource {
+    final id = _selectedSessionId;
+    if (id != null && id.isNotEmpty) {
+      for (final s in _sessions) {
+        if (s.id == id && s.source.isNotEmpty) return s.source;
+      }
+      final known = _sourceByConversation[id];
+      if (known != null && known.isNotEmpty) return known;
+    }
+    return _sourceFromModel(_selectedModel);
+  }
+
   String _getAgentForSession(ConversationSession? session) {
     if (session == null) return 'Coordinator';
     // Session của claude-cli chỉ dùng agent của claude-cli (Coordinator)
@@ -398,27 +426,26 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
     // Xác định model phù hợp dựa trên session được chọn
     final currentSess = _activeSession;
-    if (currentSess != null) {
-      if (currentSess.source == 'claude-cli') {
-        // Session claude-cli chỉ có thể dùng claude-cli models
-        final claudeModels = _availableModels
-            .where((m) => m.startsWith('claude-cli:'))
-            .toList();
-        if (claudeModels.isNotEmpty && !_selectedModel.startsWith('claude-cli:')) {
-          _selectedModel = claudeModels.first;
-        } else if (!_selectedModel.startsWith('claude-cli:') && _availableModels.isNotEmpty) {
-          _selectedModel = _availableModels.first;
-        }
-      } else {
-        // Session agy có thể dùng agy models
-        final agyModels = _availableModels
-            .where((m) => m.startsWith('agy:'))
-            .toList();
-        if (agyModels.isNotEmpty && !_selectedModel.startsWith('agy:')) {
-          _selectedModel = agyModels.first;
-        } else if (!_selectedModel.startsWith('agy:') && _availableModels.isNotEmpty) {
-          _selectedModel = _availableModels.first;
-        }
+    // Cuộc chat đang chọn (kể cả khi vừa tạo, chưa có trong snapshot) luôn dùng model đúng provider
+    if (_activeSource == 'claude-cli') {
+      // Session claude-cli chỉ có thể dùng claude-cli models
+      final claudeModels = _availableModels
+          .where((m) => m.startsWith('claude-cli:'))
+          .toList();
+      if (claudeModels.isNotEmpty && !_selectedModel.startsWith('claude-cli:')) {
+        _selectedModel = claudeModels.first;
+      } else if (!_selectedModel.startsWith('claude-cli:') && _availableModels.isNotEmpty) {
+        _selectedModel = _availableModels.first;
+      }
+    } else {
+      // Session agy có thể dùng agy models
+      final agyModels = _availableModels
+          .where((m) => m.startsWith('agy:'))
+          .toList();
+      if (agyModels.isNotEmpty && !_selectedModel.startsWith('agy:')) {
+        _selectedModel = agyModels.first;
+      } else if (!_selectedModel.startsWith('agy:') && _availableModels.isNotEmpty) {
+        _selectedModel = _availableModels.first;
       }
     }
 
@@ -491,6 +518,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
     if (result.ok) {
       setState(() {
         _isNewConversationMode = false;
+        if (result.conversationId.isNotEmpty && result.source.isNotEmpty) {
+          _sourceByConversation[result.conversationId] = result.source;
+        }
         if (result.conversationId.isNotEmpty) {
           _selectedSessionId = result.conversationId;
           if (optKey != result.conversationId && _activeStreams.containsKey(optKey)) {

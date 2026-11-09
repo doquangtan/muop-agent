@@ -31,12 +31,16 @@ class ChatSendResult {
     required this.conversationId,
     required this.projectPath,
     this.error = '',
+    this.source = '',
   });
 
   final bool ok;
   final String conversationId;
   final String projectPath;
   final String error;
+
+  /// Provider đã xử lý lượt chat: `claude-cli` hoặc `agy`
+  final String source;
 }
 
 class ServerFileEntry {
@@ -619,6 +623,7 @@ class BrainScannerService {
           ok: true,
           conversationId: '${map['conversationId'] ?? ''}',
           projectPath: '${map['projectPath'] ?? projectPath}',
+          source: '${map['source'] ?? ''}',
         );
       }
       return ChatSendResult(

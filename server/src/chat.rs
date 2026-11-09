@@ -468,7 +468,24 @@ fn agy_args(prompt: &str, model: &str, conv_id: Option<&str>, agent: &str) -> Ve
     args
 }
 
-fn claude_args(prompt: &str, model: &str, conv_id: Option<&str>) -> Vec<String> {
+/// Nhãn source của session Claude Code, khớp với `ConversationSession.source` phía scanner
+pub const CLAUDE_SOURCE: &str = "claude-cli";
+/// Nhãn source của session Antigravity (agy)
+pub const AGY_SOURCE: &str = "agy";
+
+fn provider_source(provider: Provider) -> &'static str {
+    match provider {
+        Provider::ClaudeCli => CLAUDE_SOURCE,
+        Provider::Agy => AGY_SOURCE,
+    }
+}
+
+fn claude_args(prompt: &str, model: &str, conv_id: Option<&str>, cwd: &str) -> Vec<String> {
+    // Claude Code không tự nhận thư mục làm việc từ tiến trình cha một cách đáng tin cậy,
+    // nên đưa đường dẫn project vào system prompt và cấp quyền truy cập thư mục đó tường minh.
+    let cwd_prompt = format!(
+        "Thư mục project đang làm việc là: {cwd}. Mọi thao tác đọc/ghi file và lệnh shell phải thực hiện trong thư mục này. Khi người dùng hỏi về thư mục hiện tại, hãy trả lời theo đường dẫn trên."
+    );
     let mut args: Vec<String> = vec![
         "-p".to_string(),
         prompt.to_string(),
@@ -480,11 +497,16 @@ fn claude_args(prompt: &str, model: &str, conv_id: Option<&str>) -> Vec<String> 
         model.to_string(),
         // Giữ hành vi cũ của server: CLI chạy không hỏi quyền (không có người trả lời prompt)
         "--dangerously-skip-permissions".to_string(),
+        "--append-system-prompt".to_string(),
+        cwd_prompt,
     ];
     if let Some(cid) = conv_id {
         args.push("--resume".to_string());
         args.push(cid.to_string());
     }
+    // `--add-dir` nhận nhiều giá trị nên đặt cuối cùng
+    args.push("--add-dir".to_string());
+    args.push(cwd.to_string());
     args
 }
 
@@ -511,6 +533,7 @@ pub async fn start_chat_turn(state: AppState, req: ChatSendRequest) -> ChatSendR
             conversation_id: req.conversation_id,
             project_path: req.project_path,
             error: "Nội dung tin nhắn trống".to_string(),
+            source: String::new(),
         };
     }
 
@@ -533,7 +556,7 @@ pub async fn start_chat_turn(state: AppState, req: ChatSendRequest) -> ChatSendR
     let (bin, args) = match provider {
         Provider::ClaudeCli => (
             claude_code::claude_bin(),
-            claude_args(&trimmed_prompt, &model, resume_id),
+            claude_args(&trimmed_prompt, &model, resume_id, &effective_cwd),
         ),
         Provider::Agy => (
             agy_bin().to_string(),
@@ -580,6 +603,7 @@ pub async fn start_chat_turn(state: AppState, req: ChatSendRequest) -> ChatSendR
                 conversation_id: clean_conv_id,
                 project_path: effective_cwd,
                 error: format!("Không thể khởi chạy {} ({}): {}", label, bin, e),
+                source: provider_source(provider).to_string(),
             };
         }
     };
@@ -659,6 +683,7 @@ pub async fn start_chat_turn(state: AppState, req: ChatSendRequest) -> ChatSendR
         conversation_id: resolved_id,
         project_path: effective_cwd,
         error: String::new(),
+        source: provider_source(provider).to_string(),
     }
 }
 
