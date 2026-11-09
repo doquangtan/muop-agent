@@ -1409,6 +1409,7 @@ pub fn scan_all_sessions(
             },
             available_agents: p_available_agents,
             has_parallel_flow,
+            source: "agy".to_string(),
         });
     }
 
@@ -1642,6 +1643,7 @@ pub fn get_single_session_with_streams(
         custom_agents,
         available_agents,
         has_parallel_flow,
+        source: "agy".to_string(),
     })
 }
 

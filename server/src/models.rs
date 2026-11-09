@@ -155,6 +155,12 @@ pub struct ConversationSession {
     pub available_agents: Vec<String>,
     #[serde(default)]
     pub has_parallel_flow: bool,
+    #[serde(default = "default_source")]
+    pub source: String,
+}
+
+fn default_source() -> String {
+    "agy".to_string()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

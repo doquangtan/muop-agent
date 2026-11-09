@@ -378,12 +378,49 @@ class _DashboardScreenState extends State<DashboardScreen> {
     }
   }
 
+  String _getAgentForSession(ConversationSession? session) {
+    if (session == null) return 'Coordinator';
+    // Session của claude-cli chỉ dùng agent của claude-cli (Coordinator)
+    if (session.source == 'claude-cli') {
+      return 'Coordinator';
+    }
+    // Session của agy dùng agent của agy
+    return 'Coordinator';
+  }
+
   void _syncDefaultSelections() {
     if (_selectedSessionId == null &&
         !_isNewConversationMode &&
         _sessions.isNotEmpty) {
       _selectedSessionId = _sessions.first.id;
     }
+
+    // Xác định model phù hợp dựa trên session được chọn
+    final currentSess = _activeSession;
+    if (currentSess != null) {
+      if (currentSess.source == 'claude-cli') {
+        // Session claude-cli chỉ có thể dùng claude-cli models
+        final claudeModels = _availableModels
+            .where((m) => m.startsWith('claude-cli:'))
+            .toList();
+        if (claudeModels.isNotEmpty && !_selectedModel.startsWith('claude-cli:')) {
+          _selectedModel = claudeModels.first;
+        } else if (!_selectedModel.startsWith('claude-cli:') && _availableModels.isNotEmpty) {
+          _selectedModel = _availableModels.first;
+        }
+      } else {
+        // Session agy có thể dùng agy models
+        final agyModels = _availableModels
+            .where((m) => m.startsWith('agy:'))
+            .toList();
+        if (agyModels.isNotEmpty && !_selectedModel.startsWith('agy:')) {
+          _selectedModel = agyModels.first;
+        } else if (!_selectedModel.startsWith('agy:') && _availableModels.isNotEmpty) {
+          _selectedModel = _availableModels.first;
+        }
+      }
+    }
+
     if (_selectedModel == 'default' || !_availableModels.contains(_selectedModel)) {
       if (_availableModels.isNotEmpty) {
         _selectedModel = _availableModels.first;
@@ -391,8 +428,11 @@ class _DashboardScreenState extends State<DashboardScreen> {
         _selectedModel = 'claude-cli:sonnet';
       }
     }
+
+    // Đồng bộ agent dựa trên session
+    _selectedAgent = _getAgentForSession(currentSess);
+
     if (_activeChatProject == null && _projects.isNotEmpty) {
-      final currentSess = _activeSession;
       if (currentSess != null) {
         _activeChatProject = _projects.firstWhere(
           (p) => p.name == currentSess.projectName,

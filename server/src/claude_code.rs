@@ -617,6 +617,7 @@ fn parse_session_file(path: &Path) -> Option<ConversationSession> {
         custom_agents: Vec::new(),
         available_agents: Vec::new(),
         has_parallel_flow: false,
+        source: "claude-cli".to_string(),
     })
 }
 

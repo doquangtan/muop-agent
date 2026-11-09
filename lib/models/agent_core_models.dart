@@ -653,6 +653,7 @@ class ConversationSession {
     this.customAgents = const [],
     this.availableAgents = const ['Coordinator'],
     this.hasParallelFlow = false,
+    this.source = 'agy',
   });
 
   final String id;
@@ -678,6 +679,7 @@ class ConversationSession {
   final List<CustomAgentSpec> customAgents;
   final List<String> availableAgents;
   final bool hasParallelFlow;
+  final String source;
 
   int get subagentCount => subagentLanes.length;
 
@@ -705,6 +707,7 @@ class ConversationSession {
     List<CustomAgentSpec>? customAgents,
     List<String>? availableAgents,
     bool? hasParallelFlow,
+    String? source,
   }) {
     return ConversationSession(
       id: id ?? this.id,
@@ -730,6 +733,7 @@ class ConversationSession {
       customAgents: customAgents ?? this.customAgents,
       availableAgents: availableAgents ?? this.availableAgents,
       hasParallelFlow: hasParallelFlow ?? this.hasParallelFlow,
+      source: source ?? this.source,
     );
   }
 
@@ -757,6 +761,7 @@ class ConversationSession {
         'customAgents': customAgents.map((e) => e.toJson()).toList(),
         'availableAgents': availableAgents,
         'hasParallelFlow': hasParallelFlow,
+        'source': source,
       };
 
   factory ConversationSession.fromJson(Map<String, dynamic> json) {
@@ -852,6 +857,7 @@ class ConversationSession {
       customAgents: customList,
       availableAgents: availList.isNotEmpty ? availList : const ['Coordinator'],
       hasParallelFlow: json['hasParallelFlow'] == true,
+      source: '${json['source'] ?? 'agy'}',
     );
   }
 }
