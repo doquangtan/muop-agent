@@ -2293,9 +2293,13 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 Icon(
                   Icons.chat_bubble_outline_rounded,
                   size: 13,
-                  color: isSelected
-                      ? colorScheme.primary
-                      : colorScheme.onSurfaceVariant,
+                  color: session.source == 'claude-cli'
+                      ? (isSelected
+                          ? const Color(0xFFE07B54)
+                          : const Color(0xFFE07B54).withAlpha(170))
+                      : (isSelected
+                          ? const Color(0xFF4A90E2)
+                          : const Color(0xFF4A90E2).withAlpha(170)),
                 ),
                 const SizedBox(width: 8),
               ],
