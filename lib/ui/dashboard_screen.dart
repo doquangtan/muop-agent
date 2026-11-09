@@ -219,6 +219,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
             updated.status == AgentStatus.completed) {
           _isSendingPrompt = false;
         }
+        _syncDefaultSelections();
       }
     });
   }
@@ -2225,6 +2226,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
             _selectedSessionId = session.id;
             _activeChatProject = matchedProj;
             _expandedProjects.add(session.projectName);
+            _syncDefaultSelections();
           });
           if (session.steps.isEmpty) {
             _loadFullSessionDetail(session.id);

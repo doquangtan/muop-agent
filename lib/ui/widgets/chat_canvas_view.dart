@@ -3957,6 +3957,24 @@ class _ChatCanvasViewState extends State<ChatCanvasView> {
     );
   }
 
+  /// Lọc danh sách model dựa trên session source
+  List<String> _getFilteredModelsForSession() {
+    final session = widget.session;
+    if (session == null || widget.isNewConversationMode) {
+      return widget.availableModels;
+    }
+
+    if (session.source == 'claude-cli') {
+      return widget.availableModels
+          .where((m) => m.startsWith('claude-cli:'))
+          .toList();
+    } else {
+      return widget.availableModels
+          .where((m) => m.startsWith('agy:'))
+          .toList();
+    }
+  }
+
   /// Tìm nhóm Quota Antigravity khớp với Model đang chọn
   ({
     ModelQuotaGroup? primaryGroup,
@@ -4041,39 +4059,42 @@ class _ChatCanvasViewState extends State<ChatCanvasView> {
             tooltip:
                 'Chọn model: Claude Code CLI (claude) hoặc Antigravity (agy)',
             onSelected: widget.onSelectModel,
-            itemBuilder: (ctx) => [
-              for (final m in widget.availableModels) ...[
-                if (_isGroupStart(m))
-                  ..._providerHeaderEntries(
-                    m,
-                    colorScheme,
-                    showDivider: widget.availableModels.indexOf(m) > 0,
-                  ),
-                PopupMenuItem<String>(
-                  value: m,
-                  child: Row(
-                    children: [
-                      Icon(
-                        Icons.auto_awesome_rounded,
-                        size: 15,
-                        color: m == widget.selectedModel
-                            ? colorScheme.primary
-                            : colorScheme.onSurfaceVariant,
-                      ),
-                      const SizedBox(width: 8),
-                      Text(
-                        _formatModelLabel(m),
-                        style: TextStyle(
-                          fontWeight: m == widget.selectedModel
-                              ? FontWeight.w800
-                              : FontWeight.w500,
+            itemBuilder: (ctx) {
+              final filteredModels = _getFilteredModelsForSession();
+              return [
+                for (final m in filteredModels) ...[
+                  if (_isGroupStart(m))
+                    ..._providerHeaderEntries(
+                      m,
+                      colorScheme,
+                      showDivider: filteredModels.indexOf(m) > 0,
+                    ),
+                  PopupMenuItem<String>(
+                    value: m,
+                    child: Row(
+                      children: [
+                        Icon(
+                          Icons.auto_awesome_rounded,
+                          size: 15,
+                          color: m == widget.selectedModel
+                              ? colorScheme.primary
+                              : colorScheme.onSurfaceVariant,
                         ),
-                      ),
-                    ],
+                        const SizedBox(width: 8),
+                        Text(
+                          _formatModelLabel(m),
+                          style: TextStyle(
+                            fontWeight: m == widget.selectedModel
+                                ? FontWeight.w800
+                                : FontWeight.w500,
+                          ),
+                        ),
+                      ],
+                    ),
                   ),
-                ),
-              ],
-            ],
+                ],
+              ];
+            },
             child: Row(
               mainAxisSize: MainAxisSize.min,
               children: [
