@@ -510,7 +510,23 @@ fn provider_source(provider: Provider) -> &'static str {
     }
 }
 
-fn claude_args(prompt: &str, model: &str, conv_id: Option<&str>, cwd: &str) -> Vec<String> {
+/// Tách lệnh `/plan` ở đầu prompt: trả về (có bật plan mode, nội dung còn lại)
+fn strip_plan_command(prompt: &str) -> (bool, &str) {
+    match prompt.strip_prefix("/plan") {
+        Some(rest) if rest.is_empty() || rest.starts_with(char::is_whitespace) => {
+            (true, rest.trim())
+        }
+        _ => (false, prompt),
+    }
+}
+
+fn claude_args(
+    prompt: &str,
+    model: &str,
+    conv_id: Option<&str>,
+    cwd: &str,
+    plan_mode: bool,
+) -> Vec<String> {
     // Claude Code không tự nhận thư mục làm việc từ tiến trình cha một cách đáng tin cậy,
     // nên đưa đường dẫn project vào system prompt và cấp quyền truy cập thư mục đó tường minh.
     let cwd_prompt = format!(
@@ -525,11 +541,17 @@ fn claude_args(prompt: &str, model: &str, conv_id: Option<&str>, cwd: &str) -> V
         "--include-partial-messages".to_string(),
         "--model".to_string(),
         model.to_string(),
-        // Giữ hành vi cũ của server: CLI chạy không hỏi quyền (không có người trả lời prompt)
-        "--dangerously-skip-permissions".to_string(),
         "--append-system-prompt".to_string(),
         cwd_prompt,
     ];
+    if plan_mode {
+        // Plan mode chỉ có hiệu lực khi không đi kèm --dangerously-skip-permissions
+        args.push("--permission-mode".to_string());
+        args.push("plan".to_string());
+    } else {
+        // CLI chạy không hỏi quyền (không có người trả lời prompt)
+        args.push("--dangerously-skip-permissions".to_string());
+    }
     if let Some(cid) = conv_id {
         args.push("--resume".to_string());
         args.push(cid.to_string());
@@ -584,10 +606,22 @@ pub async fn start_chat_turn(state: AppState, req: ChatSendRequest) -> ChatSendR
     };
 
     let (bin, args) = match provider {
-        Provider::ClaudeCli => (
-            claude_code::claude_bin(),
-            claude_args(&trimmed_prompt, &model, resume_id, &effective_cwd),
-        ),
+        Provider::ClaudeCli => {
+            let (plan_mode, body) = strip_plan_command(&trimmed_prompt);
+            if body.is_empty() {
+                return ChatSendResponse {
+                    ok: false,
+                    conversation_id: req.conversation_id,
+                    project_path: req.project_path,
+                    error: "Nhập nội dung kế hoạch sau /plan".to_string(),
+                    source: String::new(),
+                };
+            }
+            (
+                claude_code::claude_bin(),
+                claude_args(body, &model, resume_id, &effective_cwd, plan_mode),
+            )
+        }
         Provider::Agy => (
             agy_bin().to_string(),
             agy_args(&trimmed_prompt, &model, resume_id, req.agent_name.trim()),

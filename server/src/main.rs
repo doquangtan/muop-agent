@@ -1,5 +1,6 @@
 mod chat;
 mod claude_code;
+mod claude_questions;
 mod models;
 mod scanner;
 mod store;
@@ -372,7 +373,7 @@ async fn handle_plan_action(
     let brain_dir = Path::new(scanner::BRAIN_DIR_PATH).join(conv_id);
     let meta_file = brain_dir.join(format!("{}.metadata.json", req.file_name));
 
-    if req.action == "approve" {
+    if req.action == "approve" || req.action == "cancel" {
         // Cập nhật metadata: requestFeedback = false
         if meta_file.exists() {
             if let Ok(content) = fs::read_to_string(&meta_file) {
@@ -391,12 +392,17 @@ async fn handle_plan_action(
             }
         }
 
-        let prompt = format!(
-            "Duyệt kế hoạch và bắt đầu chạy song song (Parallel Agents) cho tệp [{}].",
-            req.file_name
-        );
+        let (prompt, action_label, message) = if req.action == "cancel" {
+            ("cancel plan", "cancelled", "Đã hủy kế hoạch.")
+        } else {
+            (
+                "approved",
+                "approved",
+                "Đã phê duyệt kế hoạch thành công! Đang kích hoạt chạy tác vụ song song...",
+            )
+        };
         let send_req = ChatSendRequest {
-            prompt,
+            prompt: prompt.to_string(),
             project_path: "/home/john/Documents/muop-ecosystem/muop-erp-server".to_string(),
             conversation_id: conv_id.to_string(),
             agent_name: "Coordinator".to_string(),
@@ -411,8 +417,8 @@ async fn handle_plan_action(
             StatusCode::OK,
             Json(json!({
                 "ok": true,
-                "action": "approved",
-                "message": "Đã phê duyệt kế hoạch thành công! Đang kích hoạt chạy tác vụ song song...",
+                "action": action_label,
+                "message": message,
                 "chatResult": result
             })),
         )
@@ -1253,6 +1259,115 @@ async fn handle_file_download(Query(params): Query<HashMap<String, String>>) -> 
     }
 }
 
+/// Tương tác đang chờ (câu hỏi hoặc kế hoạch) của một phiên Claude Code; `pending` = null nếu không có
+async fn handle_claude_pending(
+    State(state): State<AppState>,
+    Query(params): Query<HashMap<String, String>>,
+) -> impl IntoResponse {
+    let cid = params
+        .get("id")
+        .or_else(|| params.get("conversationId"))
+        .map(|s| s.trim().to_string())
+        .unwrap_or_default();
+    if cid.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "ok": false, "error": "Thiếu id phiên hội thoại (id / conversationId)" })),
+        )
+            .into_response();
+    }
+    let running = state
+        .active_streams
+        .lock()
+        .map(|s| s.get(&cid).map(|x| x.is_running).unwrap_or(false))
+        .unwrap_or(false);
+    let lookup = cid.clone();
+    let pending = if running {
+        None
+    } else {
+        tokio::task::spawn_blocking(move || claude_questions::pending_for_session(&lookup))
+            .await
+            .ok()
+            .flatten()
+    };
+    (
+        StatusCode::OK,
+        Json(json!({ "ok": true, "conversationId": cid, "pending": pending })),
+    )
+        .into_response()
+}
+
+/// Phản hồi tương tác đang chờ (trả lời câu hỏi / duyệt hoặc góp ý kế hoạch) bằng một lượt chat mới (`--resume`)
+async fn handle_claude_respond(
+    State(state): State<AppState>,
+    Json(req): Json<claude_questions::ClaudeInteractionResponse>,
+) -> impl IntoResponse {
+    let cid = req.conversation_id.trim().to_string();
+    if cid.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "ok": false, "error": "Thiếu conversationId" })),
+        )
+            .into_response();
+    }
+    let lookup = cid.clone();
+    let pending =
+        tokio::task::spawn_blocking(move || claude_questions::pending_for_session(&lookup))
+            .await
+            .ok()
+            .flatten();
+    let Some(pending) = pending.filter(|p| p.tool_use_id == req.tool_use_id) else {
+        return (
+            StatusCode::CONFLICT,
+            Json(json!({ "ok": false, "error": "Tương tác này không còn chờ phản hồi" })),
+        )
+            .into_response();
+    };
+    let running = state
+        .active_streams
+        .lock()
+        .map(|s| s.get(&cid).map(|x| x.is_running).unwrap_or(false))
+        .unwrap_or(false);
+    if running {
+        return (
+            StatusCode::CONFLICT,
+            Json(
+                json!({ "ok": false, "error": "Phiên đang chạy, hãy chờ lượt hiện tại kết thúc" }),
+            ),
+        )
+            .into_response();
+    }
+    let prompt = match claude_questions::build_response_prompt(&pending, &req) {
+        Ok(prompt) => prompt,
+        Err(message) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({ "ok": false, "error": message })),
+            )
+                .into_response();
+        }
+    };
+    let result = chat::start_chat_turn(
+        state.clone(),
+        models::ChatSendRequest {
+            prompt,
+            project_path: req.project_path,
+            conversation_id: cid,
+            agent_name: String::new(),
+            model: req.model,
+        },
+    )
+    .await;
+    state.broadcast_session_update(&result.conversation_id);
+    state.emit_session_files_to_room(&result.conversation_id);
+    let status = if result.ok {
+        StatusCode::OK
+    } else {
+        StatusCode::BAD_REQUEST
+    };
+    (status, Json(result)).into_response()
+}
+
 async fn handle_ai_questions(
     Query(params): Query<HashMap<String, String>>,
     State(state): State<AppState>,
@@ -1437,6 +1552,8 @@ async fn main() {
         .route("/api/files/list", get(handle_files_list))
         .route("/api/files/read", get(handle_file_read))
         .route("/api/files/download", get(handle_file_download))
+        .route("/api/claude/pending", get(handle_claude_pending))
+        .route("/api/claude/respond", post(handle_claude_respond))
         .route("/api/ai-questions", get(handle_ai_questions))
         .route("/api/ai-questions/answer", post(handle_ai_question_answer))
         .layer(io_layer)
