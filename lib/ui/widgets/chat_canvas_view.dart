@@ -5,7 +5,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../../models/agent_models.dart';
-import 'complete_markdown_doc_view.dart';
+import 'interaction_dialogs.dart';
+import 'interaction_widgets.dart';
 import 'server_file_browser_sheet.dart';
 import '../theme/app_theme.dart';
 
@@ -24,6 +25,7 @@ class ChatCanvasView extends StatefulWidget {
     required this.isSending,
     required this.activeStream,
     this.lastDownloadedFilePath,
+    this.pendingClaudeInteraction,
     required this.onSelectProject,
     required this.onSelectAgent,
     required this.onSelectModel,
@@ -35,8 +37,10 @@ class ChatCanvasView extends StatefulWidget {
     required this.onInspectFileChange,
     required this.onDownloadFile,
     required this.onOpenDownloadedFile,
+    this.onRespondClaudeInteraction,
     this.onApprovePlan,
     this.onRejectPlan,
+    this.onCancelPlan,
     this.onLoadOlderHistory,
     this.onFetchClaudeExtensions,
     this.onOpenParallelFlow,
@@ -57,6 +61,13 @@ class ChatCanvasView extends StatefulWidget {
   final bool isSending;
   final ChatTurnStreamState? activeStream;
   final String? lastDownloadedFilePath;
+  final PendingClaudeInteraction? pendingClaudeInteraction;
+  final Future<String?> Function(
+    PendingClaudeInteraction interaction,
+    List<Map<String, String>> answers,
+    String decision,
+    String feedback,
+  )? onRespondClaudeInteraction;
   final ValueChanged<ProjectWorkspace> onSelectProject;
   final ValueChanged<String> onSelectAgent;
   final ValueChanged<String> onSelectModel;
@@ -71,6 +82,7 @@ class ChatCanvasView extends StatefulWidget {
   final ValueChanged<String> onOpenDownloadedFile;
   final ValueChanged<PlanArtifactInfo>? onApprovePlan;
   final void Function(PlanArtifactInfo plan, String feedback)? onRejectPlan;
+  final ValueChanged<PlanArtifactInfo>? onCancelPlan;
   final Future<bool> Function()? onLoadOlderHistory;
   final Future<List<CustomAgentSpec>?> Function(String projectPath)?
       onFetchClaudeExtensions;
@@ -191,6 +203,7 @@ class _ChatCanvasViewState extends State<ChatCanvasView> {
   bool _isTaskRunningExpanded = false;
   String? _dismissedGitAheadHash;
   bool _isPushingGit = false;
+  bool _composerRevealed = false;
 
   /// Lưu trạng thái mở rộng (show full) của từng đoạn response theo turnIndex
   final Set<int> _expandedResponseTurns = {};
@@ -235,8 +248,12 @@ class _ChatCanvasViewState extends State<ChatCanvasView> {
     super.didUpdateWidget(oldWidget);
     final oldId = oldWidget.session?.id;
     final newId = widget.session?.id;
+    if (_isTurnRunning(oldWidget) && !_isTurnRunning(widget)) {
+      _composerRevealed = false;
+    }
     if (oldId != newId ||
         oldWidget.isNewConversationMode != widget.isNewConversationMode) {
+      _composerRevealed = false;
       _loadedTurnCount = _pageSize;
       _isLoadingMoreTurns = false;
       _hasLoadedAllServerHistory = false;
@@ -375,10 +392,22 @@ class _ChatCanvasViewState extends State<ChatCanvasView> {
     }
   }
 
+  static bool _isTurnRunning(ChatCanvasView w) {
+    final session = w.session;
+    return !w.isNewConversationMode &&
+        (session?.isInterrupted != true) &&
+        (w.isSending ||
+            (w.activeStream != null &&
+                w.activeStream!.isRunning &&
+                w.activeStream!.activeStepType != 'interrupted') ||
+            (session != null && session.status == AgentStatus.running));
+  }
+
   void _handleSend() {
     final text = _promptController.text.trim();
     if (text.isEmpty || widget.isSending) return;
     _promptController.clear();
+    setState(() => _composerRevealed = false);
     widget.onSendMessage(text);
     Future.delayed(const Duration(milliseconds: 100), () {
       _scrollToBottom(animated: true);
@@ -668,13 +697,7 @@ class _ChatCanvasViewState extends State<ChatCanvasView> {
     final colorScheme = Theme.of(context).colorScheme;
     final isMobile = MediaQuery.sizeOf(context).width < 760;
     final session = widget.session;
-    final isTurnRunning = !widget.isNewConversationMode &&
-        (session?.isInterrupted != true) &&
-        (widget.isSending ||
-            (widget.activeStream != null &&
-                widget.activeStream!.isRunning &&
-                widget.activeStream!.activeStepType != 'interrupted') ||
-            (session != null && session.status == AgentStatus.running));
+    final isTurnRunning = _isTurnRunning(widget);
 
     final currentSessionId = session?.id;
     final lastStepForSig =
@@ -1133,6 +1156,11 @@ class _ChatCanvasViewState extends State<ChatCanvasView> {
             .where((p) => p.requestFeedback)
             .toList() ??
         const [];
+    final claudeInteraction = widget.pendingClaudeInteraction;
+    final showClaudeInteraction = claudeInteraction != null &&
+        widget.onRespondClaudeInteraction != null &&
+        claudeInteraction.conversationId == widget.session?.id &&
+        !isTurnRunning;
 
     return Container(
       padding: EdgeInsets.fromLTRB(
@@ -1162,9 +1190,19 @@ class _ChatCanvasViewState extends State<ChatCanvasView> {
                 for (final plan in pendingPlans)
                   Padding(
                     padding: const EdgeInsets.only(bottom: 6),
-                    child: _buildPlanApprovalCard(context, plan, isMobile),
+                    child: _buildPlanBanner(context, plan),
                   ),
               ],
+
+              // [0.2] CÂU HỎI / KẾ HOẠCH ĐANG CHỜ CỦA CLAUDE CODE CLI (mở dialog khi bấm)
+              if (showClaudeInteraction)
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 6),
+                  child: _buildClaudeInteractionBanner(
+                    context,
+                    claudeInteraction,
+                  ),
+                ),
 
               // [0.3] CẢNH BÁO TIẾN TRÌNH AGY BỊ GIÁN ĐOẠN (SERVER RESTART / CRASH)
               if (widget.session != null &&
@@ -1201,11 +1239,110 @@ class _ChatCanvasViewState extends State<ChatCanvasView> {
               _buildModelUsageMiddleBar(context, isMobile),
               const SizedBox(height: 5),
 
-              // [3] PHẦN DƯỚI: KHUNG NHẬP CHAT (CHAT COMPOSER)
-              _buildAntigravityComposer(context, isMobile, isTurnRunning),
+              // [3] PHẦN DƯỚI: KHUNG NHẬP CHAT (ẩn khi đang chạy, bấm để hiện)
+              if (isTurnRunning && !_composerRevealed)
+                _buildHiddenComposerBar(context)
+              else ...[
+                if (isTurnRunning)
+                  Align(
+                    alignment: Alignment.centerRight,
+                    child: TextButton.icon(
+                      onPressed: () => setState(() => _composerRevealed = false),
+                      icon: const Icon(Icons.keyboard_arrow_down_rounded, size: 18),
+                      label: const Text('Ẩn khung chat'),
+                    ),
+                  ),
+                _buildAntigravityComposer(context, isMobile, isTurnRunning),
+              ],
             ],
           ),
         ),
+      ),
+    );
+  }
+
+  Widget _buildClaudeInteractionBanner(
+    BuildContext context,
+    PendingClaudeInteraction interaction,
+  ) {
+    return InteractionBanner(
+      icon: interaction.isPlan
+          ? Icons.assignment_outlined
+          : Icons.help_outline_rounded,
+      title: interaction.isPlan
+          ? 'Claude đã trình kế hoạch, chờ bạn duyệt'
+          : 'Claude đang chờ bạn trả lời',
+      subtitle: interaction.summary,
+      actionLabel: interaction.isPlan ? 'Xem & duyệt' : 'Trả lời',
+      onAction: () => _openClaudeInteraction(context, interaction),
+    );
+  }
+
+  void _openClaudeInteraction(
+    BuildContext context,
+    PendingClaudeInteraction interaction,
+  ) {
+    final respond = widget.onRespondClaudeInteraction!;
+    if (interaction.isPlan) {
+      showPlanReviewDialog(
+        context: context,
+        title: 'Kế hoạch từ Claude',
+        subtitle: 'Claude chưa thực hiện thay đổi nào cho đến khi bạn duyệt',
+        markdown: interaction.plan,
+        onDecision: (decision, feedback) =>
+            respond(interaction, const [], decision.name, feedback),
+      );
+    } else {
+      showQuestionDialog(
+        context: context,
+        questions: interaction.questions,
+        onSubmit: (answers) => respond(interaction, answers, '', ''),
+      );
+    }
+  }
+
+  Widget _buildHiddenComposerBar(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+    final textTheme = Theme.of(context).textTheme;
+
+    return Container(
+      padding: const EdgeInsets.fromLTRB(14, 6, 6, 6),
+      decoration: BoxDecoration(
+        color: colorScheme.surfaceContainer,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: colorScheme.outlineVariant, width: 1.1),
+      ),
+      child: Row(
+        children: [
+          SizedBox(
+            width: 14,
+            height: 14,
+            child: CircularProgressIndicator(
+              strokeWidth: 2,
+              color: colorScheme.primary,
+            ),
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Text(
+              'Đang chạy...',
+              overflow: TextOverflow.ellipsis,
+              style: textTheme.bodySmall?.copyWith(
+                color: colorScheme.onSurfaceVariant,
+              ),
+            ),
+          ),
+          IconButton(
+            tooltip: 'Dừng lượt chạy (Stop)',
+            onPressed: widget.onStopTurn,
+            icon: Icon(Icons.stop_rounded, size: 18, color: context.scheme.error),
+          ),
+          TextButton.icon(
+            onPressed: () => setState(() => _composerRevealed = true),
+            icon: const Icon(Icons.keyboard_arrow_up_rounded, size: 18),
+            label: const Text('Hiện khung chat'),
+          ),
+        ],
       ),
     );
   }
@@ -1563,514 +1700,32 @@ class _ChatCanvasViewState extends State<ChatCanvasView> {
     );
   }
 
-  /// [0] PLAN APPROVAL CARD — Hiển thị kế hoạch cần duyệt với 3 hành động:
-  /// 👁️ Xem chi tiết | ✏️ Góp ý / Sửa | ✅ Duyệt Kế Hoạch (Proceed)
-  Widget _buildPlanApprovalCard(
-    BuildContext context,
-    PlanArtifactInfo plan,
-    bool isMobile,
-  ) {
-    final colorScheme = Theme.of(context).colorScheme;
-    final textTheme = Theme.of(context).textTheme;
-
-    return Container(
-      decoration: BoxDecoration(
-        color: colorScheme.surfaceContainerHighest.withAlpha(220),
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(
-          color: context.status.warning.withAlpha(210),
-          width: 1.2,
-        ),
-        boxShadow: [
-          BoxShadow(
-            color: context.status.warning.withAlpha(25),
-            blurRadius: 8,
-            offset: const Offset(0, 2),
-          ),
-        ],
-      ),
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          // Row 1: Status Icon + Title + Chip
-          Row(
-            children: [
-              Container(
-                padding: const EdgeInsets.all(5),
-                decoration: BoxDecoration(
-                  color: context.status.warning.withAlpha(40),
-                  borderRadius: BorderRadius.circular(6),
-                ),
-                child: Icon(
-                  Icons.assignment_outlined,
-                  size: 16,
-                  color: context.status.warning,
-                ),
-              ),
-              const SizedBox(width: 8),
-              Expanded(
-                child: Text(
-                  'Kế hoạch đang chờ duyệt: ${plan.fileName}',
-                  style: textTheme.labelLarge?.copyWith(
-                    fontWeight: FontWeight.w700,
-                    color: colorScheme.onSurface,
-                  ),
-                  overflow: TextOverflow.ellipsis,
-                ),
-              ),
-              const SizedBox(width: 6),
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
-                decoration: BoxDecoration(
-                  color: context.status.warning.withAlpha(35),
-                  borderRadius: BorderRadius.circular(10),
-                  border: Border.all(
-                    color: context.status.warning.withAlpha(120),
-                    width: 0.8,
-                  ),
-                ),
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Container(
-                      width: 6,
-                      height: 6,
-                      decoration: BoxDecoration(
-                        color: context.status.warning,
-                        shape: BoxShape.circle,
-                      ),
-                    ),
-                    const SizedBox(width: 4),
-                    Text(
-                      'Chờ duyệt',
-                      style: TextStyle(
-                        fontSize: 10.5,
-                        fontWeight: FontWeight.w600,
-                        color: context.status.warning,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ],
-          ),
-
-          // Row 2: Summary description
-          if (plan.summary.isNotEmpty) ...[
-            const SizedBox(height: 5),
-            Padding(
-              padding: const EdgeInsets.only(left: 29),
-              child: Text(
-                plan.summary,
-                style: textTheme.bodySmall?.copyWith(
-                  color: colorScheme.onSurfaceVariant,
-                  fontSize: 12,
-                ),
-                maxLines: 2,
-                overflow: TextOverflow.ellipsis,
-              ),
-            ),
-          ],
-          const SizedBox(height: 8),
-
-          // Row 3: Action Buttons
-          isMobile
-              ? Column(
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  children: [
-                    Row(
-                      children: [
-                        Expanded(
-                          child: OutlinedButton.icon(
-                            style: OutlinedButton.styleFrom(
-                              padding: const EdgeInsets.symmetric(
-                                horizontal: 8,
-                                vertical: 6,
-                              ),
-                              visualDensity: VisualDensity.compact,
-                              shape: RoundedRectangleBorder(
-                                borderRadius: BorderRadius.circular(8),
-                              ),
-                            ),
-                            icon:
-                                const Icon(Icons.visibility_outlined, size: 14),
-                            label: const Text(
-                              'Xem chi tiết',
-                              style: TextStyle(fontSize: 12),
-                            ),
-                            onPressed: () =>
-                                _showPlanDetailModal(context, plan, isMobile),
-                          ),
-                        ),
-                        const SizedBox(width: 6),
-                        Expanded(
-                          child: OutlinedButton.icon(
-                            style: OutlinedButton.styleFrom(
-                              padding: const EdgeInsets.symmetric(
-                                horizontal: 8,
-                                vertical: 6,
-                              ),
-                              visualDensity: VisualDensity.compact,
-                              shape: RoundedRectangleBorder(
-                                borderRadius: BorderRadius.circular(8),
-                              ),
-                            ),
-                            icon:
-                                const Icon(Icons.edit_note_outlined, size: 14),
-                            label: const Text(
-                              'Góp ý / Sửa',
-                              style: TextStyle(fontSize: 12),
-                            ),
-                            onPressed: () =>
-                                _showPlanFeedbackDialog(context, plan),
-                          ),
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 6),
-                    FilledButton.icon(
-                      style: FilledButton.styleFrom(
-                        backgroundColor: context.status.success,
-                        foregroundColor: context.scheme.onPrimary,
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 10,
-                          vertical: 8,
-                        ),
-                        visualDensity: VisualDensity.compact,
-                        shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(8),
-                        ),
-                      ),
-                      icon: const Icon(Icons.check_circle_outline, size: 15),
-                      label: const Text(
-                        'Duyệt Kế Hoạch (Proceed)',
-                        style: TextStyle(
-                          fontSize: 12.5,
-                          fontWeight: FontWeight.bold,
-                        ),
-                      ),
-                      onPressed: () => widget.onApprovePlan?.call(plan),
-                    ),
-                  ],
-                )
-              : Row(
-                  mainAxisAlignment: MainAxisAlignment.end,
-                  children: [
-                    OutlinedButton.icon(
-                      style: OutlinedButton.styleFrom(
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 10,
-                          vertical: 6,
-                        ),
-                        visualDensity: VisualDensity.compact,
-                        shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(8),
-                        ),
-                      ),
-                      icon: const Icon(Icons.visibility_outlined, size: 14),
-                      label: const Text(
-                        'Xem chi tiết',
-                        style: TextStyle(fontSize: 12),
-                      ),
-                      onPressed: () =>
-                          _showPlanDetailModal(context, plan, isMobile),
-                    ),
-                    const SizedBox(width: 8),
-                    OutlinedButton.icon(
-                      style: OutlinedButton.styleFrom(
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 10,
-                          vertical: 6,
-                        ),
-                        visualDensity: VisualDensity.compact,
-                        shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(8),
-                        ),
-                      ),
-                      icon: const Icon(Icons.edit_note_outlined, size: 14),
-                      label: const Text(
-                        'Góp ý / Sửa',
-                        style: TextStyle(fontSize: 12),
-                      ),
-                      onPressed: () => _showPlanFeedbackDialog(context, plan),
-                    ),
-                    const SizedBox(width: 8),
-                    FilledButton.icon(
-                      style: FilledButton.styleFrom(
-                        backgroundColor: context.status.success,
-                        foregroundColor: context.scheme.onPrimary,
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 12,
-                          vertical: 8,
-                        ),
-                        visualDensity: VisualDensity.compact,
-                        shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(8),
-                        ),
-                      ),
-                      icon: const Icon(Icons.check_circle_outline, size: 15),
-                      label: const Text(
-                        'Duyệt Kế Hoạch (Proceed)',
-                        style: TextStyle(
-                          fontSize: 12.5,
-                          fontWeight: FontWeight.bold,
-                        ),
-                      ),
-                      onPressed: () => widget.onApprovePlan?.call(plan),
-                    ),
-                  ],
-                ),
-        ],
-      ),
+  Widget _buildPlanBanner(BuildContext context, PlanArtifactInfo plan) {
+    return InteractionBanner(
+      icon: Icons.assignment_outlined,
+      title: 'Agent đã trình kế hoạch, chờ bạn duyệt',
+      subtitle: plan.fileName,
+      actionLabel: 'Xem & duyệt',
+      onAction: () => _showPlanReview(context, plan),
     );
   }
 
-  void _showPlanDetailModal(
-    BuildContext context,
-    PlanArtifactInfo plan,
-    bool isMobile,
-  ) {
-    showModalBottomSheet<void>(
+  void _showPlanReview(BuildContext context, PlanArtifactInfo plan) {
+    showPlanReviewDialog(
       context: context,
-      isScrollControlled: true,
-      useSafeArea: true,
-      backgroundColor: Theme.of(context).colorScheme.surface,
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
-      ),
-      builder: (ctx) {
-        final colorScheme = Theme.of(ctx).colorScheme;
-        return DraggableScrollableSheet(
-          initialChildSize: 0.85,
-          minChildSize: 0.45,
-          maxChildSize: 0.95,
-          expand: false,
-          builder: (sheetContext, scrollController) {
-            return Column(
-              children: [
-                Center(
-                  child: Container(
-                    margin: const EdgeInsets.only(top: 10, bottom: 6),
-                    width: 40,
-                    height: 4,
-                    decoration: BoxDecoration(
-                      color: colorScheme.outlineVariant,
-                      borderRadius: BorderRadius.circular(2),
-                    ),
-                  ),
-                ),
-                Padding(
-                  padding: const EdgeInsets.fromLTRB(16, 4, 16, 12),
-                  child: Row(
-                    children: [
-                      Container(
-                        padding: const EdgeInsets.all(8),
-                        decoration: BoxDecoration(
-                          color: colorScheme.primaryContainer,
-                          borderRadius: BorderRadius.circular(10),
-                        ),
-                        child: Icon(
-                          Icons.assignment_outlined,
-                          size: 20,
-                          color: colorScheme.onPrimaryContainer,
-                        ),
-                      ),
-                      const SizedBox(width: 12),
-                      Expanded(
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text(
-                              plan.fileName,
-                              style: const TextStyle(
-                                fontSize: 15,
-                                fontWeight: FontWeight.bold,
-                              ),
-                              overflow: TextOverflow.ellipsis,
-                            ),
-                            Text(
-                              plan.summary.isNotEmpty
-                                  ? plan.summary
-                                  : 'Kế hoạch triển khai kiến trúc',
-                              style: TextStyle(
-                                fontSize: 11.5,
-                                color: colorScheme.onSurfaceVariant,
-                              ),
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                            ),
-                          ],
-                        ),
-                      ),
-                      IconButton(
-                        icon: const Icon(Icons.close_rounded),
-                        onPressed: () => Navigator.of(ctx).pop(),
-                      ),
-                    ],
-                  ),
-                ),
-                const Divider(height: 1),
-                Expanded(
-                  child: SingleChildScrollView(
-                    controller: scrollController,
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 16,
-                      vertical: 12,
-                    ),
-                    child: CompleteMarkdownDocView(
-                      markdown: plan.content.isNotEmpty
-                          ? plan.content
-                          : '# ${plan.fileName}\n\n*Không có nội dung chi tiết.*',
-                      isMobile: isMobile,
-                      onLinkTap: (url, label) => _handleLinkTap(url, label),
-                    ),
-                  ),
-                ),
-                const Divider(height: 1),
-                Container(
-                  padding: const EdgeInsets.fromLTRB(16, 10, 16, 16),
-                  color: colorScheme.surfaceContainerLow,
-                  child: SafeArea(
-                    top: false,
-                    child: Row(
-                      children: [
-                        Expanded(
-                          child: OutlinedButton.icon(
-                            style: OutlinedButton.styleFrom(
-                              padding: const EdgeInsets.symmetric(vertical: 12),
-                              side: BorderSide(color: colorScheme.outline),
-                              shape: RoundedRectangleBorder(
-                                borderRadius: BorderRadius.circular(10),
-                              ),
-                            ),
-                            icon: const Icon(Icons.edit_note_rounded, size: 18),
-                            label: const Text('Góp ý / Sửa'),
-                            onPressed: () {
-                              Navigator.of(ctx).pop();
-                              _showPlanFeedbackDialog(context, plan);
-                            },
-                          ),
-                        ),
-                        const SizedBox(width: 12),
-                        Expanded(
-                          flex: 2,
-                          child: FilledButton.icon(
-                            style: FilledButton.styleFrom(
-                              backgroundColor: context.status.success,
-                              foregroundColor: context.scheme.onPrimary,
-                              padding: const EdgeInsets.symmetric(vertical: 12),
-                              shape: RoundedRectangleBorder(
-                                borderRadius: BorderRadius.circular(10),
-                              ),
-                            ),
-                            icon: const Icon(
-                              Icons.check_circle_outline,
-                              size: 18,
-                            ),
-                            label: const Text(
-                              'Duyệt Kế Hoạch (Proceed)',
-                              style: TextStyle(fontWeight: FontWeight.bold),
-                            ),
-                            onPressed: () {
-                              Navigator.of(ctx).pop();
-                              widget.onApprovePlan?.call(plan);
-                            },
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                ),
-              ],
-            );
-          },
-        );
-      },
-    );
-  }
-
-  void _showPlanFeedbackDialog(
-    BuildContext context,
-    PlanArtifactInfo plan,
-  ) {
-    final textController = TextEditingController();
-    showDialog<void>(
-      context: context,
-      builder: (ctx) {
-        final colorScheme = Theme.of(ctx).colorScheme;
-        return AlertDialog(
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(16),
-          ),
-          title: Row(
-            children: [
-              Icon(Icons.edit_note_rounded, color: colorScheme.primary),
-              const SizedBox(width: 8),
-              const Expanded(
-                child: Text(
-                  'Yêu cầu sửa đổi Kế hoạch',
-                  style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
-                ),
-              ),
-            ],
-          ),
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                'Nhập các điểm bạn muốn AI điều chỉnh trong kế hoạch [${plan.fileName}]:',
-                style: TextStyle(
-                  fontSize: 12.5,
-                  color: colorScheme.onSurfaceVariant,
-                ),
-              ),
-              const SizedBox(height: 12),
-              TextField(
-                controller: textController,
-                maxLines: 4,
-                autofocus: true,
-                decoration: InputDecoration(
-                  hintText:
-                      'Ví dụ: Cần bổ sung kiểm tra tồn kho hoặc cấu trúc outbox...',
-                  hintStyle: TextStyle(
-                    fontSize: 12,
-                    color: colorScheme.outline,
-                  ),
-                  filled: true,
-                  fillColor:
-                      colorScheme.surfaceContainerHighest.withAlpha(120),
-                  border: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(10),
-                    borderSide: BorderSide(color: colorScheme.outlineVariant),
-                  ),
-                  focusedBorder: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(10),
-                    borderSide:
-                        BorderSide(color: colorScheme.primary, width: 1.5),
-                  ),
-                ),
-              ),
-            ],
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.of(ctx).pop(),
-              child: const Text('Hủy'),
-            ),
-            FilledButton.icon(
-              icon: const Icon(Icons.send_rounded, size: 16),
-              label: const Text('Gửi phản hồi'),
-              onPressed: () {
-                final feedback = textController.text.trim();
-                Navigator.of(ctx).pop();
-                widget.onRejectPlan?.call(plan, feedback);
-              },
-            ),
-          ],
-        );
+      title: plan.fileName,
+      subtitle: plan.summary,
+      markdown: plan.content,
+      onDecision: (decision, feedback) async {
+        switch (decision) {
+          case PlanDecision.approve:
+            widget.onApprovePlan?.call(plan);
+          case PlanDecision.cancel:
+            widget.onCancelPlan?.call(plan);
+          case PlanDecision.feedback:
+            widget.onRejectPlan?.call(plan, feedback);
+        }
+        return null;
       },
     );
   }

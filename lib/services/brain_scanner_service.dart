@@ -844,7 +844,7 @@ class BrainScannerService {
     required String address,
     required String conversationId,
     required String fileName,
-    required String action, // 'approve' | 'reject'
+    required String action, // 'approve' | 'reject' | 'cancel'
     String feedback = '',
     String model = '',
   }) async {
@@ -1147,9 +1147,25 @@ class BrainScannerService {
         await raf.close();
       }
 
+      var savedPath = outFile.path;
+      if (Platform.isAndroid) {
+        // Chuyển bản tạm trong cache sang thư mục Downloads công khai (MediaStore).
+        // Nếu thất bại (ví dụ Android < 10) thì giữ bản trong cache.
+        try {
+          final uri = await _fileOpenerChannel.invokeMethod<String>(
+            'saveToDownloads',
+            {'path': outFile.path, 'name': filename},
+          );
+          if (uri != null && uri.isNotEmpty) {
+            await outFile.delete();
+            savedPath = uri;
+          }
+        } catch (_) {}
+      }
+
       return FileDownloadResult(
         ok: true,
-        savedPath: outFile.path,
+        savedPath: savedPath,
         sizeBytes: received,
       );
     } catch (e) {
@@ -1174,18 +1190,21 @@ class BrainScannerService {
       return (ok: false, error: 'Đường dẫn tệp trống');
     }
     try {
-      final f = File(cleanPath);
-      if (!await f.exists()) {
-        return (ok: false, error: 'Tệp không tồn tại tại: $cleanPath');
-      }
-
+      // Android: đường dẫn content:// (Downloads qua MediaStore) được native xử lý trực tiếp
       if (Platform.isAndroid) {
         await _fileOpenerChannel.invokeMethod<bool>(
           'openFile',
           {'path': cleanPath},
         );
         return (ok: true, error: '');
-      } else if (Platform.isLinux) {
+      }
+
+      final f = File(cleanPath);
+      if (!await f.exists()) {
+        return (ok: false, error: 'Tệp không tồn tại tại: $cleanPath');
+      }
+
+      if (Platform.isLinux) {
         final res = await Process.run('xdg-open', [cleanPath]);
         if (res.exitCode == 0) {
           return (ok: true, error: '');
@@ -1774,5 +1793,70 @@ class BrainScannerService {
       client.close(force: true);
     }
     return false;
+  }
+
+  /// Tương tác Claude CLI đang chờ người dùng (câu hỏi hoặc kế hoạch cần duyệt); null nếu không có
+  Future<PendingClaudeInteraction?> fetchPendingClaudeInteraction(String conversationId) async {
+    final baseUrl = normalizeBaseUrl(_connectedBaseUrl);
+    final client = HttpClient()
+      ..connectionTimeout = const Duration(seconds: 4);
+    try {
+      final uri = Uri.parse(
+        '$baseUrl/api/claude/pending?id=${Uri.encodeQueryComponent(conversationId)}',
+      );
+      final req = await client.getUrl(uri);
+      final resp = await req.close().timeout(const Duration(seconds: 6));
+      if (resp.statusCode == 200) {
+        final body = await resp.transform(utf8.decoder).join();
+        final json = jsonDecode(body) as Map<String, dynamic>;
+        final pending = json['pending'];
+        if (pending is Map) {
+          return PendingClaudeInteraction.fromJson(Map<String, dynamic>.from(pending));
+        }
+      }
+    } catch (_) {
+    } finally {
+      client.close(force: true);
+    }
+    return null;
+  }
+
+  /// Phản hồi tương tác Claude đang chờ (trả lời câu hỏi hoặc duyệt/góp ý kế hoạch).
+  /// Trả về null nếu thành công, ngược lại là thông báo lỗi.
+  Future<String?> respondClaudeInteraction({
+    required String conversationId,
+    required String toolUseId,
+    required String projectPath,
+    required String model,
+    required String decision,
+    List<Map<String, String>> answers = const [],
+    String feedback = '',
+  }) async {
+    final baseUrl = normalizeBaseUrl(_connectedBaseUrl);
+    final client = HttpClient()
+      ..connectionTimeout = const Duration(seconds: 6);
+    try {
+      final uri = Uri.parse('$baseUrl/api/claude/respond');
+      final req = await client.postUrl(uri);
+      req.headers.contentType = ContentType.json;
+      req.write(jsonEncode({
+        'conversationId': conversationId,
+        'toolUseId': toolUseId,
+        'projectPath': projectPath,
+        'model': model,
+        'answers': answers,
+        'decision': decision,
+        'feedback': feedback,
+      }));
+      final resp = await req.close().timeout(const Duration(seconds: 15));
+      final body = await resp.transform(utf8.decoder).join();
+      if (resp.statusCode == 200) return null;
+      final map = jsonDecode(body) as Map<String, dynamic>;
+      return '${map['error'] ?? 'HTTP ${resp.statusCode}'}';
+    } catch (e) {
+      return 'Không gửi được câu trả lời: $e';
+    } finally {
+      client.close(force: true);
+    }
   }
 }

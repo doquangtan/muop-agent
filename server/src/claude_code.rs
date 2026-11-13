@@ -5,13 +5,14 @@
 
 use crate::models::{
     AgentStep, ChatTurnStreamState, CommandExecutionRecord, ConversationSession, CustomAgentSpec,
-    FileTouchRecord, ModelQuotaBucket, ModelQuotaGroup, SessionStepsPageResponse, ToolCallInfo,
+    FileTouchRecord, ModelQuotaBucket, ModelQuotaGroup, SessionStepsPageResponse, SubagentLane,
+    ToolCallInfo,
 };
 use crate::scanner::parse_markdown_frontmatter;
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::fs;
-use std::io::Write;
+use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::{Mutex, OnceLock};
@@ -386,7 +387,7 @@ pub fn normalize_model(raw: &str) -> String {
     }
 }
 
-fn fingerprint(path: &Path) -> Option<(u64, u64)> {
+pub(crate) fn fingerprint(path: &Path) -> Option<(u64, u64)> {
     let meta = fs::metadata(path).ok()?;
     let mtime = meta
         .modified()
@@ -395,6 +396,24 @@ fn fingerprint(path: &Path) -> Option<(u64, u64)> {
         .ok()?
         .as_millis() as u64;
     Some((mtime, meta.len()))
+}
+
+/// Fingerprint của cả session, gồm transcript của sub-agent để cache làm mới khi sub-agent chạy
+fn session_fingerprint(path: &Path) -> Option<(u64, u64)> {
+    let (mut mtime, mut size) = fingerprint(path)?;
+    if let Ok(entries) = fs::read_dir(subagent_dir(path)) {
+        for entry in entries.flatten() {
+            if let Some((m, s)) = fingerprint(&entry.path()) {
+                mtime = mtime.max(m);
+                size += s;
+            }
+        }
+    }
+    Some((mtime, size))
+}
+
+fn subagent_dir(session_path: &Path) -> PathBuf {
+    session_path.with_extension("").join("subagents")
 }
 
 /// Liệt kê file session `.jsonl` mới nhất trong toàn bộ thư mục projects
@@ -412,7 +431,7 @@ fn list_session_files() -> Vec<(PathBuf, (u64, u64))> {
             if path.extension().and_then(|e| e.to_str()) != Some("jsonl") {
                 continue;
             }
-            if let Some(fp) = fingerprint(&path) {
+            if let Some(fp) = session_fingerprint(&path) {
                 files.push((path, fp));
             }
         }
@@ -423,7 +442,7 @@ fn list_session_files() -> Vec<(PathBuf, (u64, u64))> {
 }
 
 /// Tìm file `<session-id>.jsonl` trong các thư mục project
-fn find_session_file(session_id: &str) -> Option<PathBuf> {
+pub(crate) fn find_session_file(session_id: &str) -> Option<PathBuf> {
     if session_id.is_empty()
         || session_id.contains('/')
         || session_id.contains('\\')
@@ -647,8 +666,19 @@ fn detect_bash_file_changes(repo: &str, steps: &[AgentStep], files: &mut Vec<Fil
     }
 }
 
+/// Sub-agent được gọi trong session (tool `Agent`/`Task`), ghép với transcript con sau khi parse
+struct SpawnedAgent {
+    tool_use_id: String,
+    name: String,
+    role: String,
+    prompt: String,
+    agent_id: Option<String>,
+    completed: bool,
+}
+
 /// Parse toàn bộ file session thành `ConversationSession` (đủ mọi step).
-fn parse_session_file(path: &Path) -> Option<ConversationSession> {
+/// `is_subagent`: file là transcript của sub-agent (mọi dòng đều là sidechain).
+fn parse_session_file(path: &Path, is_subagent: bool) -> Option<ConversationSession> {
     let session_id = path.file_stem()?.to_str()?.to_string();
     let content = fs::read_to_string(path).ok()?;
 
@@ -662,15 +692,17 @@ fn parse_session_file(path: &Path) -> Option<ConversationSession> {
     let mut counted_message_ids: HashSet<String> = HashSet::new();
     let (mut total_in, mut total_out, mut total_cache) = (0u64, 0u64, 0u64);
     let mut first_user_text = String::new();
+    let mut spawns: Vec<SpawnedAgent> = Vec::new();
 
     for line in content.lines() {
         let Ok(v) = serde_json::from_str::<Value>(line) else {
             continue;
         };
-        // Bỏ qua hội thoại của subagent (sidechain) để không trộn vào luồng chính
-        if v.get("isSidechain")
-            .and_then(|x| x.as_bool())
-            .unwrap_or(false)
+        // Hội thoại của sub-agent (sidechain) không trộn vào luồng chính; được nạp qua lane riêng
+        if !is_subagent
+            && v.get("isSidechain")
+                .and_then(|x| x.as_bool())
+                .unwrap_or(false)
         {
             continue;
         }
@@ -698,6 +730,9 @@ fn parse_session_file(path: &Path) -> Option<ConversationSession> {
                 }
             }
             "user" => {
+                if !is_subagent {
+                    record_agent_results(&v, &mut spawns);
+                }
                 if v.get("isMeta").and_then(|x| x.as_bool()).unwrap_or(false) {
                     continue;
                 }
@@ -801,6 +836,33 @@ fn parse_session_file(path: &Path) -> Option<ConversationSession> {
                                     .iter()
                                     .find_map(|k| args.get(*k).and_then(|x| x.as_str()))
                                     .map(String::from);
+                                if !is_subagent && (name == "Agent" || name == "Task") {
+                                    spawns.push(SpawnedAgent {
+                                        tool_use_id: b
+                                            .get("id")
+                                            .and_then(|x| x.as_str())
+                                            .unwrap_or("")
+                                            .to_string(),
+                                        name: args
+                                            .get("subagent_type")
+                                            .and_then(|x| x.as_str())
+                                            .filter(|s| !s.is_empty())
+                                            .unwrap_or("general-purpose")
+                                            .to_string(),
+                                        role: args
+                                            .get("description")
+                                            .and_then(|x| x.as_str())
+                                            .unwrap_or("")
+                                            .to_string(),
+                                        prompt: args
+                                            .get("prompt")
+                                            .and_then(|x| x.as_str())
+                                            .unwrap_or("")
+                                            .to_string(),
+                                        agent_id: None,
+                                        completed: false,
+                                    });
+                                }
                                 record_side_effects(
                                     &name,
                                     &args,
@@ -892,6 +954,9 @@ fn parse_session_file(path: &Path) -> Option<ConversationSession> {
     commands.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
     commands.truncate(50);
 
+    let subagent_lanes = build_subagent_lanes(path, &spawns, &project_name);
+    let has_parallel_flow = !subagent_lanes.is_empty();
+
     Some(ConversationSession {
         id: session_id,
         title,
@@ -900,7 +965,7 @@ fn parse_session_file(path: &Path) -> Option<ConversationSession> {
         status: "completed".to_string(),
         current_phase: "completed".to_string(),
         steps,
-        subagent_lanes: Vec::new(),
+        subagent_lanes,
         files_touched: files,
         commands_run: commands,
         total_input_tokens: total_in,
@@ -915,9 +980,161 @@ fn parse_session_file(path: &Path) -> Option<ConversationSession> {
         interrupted_reason: None,
         custom_agents: Vec::new(),
         available_agents: Vec::new(),
-        has_parallel_flow: false,
+        has_parallel_flow,
         source: "claude-cli".to_string(),
     })
+}
+
+/// Ghi nhận kết quả của tool `Agent`/`Task`: `toolUseResult.agentId` trỏ tới transcript con
+fn record_agent_results(v: &Value, spawns: &mut [SpawnedAgent]) {
+    let Some(Value::Array(blocks)) = v.get("message").and_then(|m| m.get("content")) else {
+        return;
+    };
+    let agent_id = v
+        .get("toolUseResult")
+        .and_then(|r| r.get("agentId"))
+        .and_then(|x| x.as_str())
+        .map(String::from);
+    for block in blocks {
+        if block.get("type").and_then(|x| x.as_str()) != Some("tool_result") {
+            continue;
+        }
+        let Some(tool_use_id) = block.get("tool_use_id").and_then(|x| x.as_str()) else {
+            continue;
+        };
+        if let Some(spawn) = spawns.iter_mut().find(|s| s.tool_use_id == tool_use_id) {
+            spawn.completed = true;
+            if spawn.agent_id.is_none() {
+                spawn.agent_id = agent_id.clone();
+            }
+        }
+    }
+}
+
+/// Lấy nội dung prompt đầu tiên trong transcript con (dòng đầu là prompt được giao cho sub-agent)
+fn first_user_prompt(path: &Path) -> Option<String> {
+    let file = fs::File::open(path).ok()?;
+    let mut line = String::new();
+    BufReader::new(file).read_line(&mut line).ok()?;
+    let v: Value = serde_json::from_str(&line).ok()?;
+    match v.get("message")?.get("content")? {
+        Value::String(s) => Some(s.trim().to_string()),
+        Value::Array(blocks) => blocks
+            .iter()
+            .find(|b| b.get("type").and_then(|x| x.as_str()) == Some("text"))
+            .and_then(|b| b.get("text"))
+            .and_then(|x| x.as_str())
+            .map(|s| s.trim().to_string()),
+        _ => None,
+    }
+}
+
+/// Dựng lane cho từng sub-agent. Transcript con nằm ở `<session>/subagents/agent-<id>.jsonl`;
+/// sub-agent đang chạy chưa có `agentId` nên được ghép theo prompt giao việc.
+fn build_subagent_lanes(
+    session_path: &Path,
+    spawns: &[SpawnedAgent],
+    project_name: &str,
+) -> Vec<SubagentLane> {
+    if spawns.is_empty() {
+        return Vec::new();
+    }
+    let dir = subagent_dir(session_path);
+    let files: Vec<PathBuf> = fs::read_dir(&dir)
+        .map(|rd| {
+            rd.flatten()
+                .map(|e| e.path())
+                .filter(|p| p.extension().and_then(|e| e.to_str()) == Some("jsonl"))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let mut used: HashSet<PathBuf> = HashSet::new();
+    let mut transcripts: Vec<Option<PathBuf>> = Vec::with_capacity(spawns.len());
+    for spawn in spawns {
+        let path = spawn
+            .agent_id
+            .as_ref()
+            .map(|id| dir.join(format!("agent-{}.jsonl", id)));
+        if let Some(p) = &path {
+            used.insert(p.clone());
+        }
+        transcripts.push(path);
+    }
+    for (spawn, slot) in spawns.iter().zip(transcripts.iter_mut()) {
+        if slot.is_some() {
+            continue;
+        }
+        let wanted = spawn.prompt.trim();
+        *slot = files
+            .iter()
+            .find(|f| !used.contains(*f) && first_user_prompt(f).as_deref() == Some(wanted))
+            .cloned();
+        if let Some(p) = slot {
+            used.insert(p.clone());
+        }
+    }
+
+    spawns
+        .iter()
+        .zip(transcripts)
+        .map(|(spawn, transcript)| {
+            let child = transcript.and_then(|p| parse_session_file(&p, true));
+            let mut steps = child
+                .as_ref()
+                .map(|c| c.steps.clone())
+                .unwrap_or_default();
+            if steps.len() > SNAPSHOT_STEP_LIMIT {
+                steps = steps.split_off(steps.len() - SNAPSHOT_STEP_LIMIT);
+            }
+            let last = steps.last();
+            let last_tool = last.and_then(|s| s.tool_calls.last());
+            let completed = spawn.completed;
+            let files_modified = child
+                .as_ref()
+                .map(|c| {
+                    let mut out: Vec<String> = Vec::new();
+                    for f in &c.files_touched {
+                        if (f.action == "created" || f.action == "modified")
+                            && !out.contains(&f.path)
+                        {
+                            out.push(f.path.clone());
+                        }
+                    }
+                    out
+                })
+                .unwrap_or_default();
+            let progress = if completed {
+                1.0
+            } else if !steps.is_empty() {
+                (steps.len() as f64 / (steps.len() + 4) as f64).clamp(0.25, 0.9)
+            } else {
+                0.15
+            };
+
+            SubagentLane {
+                id: spawn.tool_use_id.clone(),
+                name: spawn.name.clone(),
+                role: spawn.role.clone(),
+                target_repo: project_name.to_string(),
+                status: if completed { "completed" } else { "running" }.to_string(),
+                current_phase: if completed { "completed" } else { "running" }.to_string(),
+                current_step_index: last.map(|s| s.step_index).unwrap_or(0),
+                current_action_text: last_tool
+                    .map(|t| t.summary_label.clone())
+                    .or_else(|| {
+                        last.map(|s| s.content.lines().next().unwrap_or("").to_string())
+                    })
+                    .unwrap_or_default(),
+                current_tool_name: last_tool.map(|t| t.name.clone()).unwrap_or_default(),
+                prompt_brief: spawn.prompt.chars().take(500).collect(),
+                steps,
+                progress,
+                files_modified,
+                last_updated: child.as_ref().map(|c| c.updated_at.clone()),
+            }
+        })
+        .collect()
 }
 
 fn record_side_effects(
@@ -1012,7 +1229,7 @@ fn load_cached(path: &Path, fp: (u64, u64)) -> Option<ConversationSession> {
             }
         }
     }
-    let session = trim_for_snapshot(parse_session_file(path)?);
+    let session = trim_for_snapshot(parse_session_file(path, false)?);
     if let Ok(mut map) = cache().lock() {
         map.insert(
             path.to_path_buf(),
@@ -1036,6 +1253,13 @@ fn apply_live_status(
     if running {
         session.status = "running".to_string();
         session.current_phase = "running".to_string();
+    } else {
+        for lane in session.subagent_lanes.iter_mut() {
+            if lane.status == "running" {
+                lane.status = "interrupted".to_string();
+                lane.current_phase = "interrupted".to_string();
+            }
+        }
     }
     session
 }
@@ -1075,7 +1299,7 @@ pub fn get_steps_page(
     limit: usize,
 ) -> Option<SessionStepsPageResponse> {
     let path = find_session_file(session_id)?;
-    let full = parse_session_file(&path)?;
+    let full = parse_session_file(&path, false)?;
     let total_steps = full.steps.len();
     let candidates: Vec<&AgentStep> = full
         .steps

@@ -146,16 +146,22 @@ fn launch_linux_app() {
     }
 }
 
+const TRAY_MAX_ATTEMPTS: u32 = 60;
+const TRAY_RETRY_INTERVAL: tokio::time::Duration = tokio::time::Duration::from_secs(5);
+
 pub fn spawn_system_tray() {
     tokio::spawn(async move {
         tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
-        let tray = MuopAgentTray;
-        match tray.spawn().await {
-            Ok(_) => {
-                tracing::info!("✅ System Tray Icon đã khởi chạy thành công trên khay hệ thống Linux!");
-            }
-            Err(e) => {
-                tracing::warn!("⚠️ Không thể kết nối D-Bus StatusNotifierItem (chế độ headless/không có GUI tray): {}", e);
+        for attempt in 1..=TRAY_MAX_ATTEMPTS {
+            match MuopAgentTray.spawn().await {
+                Ok(_) => {
+                    tracing::info!("✅ System Tray Icon đã khởi chạy thành công trên khay hệ thống Linux!");
+                    return;
+                }
+                Err(e) if attempt == TRAY_MAX_ATTEMPTS => {
+                    tracing::warn!("⚠️ Không thể kết nối D-Bus StatusNotifierItem (chế độ headless/không có GUI tray): {}", e);
+                }
+                Err(_) => tokio::time::sleep(TRAY_RETRY_INTERVAL).await,
             }
         }
     });

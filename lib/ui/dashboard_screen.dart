@@ -76,6 +76,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
   StreamSubscription<ConversationSession>? _filesChangeSub;
 
   List<AIQuestion> _pendingAIQuestions = [];
+  PendingClaudeInteraction? _pendingClaudeInteraction;
   Timer? _aiQuestionRefreshTimer;
   String? _currentConversationRoom;
 
@@ -114,6 +115,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
     _aiQuestionRefreshTimer?.cancel();
     _aiQuestionRefreshTimer = Timer.periodic(const Duration(seconds: 3), (_) {
       _refreshAIQuestions();
+      _refreshClaudeInteraction();
     });
   }
 
@@ -143,6 +145,46 @@ class _DashboardScreenState extends State<DashboardScreen> {
         break;
       }
     }
+  }
+
+  Future<void> _refreshClaudeInteraction() async {
+    final session = _activeSession;
+    if (session == null || session.source != 'claude-cli') {
+      if (_pendingClaudeInteraction != null) {
+        setState(() => _pendingClaudeInteraction = null);
+      }
+      return;
+    }
+    final interaction = await _scanner.fetchPendingClaudeInteraction(session.id);
+    if (!mounted) return;
+    if (interaction?.toolUseId == _pendingClaudeInteraction?.toolUseId &&
+        interaction?.conversationId == _pendingClaudeInteraction?.conversationId) {
+      return;
+    }
+    setState(() => _pendingClaudeInteraction = interaction);
+  }
+
+  Future<String?> _respondClaudeInteraction(
+    PendingClaudeInteraction interaction,
+    List<Map<String, String>> answers,
+    String decision,
+    String feedback,
+  ) async {
+    final error = await _scanner.respondClaudeInteraction(
+      conversationId: interaction.conversationId,
+      toolUseId: interaction.toolUseId,
+      projectPath: _activeChatProject?.path ?? _activeSession?.projectPath ?? '',
+      model: _effectiveModel,
+      decision: decision,
+      answers: answers,
+      feedback: feedback,
+    );
+    if (!mounted) return error;
+    if (error == null) {
+      setState(() => _pendingClaudeInteraction = null);
+      _scanner.requestRealtimeSnapshot();
+    }
+    return error;
   }
 
   void _showAIQuestionDialog(AIQuestion question) {
@@ -316,13 +358,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
         );
       }
 
-      // Mở rộng project nếu session đang chọn nằm từ vị trí thứ 5 trở đi
       if (_selectedSessionId == updated.id) {
-        final pSessions = _sessions.where((s) => s.projectName == updated.projectName).toList();
-        final idx = pSessions.indexWhere((s) => s.id == updated.id);
-        if (idx >= 5) {
-          _expandedProjects.add(updated.projectName);
-        }
         if (updated.isInterrupted ||
             updated.status == AgentStatus.interrupted ||
             updated.status == AgentStatus.completed) {
@@ -399,18 +435,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
       _sessions = mergedSessions;
 
-      // Tự động mở rộng workspace nếu session đang chọn nằm từ vị trí thứ 5 trở đi
-      if (_selectedSessionId != null) {
-        final cur = _sessions.where((s) => s.id == _selectedSessionId).firstOrNull;
-        if (cur != null) {
-          final pSessions = _sessions.where((s) => s.projectName == cur.projectName).toList();
-          final idx = pSessions.indexWhere((s) => s.id == cur.id);
-          if (idx >= 5) {
-            _expandedProjects.add(cur.projectName);
-          }
-        }
-      }
-
       _projects = snapshot.projects;
       if (_activeChatProject != null) {
         _activeChatProject = _projects.firstWhere(
@@ -427,13 +451,24 @@ class _DashboardScreenState extends State<DashboardScreen> {
       if (snapshot.modelQuotas.isNotEmpty) {
         _modelQuotas = snapshot.modelQuotas;
       }
-      // Giữ lại các stream đang chạy phía client mà snapshot chưa có (vd. 'pending_optimistic'
-      // hoặc stream vừa bắt đầu), tránh làm mất thẻ thinking khi snapshot định kỳ về
+      // Snapshot là nguồn đúng về các lượt đang chạy trên server. Chỉ giữ lại stream
+      // 'pending_optimistic' (lượt vừa gửi, chờ server gán conversation id). Stream của
+      // conversation thật mà snapshot không còn liệt kê nghĩa là lượt đã xong hoặc đã mất
+      // khi socket rớt — giữ lại sẽ làm UI kẹt ở trạng thái "đang trả lời".
       final mergedStreams =
           Map<String, ChatTurnStreamState>.from(snapshot.activeStreams);
+      final pendingOptimistic = _activeStreams['pending_optimistic'];
+      if (pendingOptimistic != null &&
+          pendingOptimistic.isRunning &&
+          !mergedStreams.containsKey('pending_optimistic')) {
+        mergedStreams['pending_optimistic'] = pendingOptimistic;
+      }
       for (final entry in _activeStreams.entries) {
-        if (entry.value.isRunning && !mergedStreams.containsKey(entry.key)) {
-          mergedStreams[entry.key] = entry.value;
+        if (entry.key == 'pending_optimistic' || mergedStreams.containsKey(entry.key)) {
+          continue;
+        }
+        if (entry.value.isRunning && entry.key == _selectedSessionId) {
+          _isSendingPrompt = false;
         }
       }
       _activeStreams = mergedStreams;
@@ -452,6 +487,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
     if (_activeSession != null) {
       _startAIQuestionPoller();
       _refreshAIQuestions();
+      _refreshClaudeInteraction();
     } else {
       _stopAIQuestionPoller();
     }
@@ -553,6 +589,11 @@ class _DashboardScreenState extends State<DashboardScreen> {
   }
 
   /// Khoá ghi nhớ model: id conversation đang chọn, hoặc '__new__' khi chưa có conversation
+  String get _effectiveModel =>
+      (_selectedModel.isEmpty || _selectedModel == 'default')
+          ? 'claude-cli:claude-sonnet-5-5'
+          : _selectedModel;
+
   String get _modelMemoryKey {
     if (_isNewConversationMode) return '__new__';
     final id = _selectedSessionId;
@@ -675,9 +716,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
       };
     });
 
-    final effectiveModel = (_selectedModel.isEmpty || _selectedModel == 'default')
-        ? 'claude-cli:claude-sonnet-5-5'
-        : _selectedModel;
+    final effectiveModel = _effectiveModel;
 
     final result = await _scanner.sendRemoteChatPrompt(
       address: _serverAddress,
@@ -838,6 +877,39 @@ class _DashboardScreenState extends State<DashboardScreen> {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text('❌ Gửi phản hồi thất bại: ${res.message}'),
+          backgroundColor: context.scheme.error,
+          duration: const Duration(seconds: 4),
+        ),
+      );
+    }
+  }
+
+  Future<void> _handleCancelPlan(PlanArtifactInfo plan) async {
+    final active = _activeSession;
+    if (active == null) return;
+
+    final res = await _scanner.submitPlanAction(
+      address: _serverAddress,
+      conversationId: active.id,
+      fileName: plan.fileName,
+      action: 'cancel',
+      model: _selectedModel,
+    );
+
+    if (!mounted) return;
+
+    if (res.ok) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('🛑 Đã hủy kế hoạch [${plan.fileName}].'),
+          duration: const Duration(seconds: 3),
+        ),
+      );
+      await _loadFullSessionDetail(active.id);
+    } else {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('❌ Không thể hủy kế hoạch: ${res.message}'),
           backgroundColor: context.scheme.error,
           duration: const Duration(seconds: 4),
         ),
@@ -1757,6 +1829,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
                                   isSending: _isSendingPrompt,
                                   activeStream: _currentSessionStream,
                                   lastDownloadedFilePath: _lastDownloadedFilePath,
+                                  pendingClaudeInteraction: _pendingClaudeInteraction,
+                                  onRespondClaudeInteraction: _respondClaudeInteraction,
                                   onSelectProject: (p) {
                                     setState(() => _activeChatProject = p);
                                   },
@@ -1785,6 +1859,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                                       _scanner.openDownloadedFile(path),
                                   onApprovePlan: _handleApprovePlan,
                                   onRejectPlan: _handleRejectPlan,
+                                  onCancelPlan: _handleCancelPlan,
                                   onLoadOlderHistory: _handleLoadOlderHistory,
                                   onFetchClaudeExtensions: _handleFetchClaudeExtensions,
                                   onOpenParallelFlow: _openParallelAgentFlowScreen,
@@ -2596,7 +2671,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
             _isNewConversationMode = false;
             _selectedSessionId = session.id;
             _activeChatProject = matchedProj;
-            _expandedProjects.add(session.projectName);
             _syncDefaultSelections();
           });
           if (session.steps.isEmpty) {
