@@ -342,15 +342,16 @@ class _ParallelAgentFlowScreenState extends State<ParallelAgentFlowScreen>
           (l) => l?.name == 'Coordinator',
           orElse: () => null,
         );
-    final serverLane = lanes.cast<SubagentLane?>().firstWhere(
+    // Một conversation có thể có nhiều lần spawn cùng tên agent: lấy lần chạy mới nhất (cuối danh sách)
+    final serverLane = lanes.cast<SubagentLane?>().lastWhere(
           (l) => l?.name == 'erp-server-agent',
           orElse: () => null,
         );
-    final appLane = lanes.cast<SubagentLane?>().firstWhere(
+    final appLane = lanes.cast<SubagentLane?>().lastWhere(
           (l) => l?.name == 'erp-app-agent',
           orElse: () => null,
         );
-    final verifierLane = lanes.cast<SubagentLane?>().firstWhere(
+    final verifierLane = lanes.cast<SubagentLane?>().lastWhere(
           (l) => l?.name == 'erp-contract-verifier',
           orElse: () => null,
         );
