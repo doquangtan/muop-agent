@@ -1429,6 +1429,95 @@ class GitCommitDetailResponse {
   }
 }
 
+class ClaudeQuestionOption {
+  final String label;
+  final String description;
+
+  const ClaudeQuestionOption({required this.label, required this.description});
+
+  factory ClaudeQuestionOption.fromJson(Map<String, dynamic> json) {
+    return ClaudeQuestionOption(
+      label: '${json['label'] ?? ''}',
+      description: '${json['description'] ?? ''}',
+    );
+  }
+}
+
+class ClaudeQuestionItem {
+  final String question;
+  final String header;
+  final bool multiSelect;
+  final List<ClaudeQuestionOption> options;
+
+  const ClaudeQuestionItem({
+    required this.question,
+    required this.header,
+    required this.multiSelect,
+    required this.options,
+  });
+
+  factory ClaudeQuestionItem.fromJson(Map<String, dynamic> json) {
+    final rawOptions = json['options'];
+    return ClaudeQuestionItem(
+      question: '${json['question'] ?? ''}',
+      header: '${json['header'] ?? ''}',
+      multiSelect: json['multiSelect'] == true,
+      options: rawOptions is List
+          ? rawOptions
+              .whereType<Map>()
+              .map((o) => ClaudeQuestionOption.fromJson(Map<String, dynamic>.from(o)))
+              .toList()
+          : const [],
+    );
+  }
+}
+
+class PendingClaudeInteraction {
+  final String conversationId;
+  final String toolUseId;
+  final String kind;
+  final String createdAt;
+  final List<ClaudeQuestionItem> questions;
+  final String plan;
+
+  const PendingClaudeInteraction({
+    required this.conversationId,
+    required this.toolUseId,
+    required this.kind,
+    required this.createdAt,
+    required this.questions,
+    required this.plan,
+  });
+
+  bool get isPlan => kind == 'plan';
+
+  String get summary {
+    if (!isPlan) return questions.isEmpty ? '' : questions.first.question;
+    for (final line in plan.split('\n')) {
+      final text = line.replaceFirst(RegExp(r'^#+\s*'), '').trim();
+      if (text.isNotEmpty) return text;
+    }
+    return '';
+  }
+
+  factory PendingClaudeInteraction.fromJson(Map<String, dynamic> json) {
+    final rawQuestions = json['questions'];
+    return PendingClaudeInteraction(
+      conversationId: '${json['conversationId'] ?? ''}',
+      toolUseId: '${json['toolUseId'] ?? ''}',
+      kind: '${json['kind'] ?? 'question'}',
+      createdAt: '${json['createdAt'] ?? ''}',
+      questions: rawQuestions is List
+          ? rawQuestions
+              .whereType<Map>()
+              .map((q) => ClaudeQuestionItem.fromJson(Map<String, dynamic>.from(q)))
+              .toList()
+          : const [],
+      plan: '${json['plan'] ?? ''}',
+    );
+  }
+}
+
 class AIQuestion {
   final String id;
   final String conversationId;
