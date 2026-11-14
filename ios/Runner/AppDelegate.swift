@@ -49,18 +49,16 @@ import UIKit
     }
   }
 
-  /// Sao chép file tạm vào Documents/MuopAgent (hiện trong app Tệp > Trên iPhone > Muop Agent > MuopAgent).
+  /// Sao chép file tạm vào thư mục Documents của app (hiện trong app Tệp > Trên iPhone > Muop Agent).
   /// Trùng tên thì thêm tiền tố thời gian.
   private func copyToDocuments(sourcePath: String, displayName: String) throws -> String {
     let fileManager = FileManager.default
     let docs = try fileManager.url(
       for: .documentDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
-    let folder = docs.appendingPathComponent("MuopAgent", isDirectory: true)
-    try fileManager.createDirectory(at: folder, withIntermediateDirectories: true)
-    var destination = folder.appendingPathComponent(displayName)
+    var destination = docs.appendingPathComponent(displayName)
     if fileManager.fileExists(atPath: destination.path) {
       let stamp = Int(Date().timeIntervalSince1970)
-      destination = folder.appendingPathComponent("\(stamp)_\(displayName)")
+      destination = docs.appendingPathComponent("\(stamp)_\(displayName)")
     }
     try fileManager.copyItem(at: URL(fileURLWithPath: sourcePath), to: destination)
     return destination.path
