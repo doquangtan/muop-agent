@@ -51,7 +51,7 @@ fn agy_model(raw: &str) -> String {
     }
 }
 
-fn agy_bin() -> &'static str {
+pub(crate) fn agy_bin() -> &'static str {
     if Path::new("/home/john/.local/bin/agy").exists() {
         "/home/john/.local/bin/agy"
     } else {
