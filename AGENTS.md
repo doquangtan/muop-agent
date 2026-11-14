@@ -272,6 +272,7 @@ lsof -i :8787
 ### 8.2. Provider, source và model
 - Session có trường `source`: `claude-cli` (từ transcript Claude) hoặc `agy`. Server trả `source` trong phản hồi `chat:send` (`ChatSendResponse.source`).
 - Model id: `claude-cli:<model-id>` (ID đầy đủ có version, ví dụ `claude-haiku-5-5`) hoặc `agy:<model>`. Alias `sonnet/opus/haiku` được ánh xạ sang ID đầy đủ trong `claude_code::normalize_model`, vì CLI tự phân giải alias sang bản cũ.
+- Danh sách model `agy:` là động: `scanner::agy_models()` chạy `agy models` (output `<id>\t<tên>`), cache 10 phút và làm mới nền; lỗi thì giữ danh sách cũ, thử lại sau 1 phút. Danh sách dự phòng `AGY_FALLBACK_MODELS` nằm trong `scanner.rs`. Model Claude (`claude-cli:`) vẫn cố định trong `scanner::default_models`. Flutter hiển thị model `agy:` không có trong bảng tên thì bỏ tiền tố `agy:`.
 - Claude CLI được gọi với `--append-system-prompt` (ghi đường dẫn project) và `--add-dir <cwd>`.
 - `AgentStep.model` lấy từ `message.model` của assistant (bỏ `<synthetic>`), dùng để hiển thị nhãn model dưới thẻ AI.
 - Thứ tự chọn model khi mở conversation (`dashboard_screen.dart`, `_syncDefaultSelections`): model người dùng đã chọn → model của lượt phản hồi gần nhất → mặc định (`claude-cli:claude-sonnet-5-5` hoặc model đầu tiên cùng provider).
@@ -304,3 +305,17 @@ lsof -i :8787
 ### 8.7. Skill liên quan
 - `.claude/skills/design/SKILL.md`: quyết định thiết kế và vấn đề đã gặp của app này.
 - `.claude/skills/design-uiux/SKILL.md`: nguyên tắc UI/UX khi chỉnh sửa giao diện Flutter.
+
+### 8.8. Build IPA trên Mac (TrollStore)
+- Khi APK Release build xong, Agent copy project sang Mac và build file IPA để người dùng cài bằng TrollStore.
+- **Chỉ làm khi SSH tới Mac được.** Kiểm tra SSH trước bước đầu tiên. Nếu SSH không được, bỏ qua bước IPA và nêu rõ trong báo cáo cuối.
+- Mac: `johndylan@192.168.31.206`, thư mục đích `/Volumes/Untitled/muop-agent`. Mật khẩu KHÔNG ghi trong repo; xem memory `mac-build-host` (cục bộ, ngoài repo).
+- Không có `sshpass`. Dùng `SSH_ASKPASS` trỏ tới script trong thư mục tạm riêng (ngoài repo), kèm `SSH_ASKPASS_REQUIRE=force` và `setsid`. Xóa script và thư mục tạm này trên máy Linux sau khi xong.
+- Quy trình:
+  1. `make build-apk` ở máy Linux để chắc APK là bản mới nhất.
+  2. `rsync -az --exclude='.git/' --exclude='build/' --exclude='.dart_tool/' --exclude='server/target/' --exclude='.idea/' --exclude='.vscode/' --exclude='*.ipa'` từ thư mục gốc project tới `/Volumes/Untitled/muop-agent/`. Không dùng `--delete`, vì thư mục đích có `ios/` và `.git/` không có trong repo này.
+  3. Trên Mac, PATH phải có `$HOME/flutter/bin`. Flutter trên Mac được ghim tag `3.47.7` (cùng bản với Linux). Chạy `flutter pub get`, rồi `flutter build ios --release --no-codesign`.
+  4. Ký ad-hoc `codesign --force --deep --sign - build/ios/iphoneos/Runner.app`, rồi đóng gói `Payload/Runner.app` thành `muop-agent-trollstore.ipa` trong `/Volumes/Untitled/muop-agent/`. File IPA cũ được đổi tên thành `muop-agent-trollstore.prev.ipa`.
+  5. **Dọn rác trên Mac (bắt buộc sau mỗi lần build):** `rm -rf build .dart_tool` trong `/Volumes/Untitled/muop-agent`, và xóa thư mục tạm `Payload`/`ipa-stage` nếu còn. Giữ lại `muop-agent-trollstore.ipa`, `muop-agent-trollstore.prev.ipa` và `muop-agent-release.apk`.
+  6. **Copy IPA về root project (bắt buộc sau khi build IPA thành công):** `scp johndylan@192.168.31.206:/Volumes/Untitled/muop-agent/muop-agent-trollstore.ipa ./muop-agent-trollstore.ipa` từ thư mục gốc project trên máy Linux (cùng cách dùng `SSH_ASKPASS` như trên). Kiểm tra kích thước khớp với file trên Mac (`stat -f %z` trên Mac, `stat -c %s` trên Linux). File này nằm trong `.gitignore` (`*.ipa`) nên không commit.
+- Trạng thái: bundle `com.muop.muopAgent`. Build IPA đã chạy được; chưa kiểm chứng cài bằng TrollStore trên thiết bị. Lưu ý `flutter pub get` trên Mac có thể ghi lại `analysis_options.yaml` và `pubspec.lock` của bản copy đó.
