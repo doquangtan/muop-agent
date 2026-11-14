@@ -1148,17 +1148,18 @@ class BrainScannerService {
       }
 
       var savedPath = outFile.path;
-      if (Platform.isAndroid) {
-        // Chuyển bản tạm trong cache sang thư mục Downloads công khai (MediaStore).
+      if (Platform.isAndroid || Platform.isIOS) {
+        // Android: chuyển bản tạm sang Downloads công khai (MediaStore).
+        // iOS: chuyển sang thư mục Documents (hiện trong app Tệp).
         // Nếu thất bại (ví dụ Android < 10) thì giữ bản trong cache.
         try {
-          final uri = await _fileOpenerChannel.invokeMethod<String>(
-            'saveToDownloads',
+          final saved = await _fileOpenerChannel.invokeMethod<String>(
+            Platform.isIOS ? 'saveToDocuments' : 'saveToDownloads',
             {'path': outFile.path, 'name': filename},
           );
-          if (uri != null && uri.isNotEmpty) {
+          if (saved != null && saved.isNotEmpty) {
             await outFile.delete();
-            savedPath = uri;
+            savedPath = saved;
           }
         } catch (_) {}
       }
@@ -1190,8 +1191,9 @@ class BrainScannerService {
       return (ok: false, error: 'Đường dẫn tệp trống');
     }
     try {
-      // Android: đường dẫn content:// (Downloads qua MediaStore) được native xử lý trực tiếp
-      if (Platform.isAndroid) {
+      // Android: đường dẫn content:// (Downloads qua MediaStore) được native xử lý trực tiếp.
+      // iOS: native present UIDocumentInteractionController cho tệp trong Documents.
+      if (Platform.isAndroid || Platform.isIOS) {
         await _fileOpenerChannel.invokeMethod<bool>(
           'openFile',
           {'path': cleanPath},
