@@ -451,7 +451,8 @@ class _ChatCanvasViewState extends State<ChatCanvasView> {
       case 'agy:gemini-4-argon-medium':
         return 'Gemini 4 Argon (Medium)';
       default:
-        return modelId;
+        // Model Antigravity lấy động từ `agy models`: hiển thị id không có tiền tố provider
+        return modelId.startsWith('agy:') ? modelId.substring(4) : modelId;
     }
   }
 
