@@ -82,6 +82,68 @@ class ServerFileEntry {
   }
 }
 
+/// Một đoạn dòng của file văn bản (`/api/files/lines`), dùng để xem file lớn theo từng phần
+class ServerFileLinesResponse {
+  const ServerFileLinesResponse({
+    required this.ok,
+    required this.path,
+    required this.name,
+    required this.size,
+    required this.isBinary,
+    required this.totalLines,
+    required this.offset,
+    required this.lines,
+    required this.hasMore,
+    required this.gitDiff,
+    this.error = '',
+  });
+
+  final bool ok;
+  final String path;
+  final String name;
+  final int size;
+  final bool isBinary;
+  final int totalLines;
+  final int offset;
+  final List<String> lines;
+  final bool hasMore;
+  final String gitDiff;
+  final String error;
+
+  factory ServerFileLinesResponse.fromJson(Map<String, dynamic> json) {
+    final rawLines = json['lines'];
+    return ServerFileLinesResponse(
+      ok: json['ok'] == true,
+      path: '${json['path'] ?? ''}',
+      name: '${json['name'] ?? ''}',
+      size: (json['size'] as num?)?.toInt() ?? 0,
+      isBinary: json['isBinary'] == true,
+      totalLines: (json['totalLines'] as num?)?.toInt() ?? 0,
+      offset: (json['offset'] as num?)?.toInt() ?? 0,
+      lines: rawLines is List ? rawLines.map((e) => '$e').toList() : const [],
+      hasMore: json['hasMore'] == true,
+      gitDiff: '${json['gitDiff'] ?? ''}',
+      error: '${json['error'] ?? ''}',
+    );
+  }
+
+  factory ServerFileLinesResponse.failure(String path, String error) {
+    return ServerFileLinesResponse(
+      ok: false,
+      path: path,
+      name: path.split('/').last,
+      size: 0,
+      isBinary: false,
+      totalLines: 0,
+      offset: 0,
+      lines: const [],
+      hasMore: false,
+      gitDiff: '',
+      error: error,
+    );
+  }
+}
+
 class ServerFileReadResponse {
   const ServerFileReadResponse({
     required this.ok,
@@ -139,6 +201,22 @@ class ServerFileReadResponse {
       error: '${json['error'] ?? ''}',
     );
   }
+}
+
+/// Trạng thái git của project so với HEAD (`/api/git/status`)
+class ServerGitStatus {
+  const ServerGitStatus({
+    required this.ok,
+    required this.isRepo,
+    required this.kinds,
+    this.error = '',
+  });
+
+  final bool ok;
+  final bool isRepo;
+  /// Đường dẫn tuyệt đối → "created" | "modified" | "deleted"
+  final Map<String, String> kinds;
+  final String error;
 }
 
 class ServerDirListResponse {
@@ -1056,6 +1134,69 @@ class BrainScannerService {
         gitDiff: '',
         error: '$e',
       );
+    } finally {
+      client.close(force: true);
+    }
+  }
+
+  /// Đọc một đoạn dòng của tệp văn bản (`/api/files/lines`); không nạp cả tệp
+  Future<ServerFileLinesResponse> fetchServerFileLines({
+    required String address,
+    required String path,
+    required int offset,
+    int limit = 200,
+  }) async {
+    final baseUrl = normalizeBaseUrl(address);
+    final client = HttpClient()
+      ..connectionTimeout = const Duration(seconds: 5);
+    try {
+      final uri = Uri.parse('$baseUrl/api/files/lines').replace(
+        queryParameters: {
+          'path': path,
+          'offset': '$offset',
+          'limit': '$limit',
+        },
+      );
+      final req = await client.getUrl(uri);
+      final resp = await req.close().timeout(const Duration(seconds: 15));
+      final body = await resp.transform(utf8.decoder).join();
+      final map = jsonDecode(body) as Map<String, dynamic>;
+      return ServerFileLinesResponse.fromJson(map);
+    } catch (e) {
+      return ServerFileLinesResponse.failure(path, '$e');
+    } finally {
+      client.close(force: true);
+    }
+  }
+
+  /// Trạng thái git của project (`/api/git/status`); isRepo = false nếu không phải git repository
+  Future<ServerGitStatus> fetchGitStatus({
+    required String address,
+    required String projectPath,
+  }) async {
+    final baseUrl = normalizeBaseUrl(address);
+    final client = HttpClient()..connectionTimeout = const Duration(seconds: 5);
+    try {
+      final uri = Uri.parse('$baseUrl/api/git/status').replace(
+        queryParameters: {'projectPath': projectPath},
+      );
+      final req = await client.getUrl(uri);
+      final resp = await req.close().timeout(const Duration(seconds: 20));
+      final body = await resp.transform(utf8.decoder).join();
+      final map = jsonDecode(body) as Map<String, dynamic>;
+      final raw = map['kinds'];
+      final kinds = <String, String>{};
+      if (raw is Map) {
+        raw.forEach((k, v) => kinds['$k'] = '$v');
+      }
+      return ServerGitStatus(
+        ok: map['ok'] == true,
+        isRepo: map['isRepo'] == true,
+        kinds: kinds,
+        error: '${map['error'] ?? ''}',
+      );
+    } catch (e) {
+      return ServerGitStatus(ok: false, isRepo: false, kinds: const {}, error: '$e');
     } finally {
       client.close(force: true);
     }
