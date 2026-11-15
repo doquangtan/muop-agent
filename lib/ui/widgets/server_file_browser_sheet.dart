@@ -213,7 +213,7 @@ class ServerFileBrowserSheet extends StatefulWidget {
       ),
       builder: (ctx) => FractionallySizedBox(
         heightFactor: 0.88,
-        child: _FileDiffAndContentSheet(
+        child: FileDiffAndContentPane(
           scanner: scanner,
           serverAddress: serverAddress,
           filePath: filePath,
@@ -1516,13 +1516,15 @@ class _ServerFileBrowserSheetState extends State<ServerFileBrowserSheet> {
 }
 
 /// Modal hiển thị trực quan Change (Diff xanh/đỏ) và Nội dung tệp từ Rust Server
-class _FileDiffAndContentSheet extends StatefulWidget {
-  const _FileDiffAndContentSheet({
+class FileDiffAndContentPane extends StatefulWidget {
+  const FileDiffAndContentPane({
+    super.key,
     required this.scanner,
     required this.serverAddress,
     required this.filePath,
     this.groupedChange,
     required this.onDownloadFile,
+    this.onClose,
   });
 
   final BrainScannerService scanner;
@@ -1530,13 +1532,15 @@ class _FileDiffAndContentSheet extends StatefulWidget {
   final String filePath;
   final GroupedFileChange? groupedChange;
   final ValueChanged<String> onDownloadFile;
+  /// Nếu null thì nút đóng tự pop modal; khi nhúng vào layout thì truyền callback riêng
+  final VoidCallback? onClose;
 
   @override
-  State<_FileDiffAndContentSheet> createState() =>
-      _FileDiffAndContentSheetState();
+  State<FileDiffAndContentPane> createState() =>
+      _FileDiffAndContentPaneState();
 }
 
-class _FileDiffAndContentSheetState extends State<_FileDiffAndContentSheet> {
+class _FileDiffAndContentPaneState extends State<FileDiffAndContentPane> {
   bool _isLoading = true;
   ServerFileReadResponse? _readResponse;
   int _selectedTab = 0; // 0 = Changes (Diff), 1 = Full File Content
@@ -1552,6 +1556,15 @@ class _FileDiffAndContentSheetState extends State<_FileDiffAndContentSheet> {
   void initState() {
     super.initState();
     _fetchFileDetail();
+  }
+
+  @override
+  void didUpdateWidget(covariant FileDiffAndContentPane oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.filePath != widget.filePath) {
+      _downloadedLocalPath = null;
+      _fetchFileDetail();
+    }
   }
 
   @override
@@ -1580,22 +1593,117 @@ class _FileDiffAndContentSheetState extends State<_FileDiffAndContentSheet> {
         lower.endsWith('.plan');
   }
 
+  /// Ngưỡng dưới đó markdown được tải toàn bộ để render; file lớn hơn chỉ xem dạng dòng
+  static const int _markdownFullLoadLimit = 300 * 1024;
+  /// Số dòng mỗi trang khi tải theo đoạn
+  static const int _linePageSize = 200;
+  /// Số trang tối đa giữ trong bộ nhớ (cuộn xa thì trang xa nhất bị bỏ)
+  static const int _maxCachedLinePages = 40;
+
+  /// Các trang dòng đã tải, key là số trang (bắt đầu từ 0)
+  final Map<int, List<String>> _linePages = {};
+  final Set<int> _linePagesLoading = {};
+  int _totalLines = 0;
+  /// Tăng mỗi lần đổi file để bỏ kết quả của yêu cầu cũ
+  int _generation = 0;
+
   Future<void> _fetchFileDetail() async {
     setState(() => _isLoading = true);
-    final res = await widget.scanner.readServerFile(
+    final gen = ++_generation;
+    _linePages.clear();
+    _linePagesLoading.clear();
+    _totalLines = 0;
+
+    if (_isImageFile(widget.filePath)) {
+      final res = await widget.scanner.readServerFile(
+        address: widget.serverAddress,
+        path: widget.filePath,
+      );
+      if (!mounted || gen != _generation) return;
+      setState(() {
+        _isLoading = false;
+        _readResponse = res;
+        _selectedTab = 1;
+      });
+      return;
+    }
+
+    final first = await widget.scanner.fetchServerFileLines(
       address: widget.serverAddress,
       path: widget.filePath,
+      offset: 0,
+      limit: _linePageSize,
     );
-    if (!mounted) return;
-    final isImg = res.isImageFile || _isImageFile(widget.filePath);
+    if (!mounted || gen != _generation) return;
+
+    ServerFileReadResponse resp = ServerFileReadResponse(
+      ok: first.ok,
+      path: first.path,
+      name: first.name,
+      size: first.size,
+      isBinary: first.isBinary,
+      content: '',
+      gitDiff: first.gitDiff,
+      error: first.error,
+    );
+    // Markdown nhỏ: tải toàn bộ để render như tài liệu. File lớn: chỉ xem dạng dòng.
+    if (first.ok &&
+        !first.isBinary &&
+        _isMarkdownFile(widget.filePath) &&
+        first.size <= _markdownFullLoadLimit) {
+      final full = await widget.scanner.readServerFile(
+        address: widget.serverAddress,
+        path: widget.filePath,
+      );
+      if (!mounted || gen != _generation) return;
+      if (full.ok) resp = full;
+    }
+
+    if (first.ok) {
+      _linePages[0] = first.lines;
+      _totalLines = first.totalLines;
+    }
     final hasAnyDiff =
         (widget.groupedChange?.diffPreview.trim().isNotEmpty == true) ||
-            res.gitDiff.trim().isNotEmpty;
+            resp.gitDiff.trim().isNotEmpty;
     setState(() {
       _isLoading = false;
-      _readResponse = res;
-      _selectedTab = isImg ? 1 : (hasAnyDiff ? 0 : 1);
+      _readResponse = resp;
+      _selectedTab = hasAnyDiff ? 0 : 1;
     });
+  }
+
+  /// Tải một trang dòng ở nền; khi xong thì vẽ lại phần đã có dữ liệu
+  void _ensureLinePage(int page) {
+    if (_linePages.containsKey(page) || _linePagesLoading.contains(page)) return;
+    _linePagesLoading.add(page);
+    final gen = _generation;
+    widget.scanner
+        .fetchServerFileLines(
+      address: widget.serverAddress,
+      path: widget.filePath,
+      offset: page * _linePageSize,
+      limit: _linePageSize,
+    )
+        .then((res) {
+      if (!mounted || gen != _generation) return;
+      setState(() {
+        _linePagesLoading.remove(page);
+        // Lỗi: trang rỗng để không lặp lại yêu cầu vô hạn khi cuộn
+        _linePages[page] = res.ok ? res.lines : const <String>[];
+        _evictLinePages(page);
+      });
+    });
+  }
+
+  /// Bỏ các trang xa vị trí đang xem nhất khi vượt quá giới hạn bộ nhớ
+  void _evictLinePages(int nearPage) {
+    if (_linePages.length <= _maxCachedLinePages) return;
+    final pages = _linePages.keys.toList()
+      ..sort((a, b) => (b - nearPage).abs().compareTo((a - nearPage).abs()));
+    for (final page in pages.take(_linePages.length - _maxCachedLinePages)) {
+      _linePages.remove(page);
+    }
   }
 
   Future<void> _downloadAndTrack() async {
@@ -1725,7 +1833,7 @@ class _FileDiffAndContentSheetState extends State<_FileDiffAndContentSheet> {
               IconButton(
                 visualDensity: VisualDensity.compact,
                 icon: const Icon(Icons.close_rounded),
-                onPressed: () => Navigator.of(context).pop(),
+                onPressed: widget.onClose ?? () => Navigator.of(context).pop(),
               ),
             ],
           ),
@@ -1918,7 +2026,7 @@ class _FileDiffAndContentSheetState extends State<_FileDiffAndContentSheet> {
     final isMd = resp.isMarkdown || _isMarkdownFile(widget.filePath);
     final isMobile = MediaQuery.sizeOf(context).width < 600;
 
-    if (isMd) {
+    if (isMd && resp.content.isNotEmpty) {
       return _buildMarkdownContentView(
         context,
         resp.content,
@@ -1970,11 +2078,113 @@ class _FileDiffAndContentSheetState extends State<_FileDiffAndContentSheet> {
       );
     }
 
-    return _buildCodeWithLineNumbers(
-      context,
-      resp.content,
-      colorScheme,
-      textTheme,
+    return _buildLazyTextView(context, resp, colorScheme, textTheme);
+  }
+
+  /// Trình xem văn bản theo đoạn: chỉ render các dòng đang nằm trong khung nhìn,
+  /// các trang chưa có được tải khi cuộn tới. Không nạp cả file.
+  Widget _buildLazyTextView(
+    BuildContext context,
+    ServerFileReadResponse resp,
+    ColorScheme colorScheme,
+    TextTheme textTheme,
+  ) {
+    final total = _totalLines;
+    final digits = total.toString().length;
+    final gutterWidth = (digits * 9.0 + 20.0).clamp(38.0, 80.0);
+    const rowHeight = 18.0;
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Container(
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
+          color: colorScheme.surfaceContainerLow,
+          child: Row(
+            children: [
+              Text(
+                'Tổng: $total dòng • ${(resp.size / 1024).toStringAsFixed(1)} KB • cuộn để tải thêm',
+                style: textTheme.labelSmall?.copyWith(
+                  fontFamily: 'monospace',
+                  color: colorScheme.onSurfaceVariant,
+                ),
+              ),
+            ],
+          ),
+        ),
+        Expanded(
+          child: total == 0
+              ? Center(
+                  child: Text(
+                    'Tệp trống',
+                    style: textTheme.bodySmall?.copyWith(color: colorScheme.onSurfaceVariant),
+                  ),
+                )
+              : ListView.builder(
+                  padding: const EdgeInsets.symmetric(vertical: 8),
+                  itemExtent: rowHeight,
+                  itemCount: total,
+                  itemBuilder: (context, idx) {
+                    final page = idx ~/ _linePageSize;
+                    final inPage = idx % _linePageSize;
+                    final lines = _linePages[page];
+                    final lineNum = idx + 1;
+
+                    final gutter = Container(
+                      width: gutterWidth,
+                      padding: const EdgeInsets.only(right: 10),
+                      alignment: Alignment.centerRight,
+                      child: Text(
+                        '$lineNum',
+                        style: TextStyle(
+                          fontFamily: 'monospace',
+                          fontSize: 11.5,
+                          color: colorScheme.onSurfaceVariant.withAlpha(120),
+                          height: 1.45,
+                        ),
+                      ),
+                    );
+
+                    if (lines == null) {
+                      _ensureLinePage(page);
+                      return Row(
+                        children: [
+                          gutter,
+                          Text(
+                            '…',
+                            style: textTheme.bodySmall?.copyWith(
+                              fontFamily: 'monospace',
+                              color: colorScheme.onSurfaceVariant.withAlpha(120),
+                            ),
+                          ),
+                        ],
+                      );
+                    }
+                    final text = inPage < lines.length ? lines[inPage] : '';
+                    return Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        gutter,
+                        Expanded(
+                          child: SingleChildScrollView(
+                            scrollDirection: Axis.horizontal,
+                            child: SelectableText(
+                              text.isEmpty ? ' ' : text,
+                              maxLines: 1,
+                              style: textTheme.bodySmall?.copyWith(
+                                fontFamily: 'monospace',
+                                fontSize: 11.5,
+                                height: 1.45,
+                              ),
+                            ),
+                          ),
+                        ),
+                      ],
+                    );
+                  },
+                ),
+        ),
+      ],
     );
   }
 

@@ -10,6 +10,9 @@ import '../services/brain_scanner_service.dart';
 import 'parallel_agent_flow_screen.dart';
 import 'widgets/ai_question_dialog.dart';
 import 'widgets/chat_canvas_view.dart';
+import 'widgets/desktop_conversation_rail.dart';
+import 'widgets/project_tree_explorer.dart';
+import 'widgets/resizable_split.dart';
 import 'widgets/project_git_history_sheet.dart';
 import 'widgets/server_file_browser_sheet.dart';
 import 'theme/app_theme.dart';
@@ -60,7 +63,13 @@ class _DashboardScreenState extends State<DashboardScreen> {
   final Map<String, String> _modelBySession = {};
   bool _isNewConversationMode = false;
   bool _isSendingPrompt = false;
-  bool _showDesktopSidebar = true;
+  /// Rail hội thoại được ghim (mở rộng hẳn) trên desktop; mặc định thu gọn
+  bool _showDesktopSidebar = false;
+  bool _railHovered = false;
+  /// null = theo chiều rộng cửa sổ (từ 1200px mở explorer); true/false = người dùng chọn
+  bool? _explorerOverride;
+  /// File đang mở ở vùng xem file bên trái của chế độ split
+  String? _viewerFilePath;
   String? _lastDownloadedFilePath;
 
   String? _selectedSessionId;
@@ -1747,8 +1756,23 @@ class _DashboardScreenState extends State<DashboardScreen> {
   @override
   Widget build(BuildContext context) {
     final colorScheme = Theme.of(context).colorScheme;
-    final isMobile = MediaQuery.sizeOf(context).width < 760;
+    final width = MediaQuery.sizeOf(context).width;
+    final isMobile = width < 760;
     final activeSession = _activeSession;
+
+    final Widget scaffoldBody;
+    if (isMobile) {
+      scaffoldBody = SafeArea(
+        child: _buildMainColumn(
+          context,
+          activeSession,
+          isMobile: true,
+          content: _buildChatArea(context, activeSession),
+        ),
+      );
+    } else {
+      scaffoldBody = SafeArea(child: _buildDesktopLayout(context, activeSession, width));
+    }
 
     return Scaffold(
       key: _scaffoldKey,
@@ -1764,104 +1788,262 @@ class _DashboardScreenState extends State<DashboardScreen> {
               ),
             )
           : null,
-      body: SafeArea(
-        child: Row(
-          children: [
-            // Sidebar trái kiểu Antigravity trên Desktop
-            if (!isMobile && _showDesktopSidebar) ...[
-              Container(
-                width: 280,
+      body: scaffoldBody,
+    );
+  }
+
+  /// Layout desktop: rail conversation (thu gọn / ghim) → explorer cây thư mục → vùng chính
+  /// chia đôi có thanh kéo (viewer file | chat). Rail mở rộng khi hover được vẽ đè lên các cột.
+  Widget _buildDesktopLayout(
+    BuildContext context,
+    ConversationSession? activeSession,
+    double width,
+  ) {
+    final colorScheme = Theme.of(context).colorScheme;
+    final showExplorer = _explorerOverride ?? width >= 1200;
+    final viewerOpen = _viewerFilePath != null;
+    final projectRoot = _activeChatProject?.path ?? activeSession?.projectPath ?? '';
+
+    final railConversations = [
+      for (final s in _filteredSessions)
+        RailConversation(
+          id: s.id,
+          title: s.title,
+          projectName: s.projectName,
+          icon: Icons.chat_bubble_outline_rounded,
+          color: s.source == 'claude-cli' ? context.status.warning : context.scheme.primary,
+        ),
+    ];
+
+    return Stack(
+      children: [
+        Positioned.fill(
+          child: Row(
+            children: [
+              if (_showDesktopSidebar)
+                SizedBox(
+                  width: 280,
+                  child: RepaintBoundary(
+                    child: _buildAntigravitySidebar(context, isMobileDrawer: false),
+                  ),
+                )
+              else
+                MouseRegion(
+                  onEnter: (_) => setState(() => _railHovered = true),
+                  onExit: (_) => setState(() => _railHovered = false),
+                  child: DesktopConversationRail(
+                    conversations: railConversations,
+                    selectedId: _isNewConversationMode ? null : _selectedSessionId,
+                    onSelect: (id) {
+                      final session = _sessions.where((s) => s.id == id).firstOrNull;
+                      if (session != null) _selectConversation(session);
+                    },
+                    onNewConversation: () => _startNewConversationInProject(_activeChatProject),
+                    onHoverChanged: (hovered) => setState(() => _railHovered = hovered),
+                    isPinned: _showDesktopSidebar,
+                    onTogglePin: () => setState(() => _showDesktopSidebar = !_showDesktopSidebar),
+                  ),
+                ),
+              VerticalDivider(width: 1, color: colorScheme.outlineVariant),
+              if (showExplorer) ...[
+                SizedBox(
+                  width: 240,
+                  child: RepaintBoundary(
+                    child: projectRoot.isEmpty
+                        ? Center(
+                            child: Padding(
+                              padding: const EdgeInsets.all(16),
+                              child: Text(
+                                'Chọn một project để xem cây thư mục',
+                                textAlign: TextAlign.center,
+                                style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                                      color: colorScheme.onSurfaceVariant,
+                                    ),
+                              ),
+                            ),
+                          )
+                        : ProjectTreeExplorer(
+                            scanner: _scanner,
+                            serverAddress: _serverAddress,
+                            rootPath: projectRoot,
+                            selectedFilePath: _viewerFilePath,
+                            fileStatuses: _explorerFileStatuses(activeSession),
+                            onOpenFile: (path) => setState(() => _viewerFilePath = path),
+                            onCollapse: () => setState(() => _explorerOverride = false),
+                          ),
+                  ),
+                ),
+                VerticalDivider(width: 1, color: colorScheme.outlineVariant),
+              ],
+              Expanded(
+                child: _buildMainColumn(
+                  context,
+                  activeSession,
+                  isMobile: false,
+                  content: ResizableSplitView(
+                    showLeft: viewerOpen,
+                    left: viewerOpen
+                        ? FileDiffAndContentPane(
+                            key: ValueKey(_viewerFilePath),
+                            scanner: _scanner,
+                            serverAddress: _serverAddress,
+                            filePath: _viewerFilePath!,
+                            onDownloadFile: _downloadFileDirectly,
+                            onClose: () => setState(() => _viewerFilePath = null),
+                          )
+                        : const SizedBox.shrink(),
+                    right: _buildChatArea(context, activeSession),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+        // Rail mở rộng khi hover: nổi lên trên, không đẩy nội dung
+        if (_railHovered && !_showDesktopSidebar)
+          Positioned(
+            left: 0,
+            top: 0,
+            bottom: 0,
+            width: 280,
+            child: MouseRegion(
+              onEnter: (_) => setState(() => _railHovered = true),
+              onExit: (_) => setState(() => _railHovered = false),
+              child: Material(
+                elevation: 8,
                 color: colorScheme.surfaceContainerLow,
                 child: RepaintBoundary(
                   child: _buildAntigravitySidebar(context, isMobileDrawer: false),
                 ),
               ),
-              VerticalDivider(width: 1, color: colorScheme.outlineVariant),
-            ],
-
-            // Khung Chat chính kiểu Antigravity
-            Expanded(
-              child: RepaintBoundary(
-                child: Column(
-                  children: [
-                    _buildMinimalTopHeader(
-                      context,
-                      activeSession,
-                      isMobile: isMobile,
-                    ),
-                    Divider(height: 1, color: colorScheme.outlineVariant),
-                    if (_pendingAIQuestions.isNotEmpty)
-                      _buildAIQuestionBanner(context),
-                    Expanded(
-                      child: _isLoading &&
-                              activeSession == null &&
-                              !_isNewConversationMode
-                          ? const Center(child: CircularProgressIndicator())
-                          : !_isRemoteConnected &&
-                                  !_isSocketLive &&
-                                  activeSession == null
-                              ? _buildDisconnectedView(context)
-                              : ChatCanvasView(
-                                  session: activeSession,
-                                  projects: _projects,
-                                  selectedProject: _activeChatProject,
-                                  availableAgents: _availableAgents,
-                                  availableModels: _availableModels,
-                                  modelLabels: _modelLabels,
-                                  modelQuotas: _modelQuotas,
-                                  selectedAgent: _selectedAgent,
-                                  selectedModel: _selectedModel,
-                                  isNewConversationMode: _isNewConversationMode,
-                                  isSending: _isSendingPrompt,
-                                  activeStream: _currentSessionStream,
-                                  lastDownloadedFilePath: _lastDownloadedFilePath,
-                                  pendingClaudeInteraction: _pendingClaudeInteraction,
-                                  onRespondClaudeInteraction: _respondClaudeInteraction,
-                                  onSelectProject: (p) {
-                                    setState(() => _activeChatProject = p);
-                                  },
-                                  onSelectAgent: (a) {
-                                    setState(() => _selectedAgent = a);
-                                  },
-                                  onSelectModel: (m) {
-                                    setState(() {
-                                      _selectedModel = m;
-                                      _modelBySession[_modelMemoryKey] = m;
-                                    });
-                                  },
-                                  onStartNewConversation: () =>
-                                      _startNewConversationInProject(
-                                    _activeChatProject,
-                                  ),
-                                  onSendMessage: _handleSendPrompt,
-                                  onStopTurn: _handleStopTurn,
-                                  onOpenFileBrowser: () =>
-                                      _openServerFileBrowser(initialTab: 0),
-                                  onOpenChangesTab: () =>
-                                      _openServerFileBrowser(initialTab: 1),
-                                  onInspectFileChange: _inspectFileChange,
-                                  onDownloadFile: _downloadFileDirectly,
-                                  onOpenDownloadedFile: (path) =>
-                                      _scanner.openDownloadedFile(path),
-                                  onApprovePlan: _handleApprovePlan,
-                                  onRejectPlan: _handleRejectPlan,
-                                  onCancelPlan: _handleCancelPlan,
-                                  onLoadOlderHistory: _handleLoadOlderHistory,
-                                  onFetchClaudeExtensions: _handleFetchClaudeExtensions,
-                                  onOpenParallelFlow: _openParallelAgentFlowScreen,
-                                  onOpenCreateProject: () =>
-                                      _showCreateProjectDialog(context),
-                                  onGitPush: _handleGitPush,
-                                  onOpenGitHistory: _openActiveGitHistory,
-                                ),
-                    ),
-                  ],
-                ),
-              ),
             ),
-          ],
-        ),
+          ),
+      ],
+    );
+  }
+
+  /// Trạng thái thay đổi của file trong session đang chọn để tô màu explorer.
+  /// Nếu một file vừa được tạo vừa được sửa thì ưu tiên "mới".
+  Map<String, ExplorerChangeStatus> _explorerFileStatuses(ConversationSession? session) {
+    final out = <String, ExplorerChangeStatus>{};
+    for (final record in session?.filesTouched ?? const <FileTouchRecord>[]) {
+      if (record.action == 'created') {
+        out[record.path] = ExplorerChangeStatus.created;
+      } else if (record.action == 'modified' &&
+          out[record.path] != ExplorerChangeStatus.created) {
+        out[record.path] = ExplorerChangeStatus.modified;
+      }
+    }
+    return out;
+  }
+
+  /// Chọn một conversation từ rail (giống thao tác trong sidebar)
+  void _selectConversation(ConversationSession session) {
+    final matchedProj = _projects.firstWhere(
+      (p) => p.name == session.projectName,
+      orElse: () => ProjectWorkspace(
+        id: session.projectName,
+        name: session.projectName,
+        path: session.projectPath,
+        sessionCount: 1,
+        runningCount: 0,
       ),
+    );
+    setState(() {
+      _isNewConversationMode = false;
+      _selectedSessionId = session.id;
+      _activeChatProject = matchedProj;
+      _syncDefaultSelections();
+    });
+    if (session.steps.isEmpty) {
+      _loadFullSessionDetail(session.id);
+    }
+  }
+
+  /// Khung chính: header, banner câu hỏi, rồi nội dung (chat hoặc split viewer | chat)
+  Widget _buildMainColumn(
+    BuildContext context,
+    ConversationSession? activeSession, {
+    required bool isMobile,
+    required Widget content,
+  }) {
+    final colorScheme = Theme.of(context).colorScheme;
+    return RepaintBoundary(
+      child: Column(
+        children: [
+          _buildMinimalTopHeader(
+            context,
+            activeSession,
+            isMobile: isMobile,
+          ),
+          Divider(height: 1, color: colorScheme.outlineVariant),
+          if (_pendingAIQuestions.isNotEmpty) _buildAIQuestionBanner(context),
+          Expanded(child: content),
+        ],
+      ),
+    );
+  }
+
+  /// Nội dung chat: trạng thái tải / mất kết nối, hoặc ChatCanvasView
+  Widget _buildChatArea(BuildContext context, ConversationSession? activeSession) {
+    if (_isLoading && activeSession == null && !_isNewConversationMode) {
+      return const Center(child: CircularProgressIndicator());
+    }
+    if (!_isRemoteConnected && !_isSocketLive && activeSession == null) {
+      return _buildDisconnectedView(context);
+    }
+    return ChatCanvasView(
+                session: activeSession,
+                projects: _projects,
+                selectedProject: _activeChatProject,
+                availableAgents: _availableAgents,
+                availableModels: _availableModels,
+                modelLabels: _modelLabels,
+                modelQuotas: _modelQuotas,
+                selectedAgent: _selectedAgent,
+                selectedModel: _selectedModel,
+                isNewConversationMode: _isNewConversationMode,
+                isSending: _isSendingPrompt,
+                activeStream: _currentSessionStream,
+                lastDownloadedFilePath: _lastDownloadedFilePath,
+                pendingClaudeInteraction: _pendingClaudeInteraction,
+                onRespondClaudeInteraction: _respondClaudeInteraction,
+                onSelectProject: (p) {
+                  setState(() => _activeChatProject = p);
+                },
+                onSelectAgent: (a) {
+                  setState(() => _selectedAgent = a);
+                },
+                onSelectModel: (m) {
+                  setState(() {
+                    _selectedModel = m;
+                    _modelBySession[_modelMemoryKey] = m;
+                  });
+                },
+                onStartNewConversation: () =>
+                    _startNewConversationInProject(
+                  _activeChatProject,
+                ),
+                onSendMessage: _handleSendPrompt,
+                onStopTurn: _handleStopTurn,
+                onOpenFileBrowser: () =>
+                    _openServerFileBrowser(initialTab: 0),
+                onOpenChangesTab: () =>
+                    _openServerFileBrowser(initialTab: 1),
+                onInspectFileChange: _inspectFileChange,
+                onDownloadFile: _downloadFileDirectly,
+                onOpenDownloadedFile: (path) =>
+                    _scanner.openDownloadedFile(path),
+                onApprovePlan: _handleApprovePlan,
+                onRejectPlan: _handleRejectPlan,
+                onCancelPlan: _handleCancelPlan,
+                onLoadOlderHistory: _handleLoadOlderHistory,
+                onFetchClaudeExtensions: _handleFetchClaudeExtensions,
+                onOpenParallelFlow: _openParallelAgentFlowScreen,
+                onOpenCreateProject: () =>
+                    _showCreateProjectDialog(context),
+                onGitPush: _handleGitPush,
+                onOpenGitHistory: _openActiveGitHistory,
     );
   }
 
@@ -1902,6 +2084,22 @@ class _DashboardScreenState extends State<DashboardScreen> {
               }
             },
           ),
+          if (!isMobile) ...[
+            IconButton(
+              tooltip: 'Ẩn/Hiện explorer thư mục',
+              visualDensity: VisualDensity.compact,
+              icon: Icon(
+                (_explorerOverride ?? MediaQuery.sizeOf(context).width >= 1200)
+                    ? Icons.account_tree_rounded
+                    : Icons.account_tree_outlined,
+                size: 20,
+              ),
+              onPressed: () => setState(() {
+                _explorerOverride = !(_explorerOverride ?? MediaQuery.sizeOf(context).width >= 1200);
+              }),
+            ),
+            const SizedBox(width: 4),
+          ],
           const SizedBox(width: 4),
           ClipRRect(
             borderRadius: BorderRadius.circular(5),

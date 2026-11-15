@@ -110,6 +110,17 @@ Liệt kê extension của Claude Code (skill, agent, command) trong project.
 
 Lịch sử commit. `limit` mặc định 100, tối đa 500.
 
+### `GET /api/git/status?projectPath=<path>`
+
+Trạng thái git của project so với HEAD đang checkout, dùng để tô màu explorer. Trả về:
+
+```json
+{ "ok": true, "isRepo": true, "kinds": { "/abs/path/file.dart": "modified", "/abs/path/new.dart": "created" }, "truncated": false, "error": "" }
+```
+
+- `isRepo = false` nếu thư mục không nằm trong git repository; khi đó client dựa vào thay đổi do agent ghi.
+- `kinds`: `created` (file mới hoặc chưa được theo dõi), `modified`, `deleted`. Tối đa 5000 mục, `truncated = true` nếu bị cắt.
+
 ### `GET /api/git/commit?projectPath=<path>&hash=<hash>`
 
 Chi tiết một commit. `hash` phải là chuỗi hex từ 4 đến 40 ký tự.
@@ -223,6 +234,30 @@ Liệt kê thư mục.
 ### `GET /api/files/read?path=<file>`
 
 Đọc nội dung text của file.
+
+### `GET /api/files/lines?path=<file>&offset=<dòng>&limit=<số dòng>`
+
+Đọc một đoạn dòng của tệp văn bản mà không nạp cả tệp. Server đánh chỉ mục byte offset của từng dòng (cache theo mtime và kích thước), `limit` mặc định 200, tối đa 400. Mỗi dòng được cắt tối đa 2000 ký tự.
+
+Phản hồi:
+
+```json
+{
+  "ok": true,
+  "path": "...",
+  "name": "...",
+  "size": 86745462,
+  "isBinary": false,
+  "totalLines": 36310,
+  "offset": 0,
+  "lines": ["..."],
+  "hasMore": true,
+  "gitDiff": "...",
+  "error": ""
+}
+```
+
+`gitDiff` chỉ có khi `offset = 0`, cắt tối đa 200KB, và bỏ qua với file lớn hơn 20MB. Tệp nhị phân trả `isBinary: true` và không có dòng.
 
 ### `GET /api/files/download?path=<file>`
 
