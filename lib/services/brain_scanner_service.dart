@@ -197,19 +197,13 @@ class BrainScannerService {
   static const String defaultHostAddress = '192.168.31.96:8787';
   static const int defaultBridgePort = 8787;
 
-  /// Id model phải khớp với `scanner::default_models` ở Rust Server.
+  /// Danh sách model ban đầu trước khi có snapshot đầu tiên. Model Claude cố định;
+  /// model Antigravity (`agy:`) không có sẵn ở đây mà lấy động từ snapshot (`agy models`).
   /// - `claude-cli:<model-id>` → Claude Code CLI (`claude --model <model-id>`, ID đầy đủ có version)
-  /// - `agy:<model>` → Antigravity CLI (`agy`)
   static const List<String> defaultModels = [
     'claude-cli:claude-sonnet-5-5',
     'claude-cli:claude-opus-5-5',
     'claude-cli:claude-haiku-5-5',
-    'agy:gemini-3.8-flash-high',
-    'agy:gemini-3.8-flash-medium',
-    'agy:claude-sonnet-5-5-high',
-    'agy:claude-opus-5-5-high',
-    'agy:gemini-4-argon-high',
-    'agy:gemini-4-argon-medium',
   ];
 
   static const List<String> defaultAgents = [

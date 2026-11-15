@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../../models/agent_models.dart';
+import '../../models/model_grouping.dart';
 import 'interaction_dialogs.dart';
 import 'interaction_widgets.dart';
 import 'server_file_browser_sheet.dart';
@@ -18,6 +19,7 @@ class ChatCanvasView extends StatefulWidget {
     required this.selectedProject,
     required this.availableAgents,
     required this.availableModels,
+    this.modelLabels = const {},
     required this.modelQuotas,
     required this.selectedAgent,
     required this.selectedModel,
@@ -54,6 +56,8 @@ class ChatCanvasView extends StatefulWidget {
   final ProjectWorkspace? selectedProject;
   final List<String> availableAgents;
   final List<String> availableModels;
+  /// Nhãn hiển thị theo id model (lấy từ `agy models`)
+  final Map<String, String> modelLabels;
   final List<ModelQuotaGroup> modelQuotas;
   final String selectedAgent;
   final String selectedModel;
@@ -438,30 +442,152 @@ class _ChatCanvasViewState extends State<ChatCanvasView> {
         return 'Claude Opus 5.5';
       case 'claude-cli:claude-haiku-5-5':
         return 'Claude Haiku 5.5';
-      case 'agy:gemini-3.8-flash-high':
-        return 'Gemini 3.8 Flash (High)';
-      case 'agy:gemini-3.8-flash-medium':
-        return 'Gemini 3.8 Flash (Medium)';
-      case 'agy:claude-sonnet-5-5-high':
-        return 'Claude Sonnet 5.5 (agy)';
-      case 'agy:claude-opus-5-5-high':
-        return 'Claude Opus 5.5 (agy)';
-      case 'agy:gemini-4-argon-high':
-        return 'Gemini 4 Argon (High)';
-      case 'agy:gemini-4-argon-medium':
-        return 'Gemini 4 Argon (Medium)';
       default:
-        // Model Antigravity lấy động từ `agy models`: hiển thị id không có tiền tố provider
+        // Model Antigravity lấy từ `agy models` (nhãn do server gửi); thiếu nhãn thì bỏ tiền tố provider
+        final fromServer = widget.modelLabels[modelId];
+        if (fromServer != null && fromServer.isNotEmpty) return fromServer;
         return modelId.startsWith('agy:') ? modelId.substring(4) : modelId;
     }
   }
 
-  /// Model đầu tiên của một nhóm provider (để chèn header trong popup)
-  bool _isGroupStart(String modelId) {
-    final index = widget.availableModels.indexOf(modelId);
-    if (index <= 0) return true;
-    return _isClaudeCliModel(modelId) !=
-        _isClaudeCliModel(widget.availableModels[index - 1]);
+  /// Nhãn cho việc gom nhóm: Claude dùng bảng cố định, Antigravity dùng nhãn của server
+  Map<String, String> _labelMapFor(Iterable<String> models) {
+    return {
+      for (final m in models)
+        m: _isClaudeCliModel(m) ? _formatModelLabel(m) : (widget.modelLabels[m] ?? ''),
+    };
+  }
+
+  /// Nhóm model đang chọn (theo id đầy đủ), null nếu không nằm trong danh sách đã lọc
+  ModelGroup? _groupOfSelected(List<ModelGroup> groups) {
+    for (final g in groups) {
+      if (g.options.any((o) => o.id == widget.selectedModel)) return g;
+    }
+    return null;
+  }
+
+  /// Bộ chọn model: menu nhóm theo tên (ví dụ "Gemini 4 Argon") và menu mức (Low/Medium/High/XHigh) bên cạnh.
+  /// Chuyển nhóm giữ nguyên mức đang chọn nếu nhóm mới có, không thì dùng Medium.
+  Widget _buildModelSelector(ColorScheme colorScheme, TextTheme textTheme, bool isMobile) {
+    final groups = groupModels(
+      _getFilteredModelsForSession(),
+      _labelMapFor(_getFilteredModelsForSession()),
+    );
+    final current = _groupOfSelected(groups);
+    final effort = groups
+        .expand((g) => g.options)
+        .where((o) => o.id == widget.selectedModel)
+        .map((o) => o.effort)
+        .firstOrNull;
+    final groupLabel = current?.label ?? _formatModelLabel(widget.selectedModel);
+
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        PopupMenuButton<String>(
+          tooltip: 'Chọn model: Claude Code CLI (claude) hoặc Antigravity (agy)',
+          onSelected: (groupId) {
+            final group = groups.firstWhere((g) => g.id == groupId);
+            widget.onSelectModel(group.preferredOption(currentEffort: effort).id);
+          },
+          itemBuilder: (ctx) => [
+            for (var i = 0; i < groups.length; i++) ...[
+              if (i == 0 ||
+                  _isClaudeCliModel(groups[i].id) != _isClaudeCliModel(groups[i - 1].id))
+                ..._providerHeaderEntries(
+                  groups[i].id,
+                  colorScheme,
+                  showDivider: i > 0,
+                ),
+              PopupMenuItem<String>(
+                value: groups[i].id,
+                child: Row(
+                  children: [
+                    Icon(
+                      Icons.auto_awesome_rounded,
+                      size: 15,
+                      color: identical(groups[i], current)
+                          ? colorScheme.primary
+                          : colorScheme.onSurfaceVariant,
+                    ),
+                    const SizedBox(width: 8),
+                    Text(
+                      groups[i].label,
+                      style: TextStyle(
+                        fontWeight: identical(groups[i], current)
+                            ? FontWeight.w800
+                            : FontWeight.w500,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ],
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(Icons.memory_rounded, size: 13.5, color: colorScheme.primary),
+              const SizedBox(width: 5),
+              ConstrainedBox(
+                constraints: BoxConstraints(maxWidth: isMobile ? 118 : 200),
+                child: Text(
+                  groupLabel,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: textTheme.labelSmall?.copyWith(
+                    fontWeight: FontWeight.w800,
+                    color: colorScheme.onSurface,
+                  ),
+                ),
+              ),
+              Icon(Icons.arrow_drop_down_rounded, size: 15, color: colorScheme.onSurfaceVariant),
+            ],
+          ),
+        ),
+        if (current != null && current.hasEffortChoices) ...[
+          const SizedBox(width: 4),
+          PopupMenuButton<String>(
+            tooltip: 'Mức suy luận (mặc định: ${ModelGroup.effortLabel(kDefaultModelEffort)})',
+            onSelected: widget.onSelectModel,
+            itemBuilder: (ctx) => [
+              for (final option in current.options)
+                PopupMenuItem<String>(
+                  value: option.id,
+                  child: Text(
+                    ModelGroup.effortLabel(option.effort ?? ''),
+                    style: TextStyle(
+                      fontWeight: option.id == widget.selectedModel
+                          ? FontWeight.w800
+                          : FontWeight.w500,
+                    ),
+                  ),
+                ),
+            ],
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
+              decoration: BoxDecoration(
+                color: colorScheme.primary.withAlpha(24),
+                borderRadius: BorderRadius.circular(6),
+              ),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(
+                    ModelGroup.effortLabel(effort ?? kDefaultModelEffort),
+                    style: textTheme.labelSmall?.copyWith(
+                      fontWeight: FontWeight.w800,
+                      color: colorScheme.primary,
+                    ),
+                  ),
+                  Icon(Icons.arrow_drop_down_rounded, size: 15, color: colorScheme.primary),
+                ],
+              ),
+            ),
+          ),
+        ],
+      ],
+    );
   }
 
   /// Header của mỗi nhóm provider trong popup chọn model
@@ -3567,76 +3693,8 @@ class _ChatCanvasViewState extends State<ChatCanvasView> {
       ),
       child: Row(
         children: [
-          // Chọn nhanh Model AI
-          PopupMenuButton<String>(
-            tooltip:
-                'Chọn model: Claude Code CLI (claude) hoặc Antigravity (agy)',
-            onSelected: widget.onSelectModel,
-            itemBuilder: (ctx) {
-              final filteredModels = _getFilteredModelsForSession();
-              return [
-                for (final m in filteredModels) ...[
-                  if (_isGroupStart(m))
-                    ..._providerHeaderEntries(
-                      m,
-                      colorScheme,
-                      showDivider: filteredModels.indexOf(m) > 0,
-                    ),
-                  PopupMenuItem<String>(
-                    value: m,
-                    child: Row(
-                      children: [
-                        Icon(
-                          Icons.auto_awesome_rounded,
-                          size: 15,
-                          color: m == widget.selectedModel
-                              ? colorScheme.primary
-                              : colorScheme.onSurfaceVariant,
-                        ),
-                        const SizedBox(width: 8),
-                        Text(
-                          _formatModelLabel(m),
-                          style: TextStyle(
-                            fontWeight: m == widget.selectedModel
-                                ? FontWeight.w800
-                                : FontWeight.w500,
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                ],
-              ];
-            },
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Icon(
-                  Icons.memory_rounded,
-                  size: 13.5,
-                  color: colorScheme.primary,
-                ),
-                const SizedBox(width: 5),
-                ConstrainedBox(
-                  constraints: BoxConstraints(maxWidth: isMobile ? 118 : 200),
-                  child: Text(
-                    _formatModelLabel(widget.selectedModel),
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: textTheme.labelSmall?.copyWith(
-                      fontWeight: FontWeight.w800,
-                      color: colorScheme.onSurface,
-                    ),
-                  ),
-                ),
-                Icon(
-                  Icons.arrow_drop_down_rounded,
-                  size: 15,
-                  color: colorScheme.onSurfaceVariant,
-                ),
-              ],
-            ),
-          ),
+          // Chọn nhanh Model AI: nhóm theo tên, mức suy luận ở ngay bên cạnh
+          _buildModelSelector(colorScheme, textTheme, isMobile),
 
           const SizedBox(width: 6),
 

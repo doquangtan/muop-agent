@@ -5,6 +5,7 @@ import 'package:flutter/services.dart';
 
 import '../models/agent_core_models.dart';
 import '../models/agent_models.dart';
+import '../models/model_grouping.dart';
 import '../services/brain_scanner_service.dart';
 import 'parallel_agent_flow_screen.dart';
 import 'widgets/ai_question_dialog.dart';
@@ -45,6 +46,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
   List<ConversationSession> _sessions = [];
   List<ProjectWorkspace> _projects = [];
   List<String> _availableModels = BrainScannerService.defaultModels;
+  Map<String, String> _modelLabels = {};
   List<String> _availableAgents = BrainScannerService.defaultAgents;
   List<ModelQuotaGroup> _modelQuotas = [];
   Map<String, ChatTurnStreamState> _activeStreams = {};
@@ -444,6 +446,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
       }
       if (snapshot.availableModels.isNotEmpty) {
         _availableModels = snapshot.availableModels;
+        _modelLabels = snapshot.modelLabels;
       }
       if (snapshot.availableAgents.isNotEmpty) {
         _availableAgents = snapshot.availableAgents;
@@ -567,15 +570,15 @@ class _DashboardScreenState extends State<DashboardScreen> {
   /// Model mặc định theo provider: ưu tiên Claude Sonnet 5.5 (claude-cli), còn lại lấy model đầu tiên cùng provider
   String _defaultModelFor(String source) {
     const claudeDefault = 'claude-cli:claude-sonnet-5-5';
-    if (source == 'claude-cli') {
-      if (_availableModels.contains(claudeDefault)) return claudeDefault;
-      final claude = _availableModels.where((m) => m.startsWith('claude-cli:'));
-      if (claude.isNotEmpty) return claude.first;
-    } else {
-      final agy = _availableModels.where((m) => m.startsWith('agy:'));
-      if (agy.isNotEmpty) return agy.first;
-    }
-    return _availableModels.isNotEmpty ? _availableModels.first : claudeDefault;
+    final sameProvider =
+        _availableModels.where((m) => _sourceFromModel(m) == source).toList();
+    final pool = sameProvider.isNotEmpty ? sameProvider : _availableModels;
+    if (pool.isEmpty) return claudeDefault;
+    // Model đầu tiên trong danh sách; nếu nhóm có nhiều mức thì dùng mức Medium
+    final first = pool.first;
+    final group = groupModels(pool, _modelLabels)
+        .firstWhere((g) => g.options.any((o) => o.id == first));
+    return group.preferredOption().id;
   }
 
   static String _sourceFromModel(String model) {
@@ -637,41 +640,23 @@ class _DashboardScreenState extends State<DashboardScreen> {
     // Thứ tự ưu tiên: model người dùng đã chọn cho conversation này → model của lượt phản hồi
     // gần nhất trong conversation → model mặc định
     final remembered = _modelBySession[_modelMemoryKey];
-    if (remembered != null && _availableModels.contains(remembered)) {
+    final provider = _activeSource;
+    if (remembered != null &&
+        _availableModels.contains(remembered) &&
+        _sourceFromModel(remembered) == provider) {
       _selectedModel = remembered;
     } else {
-      _selectedModel =
-          _modelFromLastResponse(currentSess) ?? _defaultModelFor(_activeSource);
-    }
-    // Cuộc chat đang chọn (kể cả khi vừa tạo, chưa có trong snapshot) luôn dùng model đúng provider
-    if (_activeSource == 'claude-cli') {
-      // Session claude-cli chỉ có thể dùng claude-cli models
-      final claudeModels = _availableModels
-          .where((m) => m.startsWith('claude-cli:'))
-          .toList();
-      if (claudeModels.isNotEmpty && !_selectedModel.startsWith('claude-cli:')) {
-        _selectedModel = claudeModels.first;
-      } else if (!_selectedModel.startsWith('claude-cli:') && _availableModels.isNotEmpty) {
-        _selectedModel = _availableModels.first;
-      }
-    } else {
-      // Session agy có thể dùng agy models
-      final agyModels = _availableModels
-          .where((m) => m.startsWith('agy:'))
-          .toList();
-      if (agyModels.isNotEmpty && !_selectedModel.startsWith('agy:')) {
-        _selectedModel = agyModels.first;
-      } else if (!_selectedModel.startsWith('agy:') && _availableModels.isNotEmpty) {
-        _selectedModel = _availableModels.first;
-      }
+      // Khi mở conversation: khớp model của lượt nhắn gần nhất; không có thì lấy model đầu tiên
+      final fromLast = _modelFromLastResponse(currentSess);
+      _selectedModel = (fromLast != null && _sourceFromModel(fromLast) == provider)
+          ? fromLast
+          : _defaultModelFor(provider);
     }
 
     if (_selectedModel == 'default' || !_availableModels.contains(_selectedModel)) {
-      if (_availableModels.isNotEmpty) {
-        _selectedModel = _availableModels.first;
-      } else {
-        _selectedModel = 'claude-cli:claude-sonnet-5-5';
-      }
+      _selectedModel = _availableModels.isNotEmpty
+          ? _defaultModelFor(provider)
+          : 'claude-cli:claude-sonnet-5-5';
     }
 
     // Đồng bộ agent dựa trên session
@@ -1822,6 +1807,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                                   selectedProject: _activeChatProject,
                                   availableAgents: _availableAgents,
                                   availableModels: _availableModels,
+                                  modelLabels: _modelLabels,
                                   modelQuotas: _modelQuotas,
                                   selectedAgent: _selectedAgent,
                                   selectedModel: _selectedModel,

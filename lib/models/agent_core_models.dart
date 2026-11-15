@@ -1021,6 +1021,7 @@ class AgentMonitorSnapshot {
     required this.availableAgents,
     required this.activeStreams,
     this.modelQuotas = const [],
+    this.modelLabels = const {},
     required this.hostname,
     required this.lanIps,
     required this.port,
@@ -1034,6 +1035,8 @@ class AgentMonitorSnapshot {
   final List<String> availableAgents;
   final Map<String, ChatTurnStreamState> activeStreams;
   final List<ModelQuotaGroup> modelQuotas;
+  /// Nhãn hiển thị theo id model, lấy từ `agy models`
+  final Map<String, String> modelLabels;
   final String hostname;
   final List<String> lanIps;
   final int port;
@@ -1048,6 +1051,7 @@ class AgentMonitorSnapshot {
         'activeStreams':
             activeStreams.map((k, v) => MapEntry(k, v.toJson())),
         'modelQuotas': modelQuotas.map((e) => e.toJson()).toList(),
+        'modelLabels': modelLabels,
         'hostname': hostname,
         'lanIps': lanIps,
         'port': port,
@@ -1120,6 +1124,10 @@ class AgentMonitorSnapshot {
         ips.add('$ip');
       }
     }
+    final labels = <String, String>{};
+    if (json['modelLabels'] is Map) {
+      (json['modelLabels'] as Map).forEach((k, v) => labels['$k'] = '$v');
+    }
     return AgentMonitorSnapshot(
       sessions: sessions,
       customAgents: specs,
@@ -1128,6 +1136,7 @@ class AgentMonitorSnapshot {
       availableAgents: agents,
       activeStreams: streams,
       modelQuotas: quotas,
+      modelLabels: labels,
       hostname: '${json['hostname'] ?? 'linux-pc'}',
       lanIps: ips,
       port: (json['port'] as num?)?.toInt() ?? 8787,
