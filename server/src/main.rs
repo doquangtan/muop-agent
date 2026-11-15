@@ -1,6 +1,8 @@
 mod chat;
 mod claude_code;
 mod claude_questions;
+mod file_lines;
+mod git_status;
 mod models;
 mod scanner;
 mod store;
@@ -1547,11 +1549,13 @@ async fn main() {
         .route("/api/git/push", post(handle_git_push))
         .route("/api/git/history", get(handle_git_history))
         .route("/api/git/commit", get(handle_git_commit))
+        .route("/api/git/status", get(git_status::handle_git_status))
         .route("/api/plan/pending", get(handle_plan_pending))
         .route("/api/plan/action", post(handle_plan_action))
         .route("/api/files/list", get(handle_files_list))
         .route("/api/files/read", get(handle_file_read))
         .route("/api/files/download", get(handle_file_download))
+        .route("/api/files/lines", get(file_lines::handle_file_lines))
         .route("/api/claude/pending", get(handle_claude_pending))
         .route("/api/claude/respond", post(handle_claude_respond))
         .route("/api/ai-questions", get(handle_ai_questions))
