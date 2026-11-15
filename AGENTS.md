@@ -272,7 +272,9 @@ lsof -i :8787
 ### 8.2. Provider, source và model
 - Session có trường `source`: `claude-cli` (từ transcript Claude) hoặc `agy`. Server trả `source` trong phản hồi `chat:send` (`ChatSendResponse.source`).
 - Model id: `claude-cli:<model-id>` (ID đầy đủ có version, ví dụ `claude-haiku-5-5`) hoặc `agy:<model>`. Alias `sonnet/opus/haiku` được ánh xạ sang ID đầy đủ trong `claude_code::normalize_model`, vì CLI tự phân giải alias sang bản cũ.
-- Danh sách model `agy:` là động: `scanner::agy_models()` chạy `agy models` (output `<id>\t<tên>`), cache 10 phút và làm mới nền; lỗi thì giữ danh sách cũ, thử lại sau 1 phút. Danh sách dự phòng `AGY_FALLBACK_MODELS` nằm trong `scanner.rs`. Model Claude (`claude-cli:`) vẫn cố định trong `scanner::default_models`. Flutter hiển thị model `agy:` không có trong bảng tên thì bỏ tiền tố `agy:`.
+- Danh sách model `agy:` hoàn toàn động, không còn danh sách cố định: `scanner::agy_models()` chạy `agy models` (output `<id>\t<tên>`), cache 10 phút và làm mới nền; lỗi thì giữ danh sách cũ, thử lại sau 1 phút. Chưa lấy được thì danh sách rỗng. Snapshot gửi kèm `modelLabels` (id → nhãn từ `agy models`). Model Claude (`claude-cli:`) vẫn cố định trong `scanner::default_models`.
+- Chọn model trên UI (`lib/models/model_grouping.dart`, `chat_canvas_view.dart::_buildModelSelector`): id được tách thành nhóm theo tên (ví dụ `agy:gemini-4-argon`) và mức ở cuối (`low/medium/high/xhigh/max`). Menu nhóm nằm cạnh menu mức. Chuyển nhóm giữ mức hiện tại nếu có, không thì lấy `medium`.
+- Mở conversation (`dashboard_screen.dart::_syncDefaultSelections`): model người dùng đã chọn trong conversation → model của lượt nhắn gần nhất → model đầu tiên của provider trong danh sách (mức `medium` nếu nhóm có).
 - Claude CLI được gọi với `--append-system-prompt` (ghi đường dẫn project) và `--add-dir <cwd>`.
 - `AgentStep.model` lấy từ `message.model` của assistant (bỏ `<synthetic>`), dùng để hiển thị nhãn model dưới thẻ AI.
 - Thứ tự chọn model khi mở conversation (`dashboard_screen.dart`, `_syncDefaultSelections`): model người dùng đã chọn → model của lượt phản hồi gần nhất → mặc định (`claude-cli:claude-sonnet-5-5` hoặc model đầu tiên cùng provider).
@@ -310,7 +312,7 @@ lsof -i :8787
 - Khi APK Release build xong, Agent copy project sang Mac và build file IPA để người dùng cài bằng TrollStore.
 - **Chỉ làm khi SSH tới Mac được.** Kiểm tra SSH trước bước đầu tiên. Nếu SSH không được, bỏ qua bước IPA và nêu rõ trong báo cáo cuối.
 - Mac: `johndylan@192.168.31.206`, thư mục đích `/Volumes/Untitled/muop-agent`. Mật khẩu KHÔNG ghi trong repo; xem memory `mac-build-host` (cục bộ, ngoài repo).
-- Không có `sshpass`. Dùng `SSH_ASKPASS` trỏ tới script trong thư mục tạm riêng (ngoài repo), kèm `SSH_ASKPASS_REQUIRE=force` và `setsid`. Xóa script và thư mục tạm này trên máy Linux sau khi xong.
+- **Đọc `/home/john/Documents/muop-ecosystem/config/ssh-key/README.md` trước khi SSH.** Có key riêng `config/ssh-key/muop_build_ed25519` để đăng nhập không cần mật khẩu (`ssh -i <key> -o IdentitiesOnly=yes -o BatchMode=yes`). Chỉ khi key chưa được cài lên Mac thì dùng `SSH_ASKPASS` (mục 4 trong README). Không có `sshpass`. Script `SSH_ASKPASS` đặt trong thư mục tạm riêng (ngoài repo), xóa ngay sau khi xong.
 - Quy trình:
   1. `make build-apk` ở máy Linux để chắc APK là bản mới nhất.
   2. `rsync -az --exclude='.git/' --exclude='build/' --exclude='.dart_tool/' --exclude='server/target/' --exclude='.idea/' --exclude='.vscode/' --exclude='*.ipa'` từ thư mục gốc project tới `/Volumes/Untitled/muop-agent/`. Không dùng `--delete`, vì thư mục đích có `ios/` và `.git/` không có trong repo này.
