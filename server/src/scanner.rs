@@ -36,27 +36,24 @@ pub fn default_models() -> Vec<String> {
         "claude-cli:claude-opus-5-5".to_string(),
         "claude-cli:claude-haiku-5-5".to_string(),
     ];
-    models.extend(agy_models());
+    models.extend(agy_model_ids());
     models
 }
 
-/// Model dự phòng của Antigravity, dùng khi `agy models` không chạy được
-const AGY_FALLBACK_MODELS: &[&str] = &[
-    "gemini-3.8-flash-high",
-    "gemini-3.8-flash-medium",
-    "claude-sonnet-5-5-high",
-    "claude-opus-5-5-high",
-    "gemini-4-argon-high",
-    "gemini-4-argon-medium",
-];
-
 const AGY_MODELS_TTL: Duration = Duration::from_secs(600);
+
+/// Một model Antigravity lấy từ `agy models`: id đầy đủ (`agy:<id>`) và nhãn hiển thị
+#[derive(Debug, Clone)]
+struct AgyModel {
+    id: String,
+    label: String,
+}
 
 struct AgyModelsCache {
     fetched_at: Option<Instant>,
     /// Sau khi `agy models` lỗi, chỉ thử lại sau mốc này
     retry_at: Option<Instant>,
-    ids: Vec<String>,
+    models: Vec<AgyModel>,
     refreshing: bool,
 }
 
@@ -67,32 +64,32 @@ fn agy_models_cache() -> &'static Mutex<AgyModelsCache> {
         Mutex::new(AgyModelsCache {
             fetched_at: None,
             retry_at: None,
-            ids: AGY_FALLBACK_MODELS
-                .iter()
-                .map(|m| format!("agy:{}", m))
-                .collect(),
+            models: Vec::new(),
             refreshing: false,
         })
     })
 }
 
-/// Đọc output của `agy models` (mỗi dòng `<id>\t<tên hiển thị>`) thành danh sách `agy:<id>`
-fn parse_agy_models(output: &str) -> Vec<String> {
+/// Đọc output của `agy models` (mỗi dòng `<id>\t<tên hiển thị>`)
+fn parse_agy_models(output: &str) -> Vec<AgyModel> {
     output
         .lines()
         .filter_map(|line| {
-            let (id, _label) = line.split_once('\t')?;
+            let (id, label) = line.split_once('\t')?;
             let id = id.trim();
             let valid = !id.is_empty()
                 && id
                     .chars()
                     .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '.' | '_'));
-            valid.then(|| format!("agy:{}", id))
+            valid.then(|| AgyModel {
+                id: format!("agy:{}", id),
+                label: label.trim().to_string(),
+            })
         })
         .collect()
 }
 
-fn run_agy_models() -> Option<Vec<String>> {
+fn run_agy_models() -> Option<Vec<AgyModel>> {
     let output = Command::new(crate::chat::agy_bin())
         .arg("models")
         .output()
@@ -100,15 +97,15 @@ fn run_agy_models() -> Option<Vec<String>> {
     if !output.status.success() {
         return None;
     }
-    let ids = parse_agy_models(&String::from_utf8_lossy(&output.stdout));
-    (!ids.is_empty()).then_some(ids)
+    let models = parse_agy_models(&String::from_utf8_lossy(&output.stdout));
+    (!models.is_empty()).then_some(models)
 }
 
-/// Danh sách model Antigravity lấy từ `agy models`. Trả về ngay bản đã cache (hoặc dự phòng),
+/// Danh sách model Antigravity lấy từ `agy models`. Trả về ngay bản đã cache (rỗng nếu chưa lấy được),
 /// và làm mới nền khi cache quá 10 phút, để không chặn snapshot khi CLI chậm.
-fn agy_models() -> Vec<String> {
+fn agy_models() -> Vec<AgyModel> {
     let Ok(mut cache) = agy_models_cache().lock() else {
-        return AGY_FALLBACK_MODELS.iter().map(|m| format!("agy:{}", m)).collect();
+        return Vec::new();
     };
     let now = Instant::now();
     let stale = cache
@@ -122,8 +119,8 @@ fn agy_models() -> Vec<String> {
             let fetched = run_agy_models();
             if let Ok(mut cache) = agy_models_cache().lock() {
                 match fetched {
-                    Some(ids) => {
-                        cache.ids = ids;
+                    Some(models) => {
+                        cache.models = models;
                         cache.fetched_at = Some(Instant::now());
                         cache.retry_at = None;
                     }
@@ -134,7 +131,20 @@ fn agy_models() -> Vec<String> {
             }
         });
     }
-    cache.ids.clone()
+    cache.models.clone()
+}
+
+/// Id model Antigravity hiện có (`agy:<id>`), dùng cho lượt chat khi chưa chọn model
+pub fn agy_model_ids() -> Vec<String> {
+    agy_models().into_iter().map(|m| m.id).collect()
+}
+
+/// Nhãn hiển thị của mọi model, key là id đầy đủ (ví dụ `agy:gemini-4-argon-medium`)
+pub fn model_labels() -> HashMap<String, String> {
+    agy_models()
+        .into_iter()
+        .map(|m| (m.id, m.label))
+        .collect()
 }
 
 pub fn default_agents() -> Vec<String> {
@@ -462,15 +472,17 @@ pub fn build_full_snapshot(
     let hostname = detect_hostname();
     let lan_ips = detect_lan_ips();
     let model_quotas = fetch_all_model_quotas();
+    let available_models = default_models();
 
     AgentMonitorSnapshot {
         sessions,
         custom_agents,
         projects,
-        available_models: default_models(),
+        available_models,
         available_agents: default_agents(),
         active_streams: active_streams.clone(),
         model_quotas,
+        model_labels: model_labels(),
         hostname,
         lan_ips,
         port: DEFAULT_PORT,
@@ -2350,11 +2362,21 @@ mod agy_model_tests {
             claude-opus-5-5-high\tClaude Opus 5.5 (High)\n\
             \n\
             bad id with space\tX\n";
+        let parsed: Vec<(String, String)> = parse_agy_models(output)
+            .into_iter()
+            .map(|m| (m.id, m.label))
+            .collect();
         assert_eq!(
-            parse_agy_models(output),
+            parsed,
             vec![
-                "agy:gemini-4-argon-medium".to_string(),
-                "agy:claude-opus-5-5-high".to_string(),
+                (
+                    "agy:gemini-4-argon-medium".to_string(),
+                    "Gemini 4 Argon (Medium)".to_string()
+                ),
+                (
+                    "agy:claude-opus-5-5-high".to_string(),
+                    "Claude Opus 5.5 (High)".to_string()
+                ),
             ]
         );
     }

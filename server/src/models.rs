@@ -227,6 +227,9 @@ pub struct AgentMonitorSnapshot {
     pub active_streams: HashMap<String, ChatTurnStreamState>,
     #[serde(default)]
     pub model_quotas: Vec<ModelQuotaGroup>,
+    /// Nhãn hiển thị theo id model (ví dụ `agy:gemini-4-argon-medium` → `Gemini 4 Argon (Medium)`)
+    #[serde(default)]
+    pub model_labels: HashMap<String, String>,
     pub hostname: String,
     pub lan_ips: Vec<String>,
     pub port: u16,
