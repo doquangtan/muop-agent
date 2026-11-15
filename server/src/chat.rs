@@ -44,8 +44,12 @@ pub fn resolve_model(raw: &str) -> (Provider, String) {
 fn agy_model(raw: &str) -> String {
     let m = raw.trim();
     if m.is_empty() || m == "default" {
-        // Luôn chỉ định model còn quota, không để CLI tự chọn model đã hết quota
-        "gemini-3.8-flash-high".to_string()
+        // Chưa chọn model: dùng model đầu tiên trong danh sách `agy models` (không còn danh sách cố định)
+        crate::scanner::agy_model_ids()
+            .into_iter()
+            .next()
+            .map(|id| id.trim_start_matches(AGY_PREFIX).to_string())
+            .unwrap_or_default()
     } else {
         m.to_string()
     }
@@ -491,8 +495,10 @@ fn agy_args(prompt: &str, model: &str, conv_id: Option<&str>, agent: &str) -> Ve
         args.push("--agent".to_string());
         args.push(agent.to_string());
     }
-    args.push("--model".to_string());
-    args.push(model.to_string());
+    if !model.is_empty() {
+        args.push("--model".to_string());
+        args.push(model.to_string());
+    }
     args.push("-p".to_string());
     args.push(prompt.to_string());
     args
