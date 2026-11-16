@@ -304,6 +304,13 @@ lsof -i :8787
 - Lệnh `claude` trong `~/.local/bin/claude` có thể là symlink hỏng; server dự phòng bằng `claude` trong PATH (`claude_code::claude_bin`).
 - Chưa có quy trình kiểm tra trực quan tự động. Sau khi sửa UI cần mở app để kiểm tra bố cục.
 
+### 8.6b Cửa sổ context (context window)
+- Session có `contextTokens` (token context đang dùng ở lượt gọi model gần nhất) và `contextModel` (model id của lượt đó). Snapshot có `modelContextLimits` (model id → giới hạn), lấy từ bảng `model_context_limits` trong SQLite.
+- Nguồn agy: bảng `gen_metadata` trong `~/.gemini/antigravity{,-cli}/conversations/<cid>.db`, protobuf không có schema. Trường `1.9.10.1` = token đang dùng, `1.9.10.4` = giới hạn, `1.21` = nhãn model, `3.28` = id model. Bộ giải mã và cache theo idx nằm ở `server/src/context_window.rs`. Đây là định dạng nội bộ, có thể đổi khi agy cập nhật; khi đọc lỗi thì UI ẩn chip.
+- Nguồn Claude: `input_tokens + cache_creation_input_tokens + cache_read_input_tokens` của message assistant gần nhất (`claude_code.rs`). Giới hạn `claude-cli:*` được seed 1M (tài liệu Anthropic: Opus/Sonnet/Haiku 5.5 đều 1M), `INSERT OR IGNORE` nên không ghi đè giá trị đã sửa.
+- Nguồn `source`: `agy-gen-metadata` (quét ghi đè), `seed`, `manual`. Bản `manual` không bị quét ghi đè. Sửa tay: `POST /api/model/context-limit` với body `{model, limit}`.
+- UI: chip `used / limit` cạnh menu model trong `chat_canvas_view.dart::_buildContextChip`. Giới hạn lấy theo model đang chọn, rồi tới model của lượt gần nhất. Màu chuyển cảnh báo từ 70%, lỗi từ 90%.
+
 ### 8.7. Skill liên quan
 - `.claude/skills/design/SKILL.md`: quyết định thiết kế và vấn đề đã gặp của app này.
 - `.claude/skills/design-uiux/SKILL.md`: nguyên tắc UI/UX khi chỉnh sửa giao diện Flutter.

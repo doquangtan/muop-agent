@@ -666,6 +666,8 @@ class ConversationSession {
     this.availableAgents = const ['Coordinator'],
     this.hasParallelFlow = false,
     this.source = 'agy',
+    this.contextTokens = 0,
+    this.contextModel = '',
   });
 
   final String id;
@@ -692,6 +694,10 @@ class ConversationSession {
   final List<String> availableAgents;
   final bool hasParallelFlow;
   final String source;
+  /// Số token context đang dùng ở lượt gọi model gần nhất (0 = chưa rõ)
+  final int contextTokens;
+  /// Model id (có tiền tố provider) của lượt gần nhất, dùng để tra giới hạn context
+  final String contextModel;
 
   int get subagentCount => subagentLanes.length;
 
@@ -720,6 +726,8 @@ class ConversationSession {
     List<String>? availableAgents,
     bool? hasParallelFlow,
     String? source,
+    int? contextTokens,
+    String? contextModel,
   }) {
     return ConversationSession(
       id: id ?? this.id,
@@ -746,6 +754,8 @@ class ConversationSession {
       availableAgents: availableAgents ?? this.availableAgents,
       hasParallelFlow: hasParallelFlow ?? this.hasParallelFlow,
       source: source ?? this.source,
+      contextTokens: contextTokens ?? this.contextTokens,
+      contextModel: contextModel ?? this.contextModel,
     );
   }
 
@@ -774,6 +784,8 @@ class ConversationSession {
         'availableAgents': availableAgents,
         'hasParallelFlow': hasParallelFlow,
         'source': source,
+        'contextTokens': contextTokens,
+        'contextModel': contextModel,
       };
 
   factory ConversationSession.fromJson(Map<String, dynamic> json) {
@@ -870,6 +882,8 @@ class ConversationSession {
       availableAgents: availList.isNotEmpty ? availList : const ['Coordinator'],
       hasParallelFlow: json['hasParallelFlow'] == true,
       source: '${json['source'] ?? 'agy'}',
+      contextTokens: (json['contextTokens'] as num?)?.toInt() ?? 0,
+      contextModel: '${json['contextModel'] ?? ''}',
     );
   }
 }
@@ -1022,6 +1036,7 @@ class AgentMonitorSnapshot {
     required this.activeStreams,
     this.modelQuotas = const [],
     this.modelLabels = const {},
+    this.modelContextLimits = const {},
     required this.hostname,
     required this.lanIps,
     required this.port,
@@ -1037,6 +1052,8 @@ class AgentMonitorSnapshot {
   final List<ModelQuotaGroup> modelQuotas;
   /// Nhãn hiển thị theo id model, lấy từ `agy models`
   final Map<String, String> modelLabels;
+  /// Giới hạn context theo model id (ví dụ `agy:gemini-4-argon-medium` → 256000)
+  final Map<String, int> modelContextLimits;
   final String hostname;
   final List<String> lanIps;
   final int port;
@@ -1052,6 +1069,7 @@ class AgentMonitorSnapshot {
             activeStreams.map((k, v) => MapEntry(k, v.toJson())),
         'modelQuotas': modelQuotas.map((e) => e.toJson()).toList(),
         'modelLabels': modelLabels,
+        'modelContextLimits': modelContextLimits,
         'hostname': hostname,
         'lanIps': lanIps,
         'port': port,
@@ -1128,6 +1146,13 @@ class AgentMonitorSnapshot {
     if (json['modelLabels'] is Map) {
       (json['modelLabels'] as Map).forEach((k, v) => labels['$k'] = '$v');
     }
+    final contextLimits = <String, int>{};
+    if (json['modelContextLimits'] is Map) {
+      (json['modelContextLimits'] as Map).forEach((k, v) {
+        final limit = v is num ? v.toInt() : int.tryParse('$v');
+        if (limit != null && limit > 0) contextLimits['$k'] = limit;
+      });
+    }
     return AgentMonitorSnapshot(
       sessions: sessions,
       customAgents: specs,
@@ -1137,6 +1162,7 @@ class AgentMonitorSnapshot {
       activeStreams: streams,
       modelQuotas: quotas,
       modelLabels: labels,
+      modelContextLimits: contextLimits,
       hostname: '${json['hostname'] ?? 'linux-pc'}',
       lanIps: ips,
       port: (json['port'] as num?)?.toInt() ?? 8787,

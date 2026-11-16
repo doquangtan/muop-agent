@@ -163,6 +163,12 @@ pub struct ConversationSession {
     pub has_parallel_flow: bool,
     #[serde(default = "default_source")]
     pub source: String,
+    /// Số token context đang dùng ở lượt gọi model gần nhất (0 nếu chưa rõ)
+    #[serde(default)]
+    pub context_tokens: u64,
+    /// Model id (có tiền tố provider) đã tạo ra lượt gần nhất, dùng để tra giới hạn context
+    #[serde(default)]
+    pub context_model: String,
 }
 
 fn default_source() -> String {
@@ -230,6 +236,9 @@ pub struct AgentMonitorSnapshot {
     /// Nhãn hiển thị theo id model (ví dụ `agy:gemini-4-argon-medium` → `Gemini 4 Argon (Medium)`)
     #[serde(default)]
     pub model_labels: HashMap<String, String>,
+    /// Giới hạn context theo model id (ví dụ `agy:gemini-4-argon-medium` → 256000)
+    #[serde(default)]
+    pub model_context_limits: HashMap<String, u64>,
     pub hostname: String,
     pub lan_ips: Vec<String>,
     pub port: u16,
@@ -277,6 +286,16 @@ pub struct ConversationModelRequest {
     pub conversation_id: String,
     #[serde(default)]
     pub model: String,
+}
+
+/// Sửa tay giới hạn context của một model (id có tiền tố provider)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelContextLimitRequest {
+    #[serde(default)]
+    pub model: String,
+    #[serde(default)]
+    pub limit: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -495,4 +514,3 @@ pub struct AIQuestionsResponse {
     #[serde(default)]
     pub error: Option<String>,
 }
-

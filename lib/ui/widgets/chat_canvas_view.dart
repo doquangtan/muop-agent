@@ -20,6 +20,7 @@ class ChatCanvasView extends StatefulWidget {
     required this.availableAgents,
     required this.availableModels,
     this.modelLabels = const {},
+    this.modelContextLimits = const {},
     required this.modelQuotas,
     required this.selectedAgent,
     required this.selectedModel,
@@ -58,6 +59,8 @@ class ChatCanvasView extends StatefulWidget {
   final List<String> availableModels;
   /// Nhãn hiển thị theo id model (lấy từ `agy models`)
   final Map<String, String> modelLabels;
+  /// Giới hạn context theo model id, dùng để hiển thị mức đã dùng trên chip context
+  final Map<String, int> modelContextLimits;
   final List<ModelQuotaGroup> modelQuotas;
   final String selectedAgent;
   final String selectedModel;
@@ -3658,6 +3661,73 @@ class _ChatCanvasViewState extends State<ChatCanvasView> {
     return context.status.success;
   }
 
+  static String _formatTokensShort(int n) {
+    if (n >= 1000000) return '${(n / 1000000).toStringAsFixed(1)}M';
+    if (n >= 1000) return '${(n / 1000).round()}K';
+    return '$n';
+  }
+
+  /// Chip context: số token đang dùng / giới hạn của model, kèm thanh tiến trình.
+  /// Ẩn khi chưa có dữ liệu (session mới hoặc model không rõ giới hạn).
+  Widget _buildContextChip(ColorScheme colorScheme, TextTheme textTheme) {
+    final session = widget.session;
+    final tokens = session?.contextTokens ?? 0;
+    final limit = widget.modelContextLimits[widget.selectedModel] ??
+        widget.modelContextLimits[session?.contextModel ?? ''] ??
+        0;
+    if (tokens <= 0 || limit <= 0) return const SizedBox.shrink();
+
+    final ratio = (tokens / limit).clamp(0.0, 1.0).toDouble();
+    final pct = ratio * 100;
+    final color = pct >= 90
+        ? colorScheme.error
+        : pct >= 70
+            ? context.status.warning
+            : colorScheme.onSurfaceVariant;
+
+    return Padding(
+      padding: const EdgeInsets.only(right: 6),
+      child: Tooltip(
+        message:
+            'Context đang dùng: $tokens / $limit token (${pct.toStringAsFixed(0)}%)',
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(8),
+            border: Border.all(color: colorScheme.outlineVariant.withAlpha(160)),
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(Icons.data_usage, size: 14, color: color),
+              const SizedBox(width: 4),
+              Text(
+                '${_formatTokensShort(tokens)} / ${_formatTokensShort(limit)}',
+                style: textTheme.labelSmall?.copyWith(
+                  color: color,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+              const SizedBox(width: 6),
+              SizedBox(
+                width: 28,
+                child: ClipRRect(
+                  borderRadius: BorderRadius.circular(3),
+                  child: LinearProgressIndicator(
+                    value: ratio,
+                    minHeight: 4,
+                    color: color,
+                    backgroundColor: colorScheme.surfaceContainerHighest,
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
   /// [2] THANH % USAGE CỦA MODEL AI — Nằm ở giữa phần Task Running và Khung Chat
   /// Hiển thị chính xác Limit Tuần (Weekly Limit Remaining) & Limit Giờ / 5h (Five Hour Limit Remaining)
   /// lấy trực tiếp từ Antigravity LanguageServer (`RetrieveUserQuotaSummary`).
@@ -3697,6 +3767,8 @@ class _ChatCanvasViewState extends State<ChatCanvasView> {
           _buildModelSelector(colorScheme, textTheme, isMobile),
 
           const SizedBox(width: 6),
+
+          _buildContextChip(colorScheme, textTheme),
 
           // Hiển thị 2 cột Limit Tuần & Limit Giờ (5h) chuẩn Antigravity (bấm vào để mở bảng chi tiết tất cả Model)
           Expanded(

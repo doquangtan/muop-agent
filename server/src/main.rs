@@ -1,6 +1,7 @@
 mod chat;
 mod claude_code;
 mod claude_questions;
+mod context_window;
 mod file_lines;
 mod git_status;
 mod models;
@@ -20,7 +21,7 @@ use chat::AppState;
 use chrono::{DateTime, Utc};
 use models::{
     ChatSendRequest, ChatStopRequest, ClaudeExtensionsResponse, ConversationModelRequest,
-    ServerDirListResponse, ServerFileEntry, ServerFileReadResponse,
+    ModelContextLimitRequest, ServerDirListResponse, ServerFileEntry, ServerFileReadResponse,
 };
 use serde_json::json;
 use socketioxide::{
@@ -98,17 +99,18 @@ fn setup_socket_handlers(io: &SocketIo, state: AppState) {
         // Join vào room conversation để nhận file changes updates
         socket.on(
             "join-conversation",
-            move |s: SocketRef, Data::<serde_json::Value>(data)| {
-                async move {
-                    if let Some(conv_id) = data.get("conversationId").and_then(|x| x.as_str()) {
-                        let room = format!("conv:{}", conv_id);
-                        let _ = s.join(room.clone());
-                        tracing::info!("📍 Socket {} joined room: {}", s.id, room);
-                        let _ = s.emit("joined-conversation", &json!({
+            move |s: SocketRef, Data::<serde_json::Value>(data)| async move {
+                if let Some(conv_id) = data.get("conversationId").and_then(|x| x.as_str()) {
+                    let room = format!("conv:{}", conv_id);
+                    let _ = s.join(room.clone());
+                    tracing::info!("📍 Socket {} joined room: {}", s.id, room);
+                    let _ = s.emit(
+                        "joined-conversation",
+                        &json!({
                             "ok": true,
                             "conversationId": conv_id,
-                        }));
-                    }
+                        }),
+                    );
                 }
             },
         );
@@ -116,13 +118,11 @@ fn setup_socket_handlers(io: &SocketIo, state: AppState) {
         // Leave khỏi room conversation
         socket.on(
             "leave-conversation",
-            move |s: SocketRef, Data::<serde_json::Value>(data)| {
-                async move {
-                    if let Some(conv_id) = data.get("conversationId").and_then(|x| x.as_str()) {
-                        let room = format!("conv:{}", conv_id);
-                        let _ = s.leave(room.clone());
-                        tracing::info!("📍 Socket {} left room: {}", s.id, room);
-                    }
+            move |s: SocketRef, Data::<serde_json::Value>(data)| async move {
+                if let Some(conv_id) = data.get("conversationId").and_then(|x| x.as_str()) {
+                    let room = format!("conv:{}", conv_id);
+                    let _ = s.leave(room.clone());
+                    tracing::info!("📍 Socket {} left room: {}", s.id, room);
                 }
             },
         );
@@ -153,9 +153,7 @@ async fn handle_snapshot(State(state): State<AppState>) -> impl IntoResponse {
     Json(snapshot)
 }
 
-async fn handle_session_detail(
-    Query(params): Query<HashMap<String, String>>,
-) -> impl IntoResponse {
+async fn handle_session_detail(Query(params): Query<HashMap<String, String>>) -> impl IntoResponse {
     let session_id = match params.get("id").map(|s| s.trim()).filter(|s| !s.is_empty()) {
         Some(id) => id,
         None => {
@@ -179,9 +177,7 @@ async fn handle_session_detail(
     }
 }
 
-async fn handle_session_steps(
-    Query(params): Query<HashMap<String, String>>,
-) -> impl IntoResponse {
+async fn handle_session_steps(Query(params): Query<HashMap<String, String>>) -> impl IntoResponse {
     let session_id = match params.get("id").map(|s| s.trim()).filter(|s| !s.is_empty()) {
         Some(id) => id,
         None => {
@@ -236,7 +232,10 @@ async fn handle_chat_send(
 async fn handle_conversation_model_get(
     Query(params): Query<HashMap<String, String>>,
 ) -> impl IntoResponse {
-    let cid = params.get("id").map(|s| s.trim().to_string()).unwrap_or_default();
+    let cid = params
+        .get("id")
+        .map(|s| s.trim().to_string())
+        .unwrap_or_default();
     if cid.is_empty() {
         return (
             StatusCode::BAD_REQUEST,
@@ -268,7 +267,33 @@ async fn handle_conversation_model_set(
     } else {
         StatusCode::INTERNAL_SERVER_ERROR
     };
-    (status, Json(json!({"ok": saved, "conversationId": cid, "model": model})))
+    (
+        status,
+        Json(json!({"ok": saved, "conversationId": cid, "model": model})),
+    )
+}
+
+/// Sửa tay giới hạn context của một model (ghi nhận là `manual`, không bị quét ghi đè)
+async fn handle_model_context_limit_set(
+    Json(req): Json<ModelContextLimitRequest>,
+) -> impl IntoResponse {
+    let model = req.model.trim();
+    if model.is_empty() || req.limit == 0 {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"ok": false, "error": "Thiếu model hoặc limit > 0"})),
+        );
+    }
+    let saved = store::set_manual_context_limit(model, req.limit);
+    let status = if saved {
+        StatusCode::OK
+    } else {
+        StatusCode::INTERNAL_SERVER_ERROR
+    };
+    (
+        status,
+        Json(json!({"ok": saved, "model": model, "limit": req.limit})),
+    )
 }
 
 async fn handle_chat_stop(
@@ -282,12 +307,18 @@ async fn handle_chat_stop(
     }))
 }
 
-async fn handle_project_agents(
-    Query(params): Query<HashMap<String, String>>,
-) -> impl IntoResponse {
-    let project_path = if let Some(p) = params.get("path").map(|s| s.trim()).filter(|s| !s.is_empty()) {
+async fn handle_project_agents(Query(params): Query<HashMap<String, String>>) -> impl IntoResponse {
+    let project_path = if let Some(p) = params
+        .get("path")
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+    {
         PathBuf::from(p)
-    } else if let Some(n) = params.get("name").map(|s| s.trim()).filter(|s| !s.is_empty()) {
+    } else if let Some(n) = params
+        .get("name")
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+    {
         PathBuf::from(scanner::ECOSYSTEM_DIR_PATH).join(n)
     } else {
         PathBuf::from(scanner::ECOSYSTEM_DIR_PATH).join("muop-erp-server")
@@ -342,9 +373,7 @@ async fn handle_claude_extensions(
     )
 }
 
-async fn handle_plan_pending(
-    Query(params): Query<HashMap<String, String>>,
-) -> impl IntoResponse {
+async fn handle_plan_pending(Query(params): Query<HashMap<String, String>>) -> impl IntoResponse {
     let session_id = params
         .get("id")
         .or_else(|| params.get("conversationId"))
@@ -527,7 +556,8 @@ async fn handle_git_push(
                     StatusCode::OK,
                     Json(models::GitPushResponse {
                         ok: true,
-                        message: "Đã push thành công lên máy chủ từ xa (remote git repository)!".to_string(),
+                        message: "Đã push thành công lên máy chủ từ xa (remote git repository)!"
+                            .to_string(),
                         output: combined,
                         error: None,
                     }),
@@ -565,7 +595,10 @@ struct GitHistoryQuery {
 
 async fn handle_git_history(Query(params): Query<GitHistoryQuery>) -> impl IntoResponse {
     let project_path = params.project_path.trim().to_string();
-    let branch_filter = params.branch.map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
+    let branch_filter = params
+        .branch
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
     let limit = params.limit.unwrap_or(100).clamp(1, 500);
 
     let res = tokio::task::spawn_blocking(move || {
@@ -581,7 +614,11 @@ async fn handle_git_history(Query(params): Query<GitHistoryQuery>) -> impl IntoR
             }
         }
 
-        let project_name = canonical.file_name().and_then(|n| n.to_str()).unwrap_or("project").to_string();
+        let project_name = canonical
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("project")
+            .to_string();
 
         if !canonical.exists() || !canonical.is_dir() {
             return models::GitHistoryResponse {
@@ -592,7 +629,10 @@ async fn handle_git_history(Query(params): Query<GitHistoryQuery>) -> impl IntoR
                 branches: vec![],
                 total_commits: 0,
                 commits: vec![],
-                error: Some(format!("Thư mục không tồn tại: {}", canonical.to_string_lossy())),
+                error: Some(format!(
+                    "Thư mục không tồn tại: {}",
+                    canonical.to_string_lossy()
+                )),
             };
         }
 
@@ -605,7 +645,10 @@ async fn handle_git_history(Query(params): Query<GitHistoryQuery>) -> impl IntoR
                 branches: vec![],
                 total_commits: 0,
                 commits: vec![],
-                error: Some("Thư mục này không phải là một kho lưu trữ Git (.git không tồn tại)".to_string()),
+                error: Some(
+                    "Thư mục này không phải là một kho lưu trữ Git (.git không tồn tại)"
+                        .to_string(),
+                ),
             };
         }
 
@@ -615,7 +658,13 @@ async fn handle_git_history(Query(params): Query<GitHistoryQuery>) -> impl IntoR
             .args(["rev-parse", "--abbrev-ref", "HEAD"])
             .output()
             .ok()
-            .and_then(|o| if o.status.success() { Some(String::from_utf8_lossy(&o.stdout).trim().to_string()) } else { None })
+            .and_then(|o| {
+                if o.status.success() {
+                    Some(String::from_utf8_lossy(&o.stdout).trim().to_string())
+                } else {
+                    None
+                }
+            })
             .unwrap_or_else(|| "HEAD".to_string());
 
         // Lấy danh sách tất cả các branch (cả local và remote)
@@ -626,7 +675,8 @@ async fn handle_git_history(Query(params): Query<GitHistoryQuery>) -> impl IntoR
             .ok()
             .map(|o| {
                 let out = String::from_utf8_lossy(&o.stdout);
-                let mut list: Vec<String> = out.lines()
+                let mut list: Vec<String> = out
+                    .lines()
                     .map(|l| l.trim().to_string())
                     .filter(|l| !l.is_empty())
                     .collect();
@@ -671,7 +721,8 @@ async fn handle_git_history(Query(params): Query<GitHistoryQuery>) -> impl IntoR
                     let relative_time = fields.get(5).unwrap_or(&"").trim().to_string();
                     let subject = fields.get(6).unwrap_or(&"").trim().to_string();
                     let body = fields.get(7).unwrap_or(&"").trim().to_string();
-                    let parent_hashes: Vec<String> = fields.get(8)
+                    let parent_hashes: Vec<String> = fields
+                        .get(8)
                         .unwrap_or(&"")
                         .split_whitespace()
                         .map(|s| s.trim().to_string())
@@ -679,7 +730,11 @@ async fn handle_git_history(Query(params): Query<GitHistoryQuery>) -> impl IntoR
                         .collect();
                     let refs_raw = fields.get(9).unwrap_or(&"").trim();
                     let refs: Vec<String> = if !refs_raw.is_empty() {
-                        refs_raw.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect()
+                        refs_raw
+                            .split(',')
+                            .map(|s| s.trim().to_string())
+                            .filter(|s| !s.is_empty())
+                            .collect()
                     } else {
                         vec![]
                     };
@@ -723,7 +778,9 @@ async fn handle_git_history(Query(params): Query<GitHistoryQuery>) -> impl IntoR
                 error: Some(format!("Lỗi khi thực thi lệnh git log: {}", e)),
             },
         }
-    }).await.unwrap_or_else(|e| models::GitHistoryResponse {
+    })
+    .await
+    .unwrap_or_else(|e| models::GitHistoryResponse {
         ok: false,
         project_path: String::new(),
         project_name: String::new(),
@@ -835,7 +892,8 @@ async fn handle_git_commit(Query(params): Query<GitCommitQuery>) -> impl IntoRes
                 relative_time = fields.get(5).unwrap_or(&"").trim().to_string();
                 subject = fields.get(6).unwrap_or(&"").trim().to_string();
                 body = fields.get(7).unwrap_or(&"").trim().to_string();
-                parent_hashes = fields.get(8)
+                parent_hashes = fields
+                    .get(8)
                     .unwrap_or(&"")
                     .split_whitespace()
                     .map(|s| s.trim().to_string())
@@ -843,7 +901,11 @@ async fn handle_git_commit(Query(params): Query<GitCommitQuery>) -> impl IntoRes
                     .collect();
                 let refs_raw = fields.get(9).unwrap_or(&"").trim();
                 if !refs_raw.is_empty() {
-                    refs = refs_raw.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
+                    refs = refs_raw
+                        .split(',')
+                        .map(|s| s.trim().to_string())
+                        .filter(|s| !s.is_empty())
+                        .collect();
                 }
             }
         }
@@ -888,13 +950,16 @@ async fn handle_git_commit(Query(params): Query<GitCommitQuery>) -> impl IntoRes
             }
         }
 
-        let mut files: Vec<models::GitCommitFileChange> = files_map.into_iter()
-            .map(|(path, (additions, deletions, status))| models::GitCommitFileChange {
-                path,
-                status,
-                additions,
-                deletions,
-            })
+        let mut files: Vec<models::GitCommitFileChange> = files_map
+            .into_iter()
+            .map(
+                |(path, (additions, deletions, status))| models::GitCommitFileChange {
+                    path,
+                    status,
+                    additions,
+                    deletions,
+                },
+            )
             .collect();
         files.sort_by(|a, b| a.path.cmp(&b.path));
 
@@ -933,7 +998,9 @@ async fn handle_git_commit(Query(params): Query<GitCommitQuery>) -> impl IntoRes
             diff,
             error: None,
         }
-    }).await.unwrap_or_else(|e| models::GitCommitDetailResponse {
+    })
+    .await
+    .unwrap_or_else(|e| models::GitCommitDetailResponse {
         ok: false,
         project_path: String::new(),
         hash: String::new(),
@@ -1002,10 +1069,8 @@ async fn handle_files_list(Query(params): Query<HashMap<String, String>>) -> imp
                 continue;
             }
             if let Ok(meta) = fs::metadata(&p) {
-                let modified: DateTime<Utc> = meta
-                    .modified()
-                    .unwrap_or(SystemTime::UNIX_EPOCH)
-                    .into();
+                let modified: DateTime<Utc> =
+                    meta.modified().unwrap_or(SystemTime::UNIX_EPOCH).into();
                 let mode = meta.permissions().mode();
                 let perms = format_unix_mode(mode, meta.is_dir());
                 entries.push(ServerFileEntry {
@@ -1059,7 +1124,11 @@ fn format_unix_mode(mode: u32, is_dir: bool) -> String {
 }
 
 async fn handle_file_read(Query(params): Query<HashMap<String, String>>) -> impl IntoResponse {
-    let raw_path = match params.get("path").map(|s| s.trim()).filter(|s| !s.is_empty()) {
+    let raw_path = match params
+        .get("path")
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+    {
         Some(p) => p,
         None => {
             return (
@@ -1179,7 +1248,11 @@ async fn handle_file_read(Query(params): Query<HashMap<String, String>>) -> impl
 }
 
 async fn handle_file_download(Query(params): Query<HashMap<String, String>>) -> Response {
-    let raw_path = match params.get("path").map(|s| s.trim()).filter(|s| !s.is_empty()) {
+    let raw_path = match params
+        .get("path")
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+    {
         Some(p) => p,
         None => {
             return (
@@ -1374,7 +1447,11 @@ async fn handle_ai_questions(
     Query(params): Query<HashMap<String, String>>,
     State(state): State<AppState>,
 ) -> impl IntoResponse {
-    let conversation_id = match params.get("conversationId").map(|s| s.trim()).filter(|s| !s.is_empty()) {
+    let conversation_id = match params
+        .get("conversationId")
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+    {
         Some(id) => id.to_string(),
         None => {
             return (
@@ -1499,7 +1576,8 @@ async fn main() {
                     .map(|g| g.clone())
                     .unwrap_or_default();
                 for sid in changes.changed_sessions {
-                    if let Some(session) = scanner::get_single_session_with_streams(&sid, &streams) {
+                    if let Some(session) = scanner::get_single_session_with_streams(&sid, &streams)
+                    {
                         if let Ok(val) = serde_json::to_value(&session) {
                             if let Some(ns) = watcher_state.io.of("/") {
                                 let _ = ns.emit("session:update", &val);
@@ -1542,6 +1620,10 @@ async fn main() {
         .route(
             "/api/conversation/model",
             get(handle_conversation_model_get).post(handle_conversation_model_set),
+        )
+        .route(
+            "/api/model/context-limit",
+            post(handle_model_context_limit_set),
         )
         .route("/api/project/create", post(handle_project_create))
         .route("/api/project/agents", get(handle_project_agents))

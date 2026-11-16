@@ -3,6 +3,7 @@
 
 use rusqlite::{params, Connection};
 use serde_json::Value;
+use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
@@ -39,11 +40,31 @@ fn open() -> Option<Connection> {
              conversation_id TEXT PRIMARY KEY,
              model TEXT NOT NULL,
              updated_at TEXT NOT NULL
+         );
+         CREATE TABLE IF NOT EXISTS model_context_limits (
+             model_id TEXT PRIMARY KEY,
+             limit_tokens INTEGER NOT NULL,
+             source TEXT NOT NULL,
+             updated_at TEXT NOT NULL
          );",
     )
     .ok()?;
     import_legacy_agy_turn_models(&conn);
+    seed_claude_context_limits(&conn);
     Some(conn)
+}
+
+/// Giới hạn context mặc định của model Claude CLI (tài liệu Anthropic: Opus/Sonnet/Haiku 5.5 đều 1M).
+/// Chỉ thêm nếu chưa có, nên giá trị sửa tay (`manual`) không bị ghi đè.
+fn seed_claude_context_limits(conn: &Connection) {
+    let now = chrono::Utc::now().to_rfc3339();
+    for id in ["claude-sonnet-5-5", "claude-opus-5-5", "claude-haiku-5-5"] {
+        let _ = conn.execute(
+            "INSERT OR IGNORE INTO model_context_limits (model_id, limit_tokens, source, updated_at)
+             VALUES (?1, ?2, 'seed', ?3)",
+            params![format!("claude-cli:{id}"), 1_000_000i64, now],
+        );
+    }
 }
 
 /// Import file JSONL cũ vào bảng rồi xóa file (chỉ chạy khi file còn tồn tại)
@@ -95,9 +116,7 @@ pub fn record_agy_turn_model(conversation_id: &str, started_at: &str, model: &st
 pub fn agy_turn_models(conversation_id: &str) -> Vec<(String, String)> {
     with_db(|c| {
         let mut stmt = c
-            .prepare(
-                "SELECT started_at, model FROM agy_turn_models WHERE conversation_id = ?1",
-            )
+            .prepare("SELECT started_at, model FROM agy_turn_models WHERE conversation_id = ?1")
             .ok()?;
         let rows = stmt
             .query_map(params![conversation_id], |r| {
@@ -135,4 +154,68 @@ pub fn conversation_model(conversation_id: &str) -> Option<String> {
         )
         .ok()
     })
+}
+
+/// Cập nhật giới hạn context của một model từ nguồn quét được (agy `gen_metadata`).
+/// Không ghi đè giá trị `manual` do người dùng nhập.
+pub fn upsert_context_limit(model_id: &str, limit: u64, source: &str) {
+    if limit == 0 {
+        return;
+    }
+    with_db(|c| {
+        c.execute(
+            "INSERT INTO model_context_limits (model_id, limit_tokens, source, updated_at)
+             VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(model_id) DO UPDATE SET
+                 limit_tokens = excluded.limit_tokens,
+                 source = excluded.source,
+                 updated_at = excluded.updated_at
+             WHERE model_context_limits.source <> 'manual'",
+            params![
+                model_id,
+                limit as i64,
+                source,
+                chrono::Utc::now().to_rfc3339()
+            ],
+        )
+        .ok()
+    });
+}
+
+/// Sửa tay giới hạn context (source = `manual`, sẽ không bị quét ghi đè)
+pub fn set_manual_context_limit(model_id: &str, limit: u64) -> bool {
+    if limit == 0 {
+        return false;
+    }
+    with_db(|c| {
+        c.execute(
+            "INSERT INTO model_context_limits (model_id, limit_tokens, source, updated_at)
+             VALUES (?1, ?2, 'manual', ?3)
+             ON CONFLICT(model_id) DO UPDATE SET
+                 limit_tokens = excluded.limit_tokens,
+                 source = 'manual',
+                 updated_at = excluded.updated_at",
+            params![model_id, limit as i64, chrono::Utc::now().to_rfc3339()],
+        )
+        .ok()
+    })
+    .is_some()
+}
+
+/// Toàn bộ giới hạn context đã biết: model id (có tiền tố provider) → số token
+pub fn context_limits() -> HashMap<String, u64> {
+    with_db(|c| {
+        let mut stmt = c
+            .prepare("SELECT model_id, limit_tokens FROM model_context_limits")
+            .ok()?;
+        let rows = stmt
+            .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))
+            .ok()?;
+        Some(
+            rows.filter_map(Result::ok)
+                .map(|(k, v)| (k, v.max(0) as u64))
+                .collect(),
+        )
+    })
+    .unwrap_or_default()
 }

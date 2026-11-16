@@ -92,11 +92,21 @@ fn fetch_usage_json(token: &str) -> Result<Value, (String, bool)> {
     let out = child
         .wait_with_output()
         .map_err(|e| (format!("curl lỗi: {}", e), false))?;
-    let v: Value = serde_json::from_slice(&out.stdout)
-        .map_err(|_| ("Không đọc được phản hồi usage từ Anthropic".to_string(), false))?;
+    let v: Value = serde_json::from_slice(&out.stdout).map_err(|_| {
+        (
+            "Không đọc được phản hồi usage từ Anthropic".to_string(),
+            false,
+        )
+    })?;
     if let Some(err) = v.get("error") {
-        let error_type = err.get("type").and_then(|x| x.as_str()).unwrap_or("unknown");
-        let error_msg = err.get("message").and_then(|x| x.as_str()).unwrap_or(error_type);
+        let error_type = err
+            .get("type")
+            .and_then(|x| x.as_str())
+            .unwrap_or("unknown");
+        let error_msg = err
+            .get("message")
+            .and_then(|x| x.as_str())
+            .unwrap_or(error_type);
 
         if error_type == "rate_limit_error" {
             return Err(("Anthropic API bị rate limit, thử lại sau".to_string(), true));
@@ -331,7 +341,11 @@ fn scan_claude_md_dir(dir: &Path, prefix: &str, kind: &str, specs: &mut Vec<Cust
             format!("{prefix}:{stem}")
         };
         let (frontmatter_name, description, _) = parse_markdown_frontmatter(&raw, &base, kind);
-        let name = if kind == "agent" { frontmatter_name } else { base };
+        let name = if kind == "agent" {
+            frontmatter_name
+        } else {
+            base
+        };
         push_claude_spec(
             specs,
             CustomAgentSpec {
@@ -598,7 +612,9 @@ fn is_build_or_binary_path(path: &Path) -> bool {
     }
     path.extension()
         .and_then(|e| e.to_str())
-        .map_or(false, |e| BINARY_EXTENSIONS.contains(&e.to_ascii_lowercase().as_str()))
+        .map_or(false, |e| {
+            BINARY_EXTENSIONS.contains(&e.to_ascii_lowercase().as_str())
+        })
 }
 
 /// Bổ sung thay đổi file do lệnh Bash tạo ra (sed -i, python, cat >, ...). Các lệnh này không có
@@ -613,8 +629,11 @@ fn detect_bash_file_changes(repo: &str, steps: &[AgentStep], files: &mut Vec<Fil
             .ok()
             .map(|d| d.with_timezone(&chrono::Utc))
     };
-    let mut windows: Vec<(usize, chrono::DateTime<chrono::Utc>, chrono::DateTime<chrono::Utc>)> =
-        Vec::new();
+    let mut windows: Vec<(
+        usize,
+        chrono::DateTime<chrono::Utc>,
+        chrono::DateTime<chrono::Utc>,
+    )> = Vec::new();
     for (i, step) in steps.iter().enumerate() {
         if !step.tool_calls.iter().any(|t| t.name == "Bash") {
             continue;
@@ -691,6 +710,8 @@ fn parse_session_file(path: &Path, is_subagent: bool) -> Option<ConversationSess
     let mut last_ts: Option<String> = None;
     let mut counted_message_ids: HashSet<String> = HashSet::new();
     let (mut total_in, mut total_out, mut total_cache) = (0u64, 0u64, 0u64);
+    // Context đang dùng = input + cache tạo + cache đọc của message assistant gần nhất
+    let (mut context_tokens, mut context_model) = (0u64, String::new());
     let mut first_user_text = String::new();
     let mut spawns: Vec<SpawnedAgent> = Vec::new();
 
@@ -799,6 +820,20 @@ fn parse_session_file(path: &Path, is_subagent: bool) -> Option<ConversationSess
                         total_in += inp;
                         total_out += out;
                         total_cache += cache;
+                        let cache_created = u
+                            .get("cache_creation_input_tokens")
+                            .and_then(|x| x.as_u64())
+                            .unwrap_or(0);
+                        let ctx = inp + cache_created + cache;
+                        if ctx > 0 {
+                            context_tokens = ctx;
+                            context_model = msg
+                                .get("model")
+                                .and_then(|x| x.as_str())
+                                .filter(|m| !m.is_empty() && !m.starts_with('<'))
+                                .map(|m| format!("claude-cli:{m}"))
+                                .unwrap_or_default();
+                        }
                     }
                 }
 
@@ -982,6 +1017,8 @@ fn parse_session_file(path: &Path, is_subagent: bool) -> Option<ConversationSess
         available_agents: Vec::new(),
         has_parallel_flow,
         source: "claude-cli".to_string(),
+        context_tokens,
+        context_model,
     })
 }
 
@@ -1080,10 +1117,7 @@ fn build_subagent_lanes(
         .zip(transcripts)
         .map(|(spawn, transcript)| {
             let child = transcript.and_then(|p| parse_session_file(&p, true));
-            let mut steps = child
-                .as_ref()
-                .map(|c| c.steps.clone())
-                .unwrap_or_default();
+            let mut steps = child.as_ref().map(|c| c.steps.clone()).unwrap_or_default();
             if steps.len() > SNAPSHOT_STEP_LIMIT {
                 steps = steps.split_off(steps.len() - SNAPSHOT_STEP_LIMIT);
             }
@@ -1122,9 +1156,7 @@ fn build_subagent_lanes(
                 current_step_index: last.map(|s| s.step_index).unwrap_or(0),
                 current_action_text: last_tool
                     .map(|t| t.summary_label.clone())
-                    .or_else(|| {
-                        last.map(|s| s.content.lines().next().unwrap_or("").to_string())
-                    })
+                    .or_else(|| last.map(|s| s.content.lines().next().unwrap_or("").to_string()))
                     .unwrap_or_default(),
                 current_tool_name: last_tool.map(|t| t.name.clone()).unwrap_or_default(),
                 prompt_brief: spawn.prompt.chars().take(500).collect(),

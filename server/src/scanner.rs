@@ -1,10 +1,12 @@
 use crate::claude_code;
+use crate::context_window;
 use crate::models::{
     AgentMonitorSnapshot, AgentStep, ChatTurnStreamState, CommandExecutionRecord,
     ConversationSession, CustomAgentSpec, FileTouchRecord, GitSyncStatus, ModelQuotaBucket,
     ModelQuotaGroup, PlanArtifactInfo, ProjectWorkspace, SessionStepsPageResponse, SubagentLane,
     ToolCallInfo,
 };
+use crate::store;
 use chrono::{DateTime, Utc};
 use regex::Regex;
 use rusqlite::{Connection, OpenFlags};
@@ -139,12 +141,16 @@ pub fn agy_model_ids() -> Vec<String> {
     agy_models().into_iter().map(|m| m.id).collect()
 }
 
+/// Context đang dùng của một conversation agy (kèm model đã tạo ra lượt gần nhất)
+fn agy_context_for(conversation_id: &str) -> context_window::AgyContextUsage {
+    let label_to_id: HashMap<String, String> =
+        agy_models().into_iter().map(|m| (m.label, m.id)).collect();
+    context_window::agy_context_usage(conversation_id, &label_to_id).unwrap_or_default()
+}
+
 /// Nhãn hiển thị của mọi model, key là id đầy đủ (ví dụ `agy:gemini-4-argon-medium`)
 pub fn model_labels() -> HashMap<String, String> {
-    agy_models()
-        .into_iter()
-        .map(|m| (m.id, m.label))
-        .collect()
+    agy_models().into_iter().map(|m| (m.id, m.label)).collect()
 }
 
 pub fn default_agents() -> Vec<String> {
@@ -298,7 +304,9 @@ pub fn init_session_change_tracker() -> SessionChangeTracker {
                                 .map(|d| d.as_millis() as u64)
                                 .unwrap_or(0);
                             let size = meta.len();
-                            tracker.transcript_fingerprints.insert(id.to_string(), (mtime, size));
+                            tracker
+                                .transcript_fingerprints
+                                .insert(id.to_string(), (mtime, size));
                         }
                     }
                 }
@@ -399,7 +407,9 @@ pub fn detect_changed_sessions(tracker: &mut SessionChangeTracker) -> DetectedCh
                 };
 
                 if changed {
-                    tracker.transcript_fingerprints.insert(id.clone(), (mtime, size));
+                    tracker
+                        .transcript_fingerprints
+                        .insert(id.clone(), (mtime, size));
                     // Nếu id là subagent, trigger cập nhật session cha
                     if let Some(parent) = child_to_parent.get(&id) {
                         changed_top_ids.insert(parent.clone());
@@ -483,6 +493,7 @@ pub fn build_full_snapshot(
         active_streams: active_streams.clone(),
         model_quotas,
         model_labels: model_labels(),
+        model_context_limits: store::context_limits(),
         hostname,
         lan_ips,
         port: DEFAULT_PORT,
@@ -658,32 +669,30 @@ fn call_retrieve_user_quota_summary(port: u16, csrf_token: &str) -> Option<Vec<M
 }
 
 fn default_fallback_quotas() -> Vec<ModelQuotaGroup> {
-    vec![
-        ModelQuotaGroup {
-            display_name: "Gemini Models".to_string(),
-            description: "Models within this group: Gemini Flash, Gemini Pro".to_string(),
-            buckets: vec![
-                ModelQuotaBucket {
-                    bucket_id: "gemini-weekly".to_string(),
-                    display_name: "Weekly Limit Remaining".to_string(),
-                    description: "Weekly limit remaining".to_string(),
-                    window: "weekly".to_string(),
-                    remaining_fraction: 0.70,
-                    remaining_percent: 70.0,
-                    reset_time: String::new(),
-                },
-                ModelQuotaBucket {
-                    bucket_id: "gemini-5h".to_string(),
-                    display_name: "Five Hour Limit Remaining".to_string(),
-                    description: "5-hour limit remaining".to_string(),
-                    window: "5h".to_string(),
-                    remaining_fraction: 0.95,
-                    remaining_percent: 95.0,
-                    reset_time: String::new(),
-                },
-            ],
-        },
-    ]
+    vec![ModelQuotaGroup {
+        display_name: "Gemini Models".to_string(),
+        description: "Models within this group: Gemini Flash, Gemini Pro".to_string(),
+        buckets: vec![
+            ModelQuotaBucket {
+                bucket_id: "gemini-weekly".to_string(),
+                display_name: "Weekly Limit Remaining".to_string(),
+                description: "Weekly limit remaining".to_string(),
+                window: "weekly".to_string(),
+                remaining_fraction: 0.70,
+                remaining_percent: 70.0,
+                reset_time: String::new(),
+            },
+            ModelQuotaBucket {
+                bucket_id: "gemini-5h".to_string(),
+                display_name: "Five Hour Limit Remaining".to_string(),
+                description: "5-hour limit remaining".to_string(),
+                window: "5h".to_string(),
+                remaining_fraction: 0.95,
+                remaining_percent: 95.0,
+                reset_time: String::new(),
+            },
+        ],
+    }]
 }
 
 fn load_conversation_summary_meta() -> HashMap<String, DbConversationMeta> {
@@ -789,7 +798,9 @@ pub fn check_git_sync_status(project_path_str: &str) -> Option<GitSyncStatus> {
     if !branch_out.status.success() {
         return None;
     }
-    let branch = String::from_utf8_lossy(&branch_out.stdout).trim().to_string();
+    let branch = String::from_utf8_lossy(&branch_out.stdout)
+        .trim()
+        .to_string();
     if branch.is_empty() || branch == "HEAD" {
         return None;
     }
@@ -903,9 +914,9 @@ pub fn discover_projects(sessions: &[ConversationSession]) -> Vec<ProjectWorkspa
     }
 
     for s in sessions {
-        let entry = project_map.entry(s.project_name.clone()).or_insert_with(|| {
-            (s.project_path.clone(), 0, 0, None)
-        });
+        let entry = project_map
+            .entry(s.project_name.clone())
+            .or_insert_with(|| (s.project_path.clone(), 0, 0, None));
         entry.1 += 1;
         if s.status == "running" {
             entry.2 += 1;
@@ -978,8 +989,7 @@ pub fn create_new_project(
         ));
     }
 
-    fs::create_dir_all(&target_path)
-        .map_err(|e| format!("Không thể tạo thư mục dự án: {}", e))?;
+    fs::create_dir_all(&target_path).map_err(|e| format!("Không thể tạo thư mục dự án: {}", e))?;
 
     let desc_text = if description.trim().is_empty() {
         format!("Dự án {}", trimmed_name)
@@ -997,7 +1007,8 @@ pub fn create_new_project(
                 trimmed_name
             );
             let _ = fs::write(target_path.join("main.go"), main_go);
-            let gitignore = "*.exe\n*.exe~\n*.dll\n*.so\n*.dylib\n*.test\n*.out\nvendor/\n.idea/\n.vscode/\n";
+            let gitignore =
+                "*.exe\n*.exe~\n*.dll\n*.so\n*.dylib\n*.test\n*.out\nvendor/\n.idea/\n.vscode/\n";
             let _ = fs::write(target_path.join(".gitignore"), gitignore);
             let readme = format!(
                 "# {}\n\n{}\n\n- Ngôn ngữ: Go\n- Kiến trúc: Hexagonal Clean Architecture\n- Khởi tạo qua: Mướp Agent Monitor\n",
@@ -1210,9 +1221,7 @@ pub fn scan_all_sessions(
     // 1. Nhận diện trước toàn bộ subagents từ database meta: nếu có parent_id hoặc agent_name != "" (và != "Coordinator")
     for (id, m) in &db_meta_map {
         if !m.parent_id.is_empty()
-            || (!m.agent_name.is_empty()
-                && m.agent_name != "Coordinator"
-                && m.agent_name != "user")
+            || (!m.agent_name.is_empty() && m.agent_name != "Coordinator" && m.agent_name != "user")
         {
             child_subagent_ids.insert(id.clone());
         }
@@ -1230,7 +1239,9 @@ pub fn scan_all_sessions(
                     let reader = BufReader::new(file);
                     for line_res in reader.lines() {
                         if let Ok(line) = line_res {
-                            if line.contains("Created the following subagent:") || line.contains("invoke_subagent") {
+                            if line.contains("Created the following subagent:")
+                                || line.contains("invoke_subagent")
+                            {
                                 if let Some(ref re) = conv_id_re {
                                     if let Some(caps) = re.captures(&line) {
                                         if let Some(m) = caps.get(1) {
@@ -1261,10 +1272,8 @@ pub fn scan_all_sessions(
                 }
                 let transcript_path = path.join(".system_generated/logs/transcript.jsonl");
                 if let Ok(meta) = fs::metadata(&transcript_path) {
-                    let modified: DateTime<Utc> = meta
-                        .modified()
-                        .unwrap_or(SystemTime::UNIX_EPOCH)
-                        .into();
+                    let modified: DateTime<Utc> =
+                        meta.modified().unwrap_or(SystemTime::UNIX_EPOCH).into();
                     entries.push((id, modified));
                 }
             }
@@ -1313,10 +1322,8 @@ pub fn scan_all_sessions(
                 .join(sub_id)
                 .join(".system_generated/logs/transcript.jsonl");
             if let Ok(meta) = fs::metadata(&sub_path) {
-                let modified: DateTime<Utc> = meta
-                    .modified()
-                    .unwrap_or(SystemTime::UNIX_EPOCH)
-                    .into();
+                let modified: DateTime<Utc> =
+                    meta.modified().unwrap_or(SystemTime::UNIX_EPOCH).into();
                 if let Some(parsed) =
                     parse_transcript_file(sub_id, modified, db_meta_map.get(sub_id))
                 {
@@ -1328,7 +1335,8 @@ pub fn scan_all_sessions(
 
     let live_agy_cids = scan_running_agy_conversations();
     let mut git_sync_cache: HashMap<String, Option<GitSyncStatus>> = HashMap::new();
-    let mut project_agents_cache: HashMap<String, (Vec<CustomAgentSpec>, Vec<String>)> = HashMap::new();
+    let mut project_agents_cache: HashMap<String, (Vec<CustomAgentSpec>, Vec<String>)> =
+        HashMap::new();
     let mut sessions = Vec::new();
     for (idx, (id, _)) in selected.iter().enumerate() {
         if let Some(m) = db_meta_map.get(id) {
@@ -1344,8 +1352,8 @@ pub fn scan_all_sessions(
             None => continue,
         };
 
-        let is_active_session = target_active.as_deref() == Some(id.as_str())
-            || (target_active.is_none() && idx == 0);
+        let is_active_session =
+            target_active.as_deref() == Some(id.as_str()) || (target_active.is_none() && idx == 0);
 
         let is_stream_running = active_streams
             .get(&parsed.id)
@@ -1477,9 +1485,13 @@ pub fn scan_all_sessions(
 
         let is_erp_proj = parsed.project_name == "muop-erp-server"
             || parsed.project_name == "muop-erp-app"
-            || Path::new(&parsed.project_path).join(".agents/rules/parallel-erp-sync.md").exists();
-        let has_parallel_flow = is_erp_proj || !parsed.spawned_subagents.is_empty() || lanes.len() > 1;
+            || Path::new(&parsed.project_path)
+                .join(".agents/rules/parallel-erp-sync.md")
+                .exists();
+        let has_parallel_flow =
+            is_erp_proj || !parsed.spawned_subagents.is_empty() || lanes.len() > 1;
 
+        let agy_ctx = agy_context_for(&parsed.id);
         sessions.push(ConversationSession {
             id: parsed.id.clone(),
             title: parsed.title.clone(),
@@ -1516,6 +1528,8 @@ pub fn scan_all_sessions(
             available_agents: p_available_agents,
             has_parallel_flow,
             source: "agy".to_string(),
+            context_tokens: agy_ctx.tokens,
+            context_model: agy_ctx.model.clone(),
         });
     }
 
@@ -1546,10 +1560,23 @@ pub fn scan_pending_plans(session_id: &str) -> Vec<PlanArtifactInfo> {
                         let mut req_feedback = false;
 
                         if let Ok(meta_content) = fs::read_to_string(&path) {
-                            if let Ok(val) = serde_json::from_str::<serde_json::Value>(&meta_content) {
-                                summary = val.get("summary").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                                updated_at = val.get("updatedAt").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                                req_feedback = val.get("requestFeedback").and_then(|v| v.as_bool()).unwrap_or(false);
+                            if let Ok(val) =
+                                serde_json::from_str::<serde_json::Value>(&meta_content)
+                            {
+                                summary = val
+                                    .get("summary")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("")
+                                    .to_string();
+                                updated_at = val
+                                    .get("updatedAt")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("")
+                                    .to_string();
+                                req_feedback = val
+                                    .get("requestFeedback")
+                                    .and_then(|v| v.as_bool())
+                                    .unwrap_or(false);
                             }
                         }
 
@@ -1620,7 +1647,9 @@ pub fn get_single_session_with_streams(
     let mut raw_sessions: HashMap<String, ParsedTranscript> = HashMap::new();
     for s in &parsed.spawned_subagents {
         if !s.id.is_empty() {
-            let sub_path = brain_dir.join(&s.id).join(".system_generated/logs/transcript.jsonl");
+            let sub_path = brain_dir
+                .join(&s.id)
+                .join(".system_generated/logs/transcript.jsonl");
             if let Ok(smeta) = fs::metadata(&sub_path) {
                 let smod: DateTime<Utc> = smeta.modified().unwrap_or(SystemTime::UNIX_EPOCH).into();
                 if let Some(sparsed) = parse_transcript_file(&s.id, smod, db_meta_map.get(&s.id)) {
@@ -1715,11 +1744,14 @@ pub fn get_single_session_with_streams(
         }
     }
 
+    let agy_ctx = agy_context_for(&parsed.id);
     let (custom_agents, available_agents) =
         scan_project_agents_and_skills(Path::new(&parsed.project_path));
     let is_erp_proj = parsed.project_name == "muop-erp-server"
         || parsed.project_name == "muop-erp-app"
-        || Path::new(&parsed.project_path).join(".agents/rules/parallel-erp-sync.md").exists();
+        || Path::new(&parsed.project_path)
+            .join(".agents/rules/parallel-erp-sync.md")
+            .exists();
     let has_parallel_flow = is_erp_proj || !parsed.spawned_subagents.is_empty() || lanes.len() > 1;
 
     Some(ConversationSession {
@@ -1751,6 +1783,8 @@ pub fn get_single_session_with_streams(
         available_agents,
         has_parallel_flow,
         source: "agy".to_string(),
+        context_tokens: agy_ctx.tokens,
+        context_model: agy_ctx.model,
     })
 }
 
@@ -1787,7 +1821,11 @@ pub fn get_session_steps_page(
 
     if can_use_cache {
         let candidate_steps: Vec<&AgentStep> = if let Some(target) = before_step {
-            parsed.steps.iter().filter(|s| s.step_index < target).collect()
+            parsed
+                .steps
+                .iter()
+                .filter(|s| s.step_index < target)
+                .collect()
         } else {
             parsed.steps.iter().collect()
         };
@@ -1812,7 +1850,14 @@ pub fn get_session_steps_page(
         });
     }
 
-    read_steps_page_from_file(&transcript_path, session_id, before_step, limit, total_steps, modified)
+    read_steps_page_from_file(
+        &transcript_path,
+        session_id,
+        before_step,
+        limit,
+        total_steps,
+        modified,
+    )
 }
 
 fn read_steps_page_from_file(
@@ -2092,8 +2137,12 @@ fn build_subagent_lanes(
     // 2. Dual-Repo Parallel Agents (Chỉ nạp nếu là dự án ERP)
     let is_erp_project = parent.project_name == "muop-erp-server"
         || parent.project_name == "muop-erp-app"
-        || Path::new(&parent.project_path).join(".agents/rules/parallel-erp-sync.md").exists()
-        || Path::new(&parent.project_path).join(".agents/agents/erp-server-agent.md").exists();
+        || Path::new(&parent.project_path)
+            .join(".agents/rules/parallel-erp-sync.md")
+            .exists()
+        || Path::new(&parent.project_path)
+            .join(".agents/agents/erp-server-agent.md")
+            .exists();
 
     if is_erp_project {
         let standard_agents = [
@@ -2162,7 +2211,8 @@ fn build_subagent_lanes(
                                             .get("CommandLine")
                                             .and_then(|v| v.as_str())
                                             .map(|c| {
-                                                c.contains("go build") || c.contains("flutter analyze")
+                                                c.contains("go build")
+                                                    || c.contains("flutter analyze")
                                             })
                                             .unwrap_or(false)
                                 });
@@ -2196,7 +2246,10 @@ fn build_subagent_lanes(
                 } else if !related_files.is_empty() {
                     format!("Đã cập nhật {} tệp trong {}", related_files.len(), repo)
                 } else {
-                    format!("Đã đăng ký trong .agents — Sẵn sàng nhận lệnh thực thi trên {}", repo)
+                    format!(
+                        "Đã đăng ký trong .agents — Sẵn sàng nhận lệnh thực thi trên {}",
+                        repo
+                    )
                 };
 
                 let current_tool = if is_this_agent_active {
@@ -2249,10 +2302,7 @@ fn build_subagent_lanes(
                     let path = entry.path();
                     if path.extension().and_then(|e| e.to_str()) == Some("md") {
                         if let Ok(raw) = fs::read_to_string(&path) {
-                            let stem = path
-                                .file_stem()
-                                .and_then(|s| s.to_str())
-                                .unwrap_or("agent");
+                            let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("agent");
                             let (name, desc, _) = parse_markdown_frontmatter(&raw, stem, "agent");
                             if !added_names.contains(&name) {
                                 let mut agent_steps: Vec<AgentStep> = parent
@@ -2277,7 +2327,10 @@ fn build_subagent_lanes(
                                     status: lane_status,
                                     current_phase: parent.current_phase.clone(),
                                     current_step_index: 0,
-                                    current_action_text: format!("Custom Agent trong .agents ({})", name),
+                                    current_action_text: format!(
+                                        "Custom Agent trong .agents ({})",
+                                        name
+                                    ),
                                     current_tool_name: "standby".to_string(),
                                     prompt_brief: desc,
                                     steps: agent_steps,
@@ -2606,7 +2659,10 @@ fn parse_transcript_file(
         total_output += step.output_tokens;
         total_cache += step.cache_read_tokens;
 
-        if step.step_type == "USER_INPUT" && !step.content.is_empty() && first_user_prompt_title.is_empty() {
+        if step.step_type == "USER_INPUT"
+            && !step.content.is_empty()
+            && first_user_prompt_title.is_empty()
+        {
             let extracted = extract_user_request(&step.content);
             if !extracted.is_empty() {
                 first_user_prompt_title = extracted;
@@ -2657,27 +2713,28 @@ fn parse_transcript_file(
             }
 
             if tc.name == "run_command" {
-                let cmd_line = tc.args
+                let cmd_line = tc
+                    .args
                     .get("CommandLine")
                     .and_then(|v| v.as_str())
                     .unwrap_or("")
                     .to_string();
-                let summary = tc.args
+                let summary = tc
+                    .args
                     .get("toolSummary")
                     .and_then(|v| v.as_str())
                     .unwrap_or("Thực thi lệnh terminal")
                     .to_string();
-                let cmd_agent = if cmd_line.contains("flutter analyze")
-                    || cmd_line.contains("go build")
-                {
-                    "erp-contract-verifier"
-                } else if cmd_line.contains("muop-erp-server") {
-                    "erp-server-agent"
-                } else if cmd_line.contains("muop-erp-app") {
-                    "erp-app-agent"
-                } else {
-                    "Coordinator"
-                };
+                let cmd_agent =
+                    if cmd_line.contains("flutter analyze") || cmd_line.contains("go build") {
+                        "erp-contract-verifier"
+                    } else if cmd_line.contains("muop-erp-server") {
+                        "erp-server-agent"
+                    } else if cmd_line.contains("muop-erp-app") {
+                        "erp-app-agent"
+                    } else {
+                        "Coordinator"
+                    };
                 commands_deque.push_back(CommandExecutionRecord {
                     command_line: cmd_line,
                     summary,
@@ -2693,17 +2750,20 @@ fn parse_transcript_file(
             }
 
             if tc.name == "invoke_subagent" {
-                let role = tc.args
+                let role = tc
+                    .args
                     .get("Role")
                     .and_then(|v| v.as_str())
                     .unwrap_or("Subagent Worker")
                     .to_string();
-                let type_name = tc.args
+                let type_name = tc
+                    .args
                     .get("TypeName")
                     .and_then(|v| v.as_str())
                     .unwrap_or("self")
                     .to_string();
-                let prompt = tc.args
+                let prompt = tc
+                    .args
                     .get("Prompt")
                     .and_then(|v| v.as_str())
                     .unwrap_or("")
@@ -3076,7 +3136,10 @@ fn describe_step_vietnamese(
             );
         }
         if content.contains("Created file") {
-            return ("Đã tạo tệp mới thành công".to_string(), content.trim().to_string());
+            return (
+                "Đã tạo tệp mới thành công".to_string(),
+                content.trim().to_string(),
+            );
         }
         if content.contains("Made ") && content.contains("replacement") {
             return (
@@ -3092,9 +3155,17 @@ fn describe_step_vietnamese(
     if !tools.is_empty() {
         for t in tools {
             if t.name == "run_command" {
-                let cmd = t.args.get("CommandLine").and_then(|v| v.as_str()).unwrap_or("");
+                let cmd = t
+                    .args
+                    .get("CommandLine")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
                 let cmd_lower = cmd.to_lowercase();
-                let summary = t.args.get("toolSummary").and_then(|v| v.as_str()).unwrap_or("");
+                let summary = t
+                    .args
+                    .get("toolSummary")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
                 if cmd_lower.contains("git commit") || summary.to_lowercase().contains("commit") {
                     let commit_msg = extract_commit_message(cmd, summary);
                     let title = if step_type == "PLANNER_RESPONSE" {
@@ -3176,10 +3247,7 @@ fn first_lines(text: &str, max_lines: usize) -> String {
 fn extract_tool_diff(tool_name: &str, args: &HashMap<String, Value>) -> (usize, usize, String) {
     match tool_name {
         "write_file" => {
-            let content = args
-                .get("Content")
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
+            let content = args.get("Content").and_then(|v| v.as_str()).unwrap_or("");
             let lines: Vec<&str> = content.lines().collect();
             let added = lines.len().max(1);
             let mut preview = String::new();
@@ -3191,10 +3259,7 @@ fn extract_tool_diff(tool_name: &str, args: &HashMap<String, Value>) -> (usize, 
             (added, 0, preview.trim_end().to_string())
         }
         "edit_file" => {
-            let target = args
-                .get("Target")
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
+            let target = args.get("Target").and_then(|v| v.as_str()).unwrap_or("");
             let replacement = args
                 .get("Replacement")
                 .and_then(|v| v.as_str())

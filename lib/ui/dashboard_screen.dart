@@ -50,6 +50,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
   List<ProjectWorkspace> _projects = [];
   List<String> _availableModels = BrainScannerService.defaultModels;
   Map<String, String> _modelLabels = {};
+  Map<String, int> _modelContextLimits = {};
   List<String> _availableAgents = BrainScannerService.defaultAgents;
   List<ModelQuotaGroup> _modelQuotas = [];
   Map<String, ChatTurnStreamState> _activeStreams = {};
@@ -456,6 +457,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
       if (snapshot.availableModels.isNotEmpty) {
         _availableModels = snapshot.availableModels;
         _modelLabels = snapshot.modelLabels;
+        _modelContextLimits = snapshot.modelContextLimits;
       }
       if (snapshot.availableAgents.isNotEmpty) {
         _availableAgents = snapshot.availableAgents;
@@ -1999,6 +2001,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 availableAgents: _availableAgents,
                 availableModels: _availableModels,
                 modelLabels: _modelLabels,
+                modelContextLimits: _modelContextLimits,
                 modelQuotas: _modelQuotas,
                 selectedAgent: _selectedAgent,
                 selectedModel: _selectedModel,
