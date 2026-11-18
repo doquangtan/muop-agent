@@ -1,7 +1,7 @@
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 
-import 'ui/dashboard_screen.dart';
-import 'ui/theme/app_theme.dart';
+import 'package:muop_agent/core/theme/app_theme.dart';
+import 'package:muop_agent/features/dashboard/presentation/dashboard_screen.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();

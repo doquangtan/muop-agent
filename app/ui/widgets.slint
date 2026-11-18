@@ -1,0 +1,210 @@
+import { Button } from "std-widgets.slint";
+import { Palette } from "theme.slint";
+import { SideRow, MessageItem } from "types.slint";
+
+// Chip nhỏ bấm được (ví dụ "⚙ 5 thao tác", "3 tệp thay đổi")
+export component Chip inherits Rectangle {
+    in property <string> label;
+    callback clicked();
+
+    height: 24px;
+    border-radius: 12px;
+    border-width: 1px;
+    border-color: Palette.border;
+    background: touch.has-hover ? Palette.accent-soft : Palette.panel-raised;
+    min-width: 40px;
+
+    Text {
+        text: root.label;
+        color: Palette.muted;
+        font-size: 11px;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+        width: parent.width;
+        height: parent.height;
+    }
+
+    touch := TouchArea {
+        width: parent.width;
+        height: parent.height;
+        clicked => { root.clicked(); }
+    }
+}
+
+// Một dòng sidebar: header project (mở/đóng, nút +) hoặc conversation
+export component SideRowView inherits Rectangle {
+    in property <SideRow> side;
+    callback activate();
+    callback add();
+
+    height: side.kind == "project" ? 30px : (side.kind == "session" ? 54px : 30px);
+    border-radius: 8px;
+    background: side.selected ? Palette.accent-soft : (touch.has-hover ? Palette.panel-raised : transparent);
+
+    // Header project
+    if side.kind == "project": HorizontalLayout {
+        padding-left: 8px;
+        padding-right: 4px;
+        spacing: 6px;
+        Text {
+            text: side.expanded ? "▾" : "▸";
+            color: Palette.muted;
+            font-size: 12px;
+            vertical-alignment: center;
+        }
+        Text {
+            text: side.title;
+            color: Palette.text;
+            font-size: 12px;
+            font-weight: 700;
+            overflow: elide;
+            vertical-alignment: center;
+            horizontal-stretch: 1;
+        }
+        Text {
+            text: side.count;
+            color: Palette.muted;
+            font-size: 11px;
+            vertical-alignment: center;
+        }
+        Rectangle {
+            width: 22px;
+            height: 22px;
+            border-radius: 11px;
+            background: add-touch.has-hover ? Palette.accent-soft : transparent;
+            Text {
+                text: "+";
+                color: Palette.accent;
+                font-size: 15px;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+                width: parent.width;
+                height: parent.height;
+            }
+            add-touch := TouchArea {
+                width: parent.width;
+                height: parent.height;
+                clicked => { root.add(); }
+            }
+        }
+    }
+
+    // Conversation
+    if side.kind == "session": VerticalLayout {
+        padding-left: 22px;
+        padding-right: 10px;
+        padding-top: 6px;
+        padding-bottom: 6px;
+        spacing: 2px;
+        HorizontalLayout {
+            spacing: 6px;
+            Rectangle {
+                width: 8px;
+                height: 8px;
+                border-radius: 4px;
+                y: (parent.height - self.height) / 2;
+                background: side.running ? Palette.ok : (side.claude ? Palette.claude : Palette.accent);
+            }
+            Text {
+                text: side.title;
+                color: Palette.text;
+                font-size: 13px;
+                overflow: elide;
+                horizontal-stretch: 1;
+            }
+        }
+        Text {
+            text: side.meta;
+            color: Palette.muted;
+            font-size: 11px;
+            overflow: elide;
+        }
+    }
+
+    if side.kind == "empty": Text {
+        text: side.title;
+        color: Palette.muted;
+        font-size: 12px;
+        x: 22px;
+        vertical-alignment: center;
+    }
+
+    touch := TouchArea {
+        width: parent.width - (side.kind == "project" ? 26px : 0px);
+        height: parent.height;
+        x: 0px;
+        clicked => { root.activate(); }
+    }
+}
+
+// Một mục trong khung chat
+export component MessageView inherits Rectangle {
+    in property <MessageItem> item;
+    callback show-details(string, [string]);
+
+    property <bool> is-user: item.kind == "user";
+    property <bool> is-ai: item.kind == "ai";
+    property <bool> is-error: item.kind == "error";
+    property <bool> is-thinking: item.kind == "thinking";
+
+    // Khoảng cách dưới 12px nằm trong chiều cao mục để danh sách ảo hóa tính đúng vị trí
+    // Khoảng cách dưới 12px nằm trong chiều cao mục để danh sách ảo hóa tính đúng vị trí
+    height: layout.preferred-height + 12px;
+    background: transparent;
+
+    layout := HorizontalLayout {
+        width: parent.width;
+
+        if is-user: Rectangle { horizontal-stretch: 1; }
+
+        if !is-user: Rectangle {
+            max-width: 680px;
+            horizontal-stretch: is-user ? 0 : 1;
+            border-radius: 14px;
+            border-width: 1px;
+            border-color: is-error ? Palette.danger : Palette.border;
+            background: is-error ? Palette.danger-soft : Palette.ai-bubble;
+            VerticalLayout {
+                padding: 12px;
+                spacing: 8px;
+                Text {
+                    text: item.text;
+                    wrap: word-wrap;
+                    color: is-error ? Palette.danger : (is-thinking ? Palette.muted : Palette.text);
+                    font-size: 14px;
+                    font-italic: is-thinking;
+                }
+                if is-ai && (item.tools.length > 0 || item.files.length > 0): HorizontalLayout {
+                    spacing: 6px;
+                    alignment: start;
+                    if item.tools.length > 0: Chip {
+                        label: "⚙ " + item.tools.length + " thao tác";
+                        clicked => { root.show-details("Thao tác của agent", item.tools); }
+                    }
+                    if item.files.length > 0: Chip {
+                        label: item.files.length + " tệp thay đổi";
+                        clicked => { root.show-details("Tệp thay đổi", item.files); }
+                    }
+                    Rectangle { horizontal-stretch: 1; }
+                }
+            }
+        }
+
+        if is-user: Rectangle {
+            max-width: 640px;
+            border-radius: 14px;
+            background: Palette.user-bubble;
+            VerticalLayout {
+                padding: 12px;
+                Text {
+                    text: item.text;
+                    wrap: word-wrap;
+                    color: Palette.text;
+                    font-size: 14px;
+                }
+            }
+        }
+
+        if !is-user: Rectangle { horizontal-stretch: 0; min-width: 0px; }
+    }
+}

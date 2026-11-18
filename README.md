@@ -9,11 +9,11 @@
    - Đọc trực tiếp SQLite `/home/john/.gemini/antigravity/conversation_summaries.db` (tốc độ micro-second, không qua tiến trình trung gian), quét `/home/john/.gemini/antigravity/brain/<id>/.system_generated/logs/transcript.jsonl`, danh sách Project `/home/john/Documents/muop-ecosystem/*`, và cấu hình `.agents/`.
    - Quản lý khởi chạy & dừng tiến trình `/home/john/.local/bin/agy` cho từng Project / Conversation.
    - **Socket.IO Realtime Push**:
-     - `snapshot:update`: Tự động đẩy toàn bộ trạng thái mới nhất xuống mọi thiết bị ngay khi bất kỳ file `transcript.jsonl` hoặc `conversation_summaries.db` thay đổi.
+     - Các event nhỏ (`session:update`, `sessions:list`, `meta:update`, `streams:update`, `session:removed`, `projects:update`, `quotas:update`): chỉ phát phần thay đổi, không gửi snapshot đầy đủ.
      - `chat:stream`: Đẩy từng token (`text_delta`, `step_update`, `result`) theo thời gian thực khi Agent đang trả lời.
 2. **Pure Flutter UI (`lib/`)**:
    - Đảm nhiệm **100% vai trò hiển thị Giao diện (Desktop & Mobile)**, hoàn toàn không chứa code server hay quét file cục bộ.
-   - Kết nối tới Rust Server qua **`socket_io_client`** (`ws://<IP>:8787/socket.io/?EIO=4&transport=websocket`) và REST API (`/api/ping`, `/api/snapshot`, `/api/chat/send`, `/api/chat/stop`).
+   - Kết nối tới Rust Server qua **`socket_io_client`** (`ws://<IP>:8787/socket.io/?EIO=4&transport=websocket`) và REST API (`/api/ping`, `/api/sessions`, `/api/meta`, `/api/streams`, `/api/chat/send`, `/api/chat/stop`).
    - Cho phép đổi địa chỉ IP của máy tính chạy Rust Server ngay trên giao diện ứng dụng.
 
 ---

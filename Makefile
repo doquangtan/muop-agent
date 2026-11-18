@@ -1,4 +1,4 @@
-FLUTTER=/home/john/flutter/bin/flutter
+FLUTTER=/home/john/flutter-3.47.7/bin/flutter
 CARGO=/home/john/.cargo/bin/cargo
 
 .PHONY: run server build-server build build-linux build-apk build-all analyze restart-linux clean start-daemon stop-daemon restart-daemon status-daemon
