@@ -169,6 +169,10 @@ pub struct ConversationSession {
     /// Model id (có tiền tố provider) đã tạo ra lượt gần nhất, dùng để tra giới hạn context
     #[serde(default)]
     pub context_model: String,
+    /// Model đã chọn kèm mức của conversation (vd. `claude-cli:claude-haiku-5-5-high`), lấy từ lượt gửi gần nhất.
+    /// Rỗng nếu chưa ghi nhận (conversation cũ trước khi có tính năng này).
+    #[serde(default)]
+    pub selected_model: String,
 }
 
 fn default_source() -> String {
@@ -220,29 +224,6 @@ pub struct ModelQuotaGroup {
     #[serde(default)]
     pub description: String,
     pub buckets: Vec<ModelQuotaBucket>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AgentMonitorSnapshot {
-    pub sessions: Vec<ConversationSession>,
-    pub custom_agents: Vec<CustomAgentSpec>,
-    pub projects: Vec<ProjectWorkspace>,
-    pub available_models: Vec<String>,
-    pub available_agents: Vec<String>,
-    pub active_streams: HashMap<String, ChatTurnStreamState>,
-    #[serde(default)]
-    pub model_quotas: Vec<ModelQuotaGroup>,
-    /// Nhãn hiển thị theo id model (ví dụ `agy:gemini-4-argon-medium` → `Gemini 4 Argon (Medium)`)
-    #[serde(default)]
-    pub model_labels: HashMap<String, String>,
-    /// Giới hạn context theo model id (ví dụ `agy:gemini-4-argon-medium` → 256000)
-    #[serde(default)]
-    pub model_context_limits: HashMap<String, u64>,
-    pub hostname: String,
-    pub lan_ips: Vec<String>,
-    pub port: u16,
-    pub timestamp: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -513,4 +494,332 @@ pub struct AIQuestionsResponse {
     pub questions: Vec<AIQuestion>,
     #[serde(default)]
     pub error: Option<String>,
+}
+
+/// Lượt chat đang chờ tự gửi lại sau khi bị rate limit (phát qua event `retry:update`)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PendingRetryDto {
+    pub conversation_id: String,
+    pub provider: String,
+    /// Thông điệp lỗi gốc từ CLI
+    pub reason: String,
+    /// Thời điểm sẽ gửi lại (RFC3339, UTC)
+    pub retry_at: String,
+    /// Lần gửi lại thứ mấy (1 = lần đầu tự thử lại)
+    pub attempt: u32,
+    pub max_attempts: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CancelRetryRequest {
+    #[serde(default)]
+    pub conversation_id: String,
+}
+
+/// Máy SSH gửi xuống client. Không chứa mật khẩu hay private key, chỉ cho biết đã có hay chưa.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SshHostDto {
+    pub id: i64,
+    pub name: String,
+    pub host: String,
+    pub port: u16,
+    pub username: String,
+    /// `password` hoặc `key`
+    pub auth_type: String,
+    pub has_password: bool,
+    pub has_key: bool,
+}
+
+/// Thêm/sửa máy SSH. Để trống `password` hoặc `privateKey` khi sửa nghĩa là giữ nguyên giá trị đã lưu.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SshHostSaveRequest {
+    #[serde(default)]
+    pub id: i64,
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub host: String,
+    #[serde(default = "default_ssh_port")]
+    pub port: u16,
+    #[serde(default)]
+    pub username: String,
+    #[serde(default = "default_auth_type")]
+    pub auth_type: String,
+    #[serde(default)]
+    pub password: String,
+    #[serde(default)]
+    pub private_key: String,
+}
+
+fn default_ssh_port() -> u16 {
+    22
+}
+
+fn default_auth_type() -> String {
+    "password".to_string()
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SshHostIdRequest {
+    #[serde(default)]
+    pub id: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SshExecRequest {
+    #[serde(default)]
+    pub host_id: i64,
+    #[serde(default)]
+    pub command: String,
+    #[serde(default = "default_exec_timeout")]
+    pub timeout_secs: u64,
+}
+
+fn default_exec_timeout() -> u64 {
+    30
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SshExecResponse {
+    pub ok: bool,
+    pub exit_code: Option<i32>,
+    pub stdout: String,
+    pub stderr: String,
+    pub error: String,
+}
+
+/// Mở phiên terminal SSH tương tác trên máy đã lưu
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SshTerminalOpenRequest {
+    #[serde(default)]
+    pub host_id: i64,
+    #[serde(default = "default_term_cols")]
+    pub cols: u16,
+    #[serde(default = "default_term_rows")]
+    pub rows: u16,
+}
+
+fn default_term_cols() -> u16 {
+    100
+}
+
+fn default_term_rows() -> u16 {
+    30
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SshTerminalInputRequest {
+    #[serde(default)]
+    pub session_id: String,
+    /// Dữ liệu bàn phím, mã hóa base64
+    #[serde(default)]
+    pub data: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SshTerminalResizeRequest {
+    #[serde(default)]
+    pub session_id: String,
+    #[serde(default = "default_term_cols")]
+    pub cols: u16,
+    #[serde(default = "default_term_rows")]
+    pub rows: u16,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SshTerminalSessionRequest {
+    #[serde(default)]
+    pub session_id: String,
+}
+
+/// Kết quả gắn lại phiên terminal: đầu ra đã đệm (base64) để vẽ lại màn hình
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SshTerminalAttachResponse {
+    pub ok: bool,
+    pub session_id: String,
+    pub host_name: String,
+    pub buffer: String,
+    pub error: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SshTerminalOpenResponse {
+    pub ok: bool,
+    pub session_id: String,
+    pub error: String,
+}
+
+/// Container Docker đang chạy trên máy SSH
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DockerContainerDto {
+    pub id: String,
+    pub name: String,
+    pub image: String,
+    pub state: String,
+    pub status: String,
+    pub ports: String,
+    /// Tên compose project (label `com.docker.compose.project`), rỗng nếu không thuộc compose
+    pub project: String,
+    /// Tên service compose (label `com.docker.compose.service`)
+    pub service: String,
+    pub created: String,
+}
+
+/// Phiên Docker: một kết nối SSH giữ sẵn tới máy, kèm kết quả quét gần nhất
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DockerSessionDto {
+    pub session_id: String,
+    pub host_id: i64,
+    pub host_name: String,
+    pub started_at: String,
+    /// Kết nối SSH còn sống (lần kiểm tra gần nhất)
+    pub connected: bool,
+    pub scanned_at: String,
+    /// Lỗi của lần kiểm tra/quét gần nhất (rỗng = ổn)
+    pub error: String,
+    pub containers: Vec<DockerContainerDto>,
+}
+
+/// Kết quả chung của các API Docker. `session` = trạng thái sau khi thực hiện thao tác.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DockerSessionResponse {
+    pub ok: bool,
+    pub error: String,
+    pub session: Option<DockerSessionDto>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DockerOpenRequest {
+    #[serde(default)]
+    pub host_id: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DockerSessionIdRequest {
+    #[serde(default)]
+    pub session_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DockerActionRequest {
+    #[serde(default)]
+    pub session_id: String,
+    /// `stop` hoặc `restart`
+    #[serde(default)]
+    pub action: String,
+    #[serde(default)]
+    pub container_ids: Vec<String>,
+}
+
+/// Mở luồng log của một container trong phiên Docker
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DockerLogsOpenRequest {
+    #[serde(default)]
+    pub session_id: String,
+    #[serde(default)]
+    pub container_id: String,
+    #[serde(default = "default_log_tail")]
+    pub tail: u32,
+}
+
+fn default_log_tail() -> u32 {
+    300
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DockerLogsOpenResponse {
+    pub ok: bool,
+    pub stream_id: String,
+    pub error: String,
+}
+
+/// Ping, dừng một luồng log
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DockerLogsStreamRequest {
+    #[serde(default)]
+    pub stream_id: String,
+}
+
+/// Đặt đường dẫn LSP cho một ngôn ngữ. `path` rỗng = xóa cấu hình, dùng lại đường dẫn tự dò.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LspSettingRequest {
+    #[serde(default)]
+    pub language: String,
+    #[serde(default)]
+    pub path: String,
+}
+
+/// Định nghĩa của ký hiệu tại vị trí con trỏ (dòng, cột đếm từ 0)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CodeDefinitionRequest {
+    #[serde(default)]
+    pub path: String,
+    #[serde(default)]
+    pub line: u32,
+    #[serde(default)]
+    pub character: u32,
+}
+
+/// Thông tin tóm tắt một conversation (không kèm steps, lanes, files): dùng cho `sessions:list`
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionSummary {
+    pub id: String,
+    pub title: String,
+    pub created_at: String,
+    pub updated_at: String,
+    pub status: String,
+    pub current_phase: String,
+    pub project_name: String,
+    pub project_path: String,
+    pub source: String,
+    pub context_tokens: u64,
+    pub context_model: String,
+    /// Model kèm mức đã chọn của conversation (xem `ConversationSession::selected_model`)
+    #[serde(default)]
+    pub selected_model: String,
+    pub is_running: bool,
+    pub is_interrupted: bool,
+    pub files_count: usize,
+    pub pending_plans: Vec<PlanArtifactInfo>,
+}
+
+/// Metadata dùng chung (project, model, máy chủ): `meta:update`
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MetaPayload {
+    pub projects: Vec<ProjectWorkspace>,
+    pub available_models: Vec<String>,
+    /// Các mức suy nghĩ (effort) CLI hỗ trợ, đọc từ `claude --help`; rỗng nếu không đọc được
+    pub effort_levels: Vec<String>,
+    pub model_labels: HashMap<String, String>,
+    pub model_context_limits: HashMap<String, u64>,
+    pub hostname: String,
+    pub lan_ips: Vec<String>,
+    pub port: u16,
+    pub timestamp: String,
 }

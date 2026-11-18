@@ -11,6 +11,8 @@ dependencies:
     sdk: flutter
   cupertino_icons: ^1.0.8
   socket_io_client: ^3.0.2
+  xterm: ^4.0.0
+  material_ui: ^1.11.1
 
 dev_dependencies:
   flutter_test:

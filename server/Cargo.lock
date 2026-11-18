@@ -880,9 +880,11 @@ name = "muop-agent-server"
 version = "1.0.0"
 dependencies = [
  "axum",
+ "base64",
  "chrono",
  "image",
  "ksni",
+ "libc",
  "regex",
  "rusqlite",
  "serde",

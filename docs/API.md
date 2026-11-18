@@ -11,16 +11,23 @@ Các route được khai báo trong `server/src/main.rs`. Các struct DTO nằm 
 
 ---
 
-## 1. Trạng thái và snapshot
+## 1. Trạng thái và dữ liệu nhỏ
 
-### `GET /`, `GET /snapshot`, `GET /api/snapshot`
+Không còn endpoint snapshot đầy đủ. Mỗi phần dữ liệu có endpoint riêng (cùng dữ liệu với các event socket tương ứng).
 
-Trả về `AgentMonitorSnapshot` gồm toàn bộ dữ liệu cần để dựng dashboard:
+### `GET /api/sessions`
 
-- `sessions`: danh sách conversation (agy và claude-cli). Mỗi session có `id`, `title`, `projectName`, `projectPath`, `source`, `status`, `steps` (tối đa 100 bước gần nhất), `subagentLanes`, `filesTouched`, `pendingPlans`, `hasParallelFlow`, `updatedAt`.
-- `projects`: danh sách workspace (`ProjectWorkspace`).
-- `availableModels`: danh sách model. Model Claude cố định; model `agy:` lấy từ `agy models` và được cache 10 phút.
-- `availableAgents`, `activeStreams` (các lượt chat đang chạy theo conversation), `modelQuotas`, `customAgents`, `lanIps`.
+`{ "sessions": [SessionSummary] }`: tóm tắt mọi conversation (không kèm steps, files, lanes). Tối đa 500.
+
+### `GET /api/meta`
+
+`MetaPayload`: `projects`, `availableModels`, `effortLevels`, `modelLabels`, `modelContextLimits`, `hostname`, `lanIps`, `port`, `timestamp`.
+
+`effortLevels` là các mức suy nghĩ CLI `claude` hỗ trợ, đọc từ `claude --help` (ví dụ `low, medium, high, xhigh, max`). Model Claude được phát dạng `claude-cli:<model>-<mức>`; khi chạy server tách hậu tố và truyền `--effort <mức>`. Rỗng nếu không đọc được CLI.
+
+### `GET /api/streams`
+
+`{ "activeStreams": { <conversationId>: ChatTurnStreamState } }`: các lượt chat đang chạy.
 
 ### `GET /ping`, `GET /health`, `GET /api/ping`
 
@@ -273,7 +280,9 @@ Namespace mặc định `/`, Socket.IO v4, hỗ trợ WebSocket và polling.
 
 | Event | Payload | Phản hồi |
 | :--- | :--- | :--- |
-| `request-snapshot` | không | Server gửi `snapshot:update` cho client này. |
+| `request-sessions` | không | Server gửi `sessions:list` cho client này. |
+| `request-meta` | không | Server gửi `meta:update` cho client này. |
+| `request-streams` | không | Server gửi `streams:update` cho client này. |
 | `chat:send` | như `ChatSendRequest` | Ack là `ChatSendResponse`. Server phát `session:update` và `fileschange` sau khi xong. |
 | `chat:stop` | `{ "conversationId" }` | Ack là `{ "ok": true, "stopped": <bool> }`. |
 | `join-conversation` | `{ "conversationId" }` | Server trả `joined-conversation`, và client nhận `fileschange` của room. |
@@ -283,7 +292,10 @@ Namespace mặc định `/`, Socket.IO v4, hỗ trợ WebSocket và polling.
 
 | Event | Khi nào | Nội dung |
 | :--- | :--- | :--- |
-| `snapshot:update` | Có thay đổi, hoặc khi có `request-snapshot` | `AgentMonitorSnapshot` (xem mục 1). |
+| `sessions:list` | Khi có `request-sessions` | `{ "sessions": [SessionSummary] }`: tóm tắt từng conversation, không kèm steps, files, lanes. |
+| `meta:update` | Khi có `request-meta` | `MetaPayload`: `projects`, `availableModels`, `effortLevels`, `modelLabels`, `modelContextLimits`, `hostname`, `lanIps`, `port`, `timestamp`. |
+| `streams:update` | Khi có `request-streams`, và khi danh sách lượt đang chạy thay đổi | `{ "activeStreams": { <id>: ChatTurnStreamState } }`. |
+| `session:removed` | Conversation bị xoá khỏi đĩa | `{ "id" }`. |
 | `session:update` | Một conversation thay đổi | `ConversationSession` của conversation đó. |
 | `chat:stream` | Trong lượt chat | `ChatTurnStreamState`: `conversationId`, `projectPath`, `userPrompt`, `streamingText`, `thinkingText`, `isRunning`, `activeStepType`, `startedAt`, `error`. |
 | `projects:update` | Danh sách project thay đổi | Mảng `ProjectWorkspace`. |
@@ -292,7 +304,9 @@ Namespace mặc định `/`, Socket.IO v4, hỗ trợ WebSocket và polling.
 | `joined-conversation` | Sau `join-conversation` | `{ "ok": true, "conversationId" }`. |
 | `ai-question:answered` | Sau khi trả lời câu hỏi AI | Câu hỏi đã trả lời. |
 
-Client nên gọi `request-snapshot` ngay sau khi kết nối lại để đồng bộ trạng thái. Trạng thái các lượt đang chạy phải lấy từ `activeStreams` của snapshot, không suy ra từ các `chat:stream` đã nhận trước đó.
+Client mới nên gọi `request-sessions`, `request-meta`, `request-streams` ngay sau khi kết nối (và sau khi kết nối lại) rồi áp dụng các event nhỏ. Trạng thái các lượt đang chạy lấy từ `streams:update`, không suy ra từ các `chat:stream` đã nhận trước đó.
+
+Lưu ý: socket.io tách mảng cấp cao nhất của một event thành nhiều đối số. Vì vậy `sessions:list` được bọc trong object; `projects:update` vẫn là mảng để giữ tương thích, client đọc mọi đối số để ghép lại.
 
 ---
 

@@ -1,6 +1,6 @@
 [Unit]
 Description=Muop Agent Server Engine (Rust Backend)
-After=network.target
+After=network.target graphical-session.target
 
 [Service]
 Type=simple

@@ -1,0 +1,21 @@
+[package]
+name = "muop-agent-app"
+version = "0.1.0"
+edition = "2021"
+description = "Mướp Agent Monitor — giao diện Slint (client thuần, nói chuyện với muop-agent-server qua REST)"
+
+[[bin]]
+name = "muop-agent-app"
+path = "src/main.rs"
+
+[dependencies]
+slint = { version = "=1.16.0", features = ["renderer-software"] }
+image = { version = "0.25", default-features = false, features = ["png"] }
+ureq = { version = "2", features = ["json"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+rust_socketio = "0.6.0"
+chrono = "0.4"
+
+[build-dependencies]
+slint-build = "=1.16.0"
