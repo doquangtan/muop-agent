@@ -119,6 +119,8 @@ class AgentStep {
     required this.vietnameseTitle,
     required this.vietnameseDetail,
     this.model = '',
+    this.imageCount = 0,
+    this.imageUrls = const [],
   });
 
   final int stepIndex;
@@ -140,6 +142,12 @@ class AgentStep {
   /// Model thực tế đã trả lời (vd. `claude-haiku-5-5`), rỗng nếu không xác định
   final String model;
 
+  /// Số ảnh đính kèm trong tin nhắn của người dùng (chỉ có với `USER_INPUT`)
+  final int imageCount;
+
+  /// Đường dẫn tương đối tới từng ảnh đính kèm (vd. `/api/chat/attachment?...`)
+  final List<String> imageUrls;
+
   Map<String, dynamic> toJson() => {
         'stepIndex': stepIndex,
         'source': source,
@@ -157,6 +165,8 @@ class AgentStep {
         'vietnameseTitle': vietnameseTitle,
         'vietnameseDetail': vietnameseDetail,
         'model': model,
+        'imageCount': imageCount,
+        'imageUrls': imageUrls,
       };
 
   factory AgentStep.fromJson(Map<String, dynamic> json) {
@@ -189,6 +199,9 @@ class AgentStep {
       vietnameseTitle: '${json['vietnameseTitle'] ?? ''}',
       vietnameseDetail: '${json['vietnameseDetail'] ?? ''}',
       model: '${json['model'] ?? ''}',
+      imageCount: (json['imageCount'] as num?)?.toInt() ?? 0,
+      imageUrls: (json['imageUrls'] as List?)?.map((e) => '$e').toList() ??
+          const [],
     );
   }
 }
@@ -225,6 +238,31 @@ class SubagentLane {
   final double progress;
   final List<String> filesModified;
   final DateTime? lastUpdated;
+
+  /// Lane cũ của một session đã dừng: lane còn đang chạy/chờ thì chuyển sang trạng thái kết thúc,
+  /// để không hiển thị subagent "đang chạy" khi conversation đã hoàn tất hoặc bị gián đoạn.
+  SubagentLane settledFor(AgentStatus sessionStatus) {
+    if (status != AgentStatus.running && status != AgentStatus.waiting) return this;
+    final next = sessionStatus == AgentStatus.interrupted
+        ? AgentStatus.interrupted
+        : AgentStatus.completed;
+    return SubagentLane(
+      id: id,
+      name: name,
+      role: role,
+      targetRepo: targetRepo,
+      status: next,
+      currentPhase: currentPhase,
+      currentStepIndex: currentStepIndex,
+      currentActionText: currentActionText,
+      currentToolName: 'standby',
+      promptBrief: promptBrief,
+      steps: steps,
+      progress: 1.0,
+      filesModified: filesModified,
+      lastUpdated: lastUpdated,
+    );
+  }
 
   Map<String, dynamic> toJson() => {
         'id': id,

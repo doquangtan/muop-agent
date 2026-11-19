@@ -13,6 +13,11 @@ dependencies:
   socket_io_client: ^3.0.2
   xterm: ^4.0.0
   material_ui: ^1.11.1
+  url_launcher: ^6.3.2
+  media_kit: ^1.2.6
+  media_kit_video: ^2.0.1
+  media_kit_libs_video: ^1.0.7
+  file_picker: ^13.4.0
 
 dev_dependencies:
   flutter_test:

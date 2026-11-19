@@ -1,10 +1,12 @@
 import 'package:material_ui/material_ui.dart';
+import 'package:media_kit/media_kit.dart';
 
 import 'package:muop_agent/core/theme/app_theme.dart';
 import 'package:muop_agent/features/dashboard/presentation/dashboard_screen.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
+  MediaKit.ensureInitialized();
   runApp(const MuopAgentMonitorApp());
 }
 
@@ -33,7 +35,7 @@ class _MuopAgentMonitorAppState extends State<MuopAgentMonitorApp> {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'Mướp Agent Monitor — Parallel ERP Agents',
+      title: 'Mướp Agents',
       debugShowCheckedModeBanner: false,
       themeMode: _themeMode,
       theme: buildAppTheme(

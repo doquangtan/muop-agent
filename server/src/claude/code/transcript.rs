@@ -98,6 +98,14 @@ pub(super) fn parse_session_file(path: &Path, is_subagent: bool) -> Option<Conve
                 if first_user_text.is_empty() && !text.starts_with('<') {
                     first_user_text = text.clone();
                 }
+                // Ảnh đính kèm nằm ở block `image` (base64), chỉ cần đếm để hiển thị
+                let image_count = match msg.get("content") {
+                    Some(Value::Array(blocks)) => blocks
+                        .iter()
+                        .filter(|b| b.get("type").and_then(|x| x.as_str()) == Some("image"))
+                        .count(),
+                    _ => 0,
+                };
                 let idx = steps.len();
                 steps.push(make_step(
                     idx,
@@ -112,6 +120,20 @@ pub(super) fn parse_session_file(path: &Path, is_subagent: bool) -> Option<Conve
                     0,
                     0,
                 ));
+                let uuid = v.get("uuid").and_then(|x| x.as_str()).unwrap_or("");
+                let session_id = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+                if let Some(step) = steps.last_mut() {
+                    step.image_count = image_count;
+                    if !uuid.is_empty() && !session_id.is_empty() {
+                        step.image_urls = (0..image_count)
+                            .map(|i| {
+                                crate::chat::attachments::transcript_attachment_url(
+                                    session_id, uuid, i,
+                                )
+                            })
+                            .collect();
+                    }
+                }
             }
             "assistant" => {
                 let Some(msg) = v.get("message") else {

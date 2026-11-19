@@ -1,4 +1,26 @@
 
+import 'dart:convert';
+import 'dart:typed_data';
+
+/// Ảnh người dùng chọn để đính kèm vào tin nhắn (chưa gửi). Server kiểm tra lại nội dung thật của ảnh.
+class ChatImageAttachment {
+  const ChatImageAttachment({
+    required this.name,
+    required this.mimeType,
+    required this.bytes,
+  });
+
+  final String name;
+  final String mimeType;
+  final Uint8List bytes;
+
+  Map<String, dynamic> toJson() => {
+        'name': name,
+        'mimeType': mimeType,
+        'dataBase64': base64Encode(bytes),
+      };
+}
+
 class ChatSendResult {
   const ChatSendResult({
     required this.ok,
@@ -28,6 +50,7 @@ class ChatTurnStreamState {
     required this.startedAt,
     this.error = '',
     this.thinkingText = '',
+    this.thinkingTokens = 0,
   });
 
   final String conversationId;
@@ -40,6 +63,9 @@ class ChatTurnStreamState {
   final String error;
   final String thinkingText;
 
+  /// Số token suy nghĩ ước lượng của block thinking đang chạy (Claude 5.x không gửi chữ thinking)
+  final int thinkingTokens;
+
   ChatTurnStreamState copyWith({
     String? conversationId,
     String? projectPath,
@@ -50,6 +76,7 @@ class ChatTurnStreamState {
     DateTime? startedAt,
     String? error,
     String? thinkingText,
+    int? thinkingTokens,
   }) {
     return ChatTurnStreamState(
       conversationId: conversationId ?? this.conversationId,
@@ -61,6 +88,7 @@ class ChatTurnStreamState {
       startedAt: startedAt ?? this.startedAt,
       error: error ?? this.error,
       thinkingText: thinkingText ?? this.thinkingText,
+      thinkingTokens: thinkingTokens ?? this.thinkingTokens,
     );
   }
 
@@ -74,6 +102,7 @@ class ChatTurnStreamState {
         'startedAt': startedAt.toIso8601String(),
         'error': error,
         'thinkingText': thinkingText,
+        'thinkingTokens': thinkingTokens,
       };
 
   factory ChatTurnStreamState.fromJson(Map<String, dynamic> json) {
@@ -88,6 +117,7 @@ class ChatTurnStreamState {
           DateTime.tryParse('${json['startedAt'] ?? ''}') ?? DateTime.now(),
       error: '${json['error'] ?? ''}',
       thinkingText: '${json['thinkingText'] ?? ''}',
+      thinkingTokens: (json['thinkingTokens'] as num?)?.toInt() ?? 0,
     );
   }
 }

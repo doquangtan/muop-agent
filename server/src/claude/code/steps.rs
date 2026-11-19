@@ -57,5 +57,7 @@ pub(super) fn make_step(
         vietnamese_title: vi_title.to_string(),
         vietnamese_detail: vi_detail.to_string(),
         model: String::new(),
+        image_count: 0,
+        image_urls: Vec::new(),
     }
 }

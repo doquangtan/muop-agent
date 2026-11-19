@@ -8,6 +8,7 @@ mod infra;
 mod lsp;
 mod models;
 mod scanner;
+mod screen;
 mod socket;
 mod ssh;
 
@@ -18,6 +19,9 @@ use std::net::SocketAddr;
 use tokio::time::{interval, Duration};
 use tower_http::cors::CorsLayer;
 
+/// Giới hạn một request/gói socket: đủ cho tối đa 6 ảnh đã mã hoá base64 (xem `chat::attachments`)
+const MAX_REQUEST_BODY_BYTES: usize = 64 * 1024 * 1024;
+
 #[tokio::main]
 async fn main() {
     tracing_subscriber::fmt()
@@ -27,8 +31,13 @@ async fn main() {
         )
         .init();
 
-    let (io_layer, io) = SocketIo::builder().build_layer();
+    // Socket.IO mặc định chỉ nhận 100KB mỗi gói; chat:send có thể mang nhiều ảnh base64
+    let (io_layer, io) = SocketIo::builder()
+        .max_payload(MAX_REQUEST_BODY_BYTES as u64)
+        .build_layer();
     let app_state = AppState::new(io.clone());
+    let screen_manager = app_state.screen.clone();
+    app_state.screen.start_rtsp_server();
 
     socket::setup_socket_handlers(&io, app_state.clone());
 
@@ -109,6 +118,17 @@ async fn main() {
         }
     });
 
+    // Watchdog: lượt agy kẹt vì hết quota (tiến trình không thoát) được dừng và gửi lại sau khi reset
+    let stall_state = app_state.clone();
+    tokio::spawn(async move {
+        let mut ticker = interval(Duration::from_secs(60));
+        loop {
+            ticker.tick().await;
+            let st = stall_state.clone();
+            let _ = tokio::task::spawn_blocking(move || chat::quota_stall::check(&st)).await;
+        }
+    });
+
     // Dọn phiên terminal SSH không được dùng quá lâu
     tokio::spawn(async {
         let mut ticker = interval(Duration::from_secs(600));
@@ -132,6 +152,8 @@ async fn main() {
     let app = api::router()
         .layer(io_layer)
         .layer(CorsLayer::permissive())
+        // Ảnh đính kèm gửi dạng base64 trong JSON: mặc định của axum chỉ 2MB
+        .layer(axum::extract::DefaultBodyLimit::max(MAX_REQUEST_BODY_BYTES))
         .with_state(app_state);
 
     let port = std::env::var("PORT")
@@ -154,7 +176,7 @@ async fn main() {
     println!("==============================================================");
 
     // Khởi chạy biểu tượng System Tray nền (StatusNotifierItem)
-    crate::infra::tray::spawn_system_tray();
+    crate::infra::tray::spawn_system_tray(screen_manager);
 
     // Phiên Docker của lần chạy trước (ControlMaster còn sót) đã mất theo tiến trình cũ: dọn đi
     crate::docker::sessions::cleanup_stale();

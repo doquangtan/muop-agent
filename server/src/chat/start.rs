@@ -1,4 +1,21 @@
 use super::*;
+use crate::models::ChatImage;
+use attachments::PreparedImage;
+use tokio::io::AsyncWriteExt;
+
+/// Câu mặc định khi người dùng chỉ gửi ảnh mà không gõ chữ (để lượt chat luôn có nội dung trong lịch sử)
+const DEFAULT_IMAGE_PROMPT: &str = "Hãy mô tả các ảnh đính kèm.";
+
+/// Kiểm tra và lưu ảnh đính kèm ngoài luồng async (giải mã/thu nhỏ ảnh tốn CPU)
+async fn prepare_images_blocking(images: Vec<ChatImage>) -> Result<Vec<PreparedImage>, String> {
+    if images.is_empty() {
+        return Ok(Vec::new());
+    }
+    match tokio::task::spawn_blocking(move || attachments::prepare_images(&images)).await {
+        Ok(result) => result,
+        Err(e) => Err(format!("Lỗi xử lý ảnh đính kèm: {e}")),
+    }
+}
 
 /// Chạy script đồng bộ session của Antigravity IDE (chỉ dùng cho provider agy)
 pub(super) fn spawn_agy_sync(cid: String, delay_ms: u64) {
@@ -22,12 +39,13 @@ pub async fn start_chat_turn(state: AppState, req: ChatSendRequest) -> ChatSendR
 /// Gửi một lượt chat. `attempt` = 0 khi người dùng gửi; > 0 khi hệ thống tự gửi lại sau rate limit.
 pub async fn start_chat_turn_attempt(
     state: AppState,
-    req: ChatSendRequest,
+    mut req: ChatSendRequest,
     attempt: u32,
 ) -> ChatSendResponse {
     let request_snapshot = req.clone();
     let trimmed_prompt = req.prompt.trim().to_string();
-    if trimmed_prompt.is_empty() {
+    let images_in = std::mem::take(&mut req.images);
+    if trimmed_prompt.is_empty() && images_in.is_empty() {
         return ChatSendResponse {
             ok: false,
             conversation_id: req.conversation_id,
@@ -36,6 +54,24 @@ pub async fn start_chat_turn_attempt(
             source: String::new(),
         };
     }
+    // Chuẩn bị ảnh trước khi hủy lịch tự gửi lại: gửi lỗi thì lịch đang chờ vẫn giữ nguyên
+    let images = match prepare_images_blocking(images_in).await {
+        Ok(v) => v,
+        Err(error) => {
+            return ChatSendResponse {
+                ok: false,
+                conversation_id: req.conversation_id,
+                project_path: req.project_path,
+                error,
+                source: String::new(),
+            };
+        }
+    };
+    let user_text = if trimmed_prompt.is_empty() {
+        DEFAULT_IMAGE_PROMPT.to_string()
+    } else {
+        trimmed_prompt
+    };
 
     let (provider, model) = resolve_model(&req.model);
 
@@ -57,9 +93,10 @@ pub async fn start_chat_turn_attempt(
         None
     };
 
-    let (bin, args) = match provider {
+    // `stdin_payload`: nội dung gửi qua stdin (Claude stream-json khi có ảnh); None = không dùng stdin
+    let (bin, args, stdin_payload) = match provider {
         Provider::ClaudeCli => {
-            let (plan_mode, body) = strip_plan_command(&trimmed_prompt);
+            let (plan_mode, body) = strip_plan_command(&user_text);
             if body.is_empty() {
                 return ChatSendResponse {
                     ok: false,
@@ -69,20 +106,35 @@ pub async fn start_chat_turn_attempt(
                     source: String::new(),
                 };
             }
+            let stream_input = !images.is_empty();
+            let payload = stream_input.then(|| attachments::claude_stream_input_line(body, &images));
             (
                 crate::claude::code::claude_bin(),
-                claude_args(body, &model, resume_id, &effective_cwd, plan_mode),
+                claude_args(body, &model, resume_id, &effective_cwd, plan_mode, stream_input),
+                payload,
             )
         }
         Provider::Agy => (
             agy_bin().to_string(),
-            agy_args(&trimmed_prompt, &model, resume_id, req.agent_name.trim()),
+            agy_args(
+                &attachments::agy_prompt(&user_text, &images),
+                &model,
+                resume_id,
+                req.agent_name.trim(),
+            ),
+            None,
         ),
     };
 
     eprintln!(
-        "[CHAT_SEND] provider={:?} bin={} conv='{}' model='{}' cwd='{}' prompt='{}'",
-        provider, bin, clean_conv_id, model, effective_cwd, trimmed_prompt
+        "[CHAT_SEND] provider={:?} bin={} conv='{}' model='{}' cwd='{}' images={} prompt='{}'",
+        provider,
+        bin,
+        clean_conv_id,
+        model,
+        effective_cwd,
+        images.len(),
+        user_text
     );
 
     let use_systemd_scope =
@@ -103,7 +155,11 @@ pub async fn start_chat_turn_attempt(
 
     let mut child = match cmd
         .current_dir(&effective_cwd)
-        .stdin(Stdio::null())
+        .stdin(if stdin_payload.is_some() {
+            Stdio::piped()
+        } else {
+            Stdio::null()
+        })
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
@@ -129,7 +185,7 @@ pub async fn start_chat_turn_attempt(
         state: state.clone(),
         pid,
         cwd: effective_cwd.clone(),
-        prompt: trimmed_prompt.clone(),
+        prompt: user_text.clone(),
         started_at: Utc::now().to_rfc3339(),
         model: model.clone(),
         request: request_snapshot,
@@ -146,11 +202,18 @@ pub async fn start_chat_turn_attempt(
     }
 
     let (tx, rx) = oneshot::channel::<String>();
+    let stdin_pipe = child.stdin.take();
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();
     let initial_cid = clean_conv_id.clone();
 
     tokio::spawn(async move {
+        // Ghi stdin trước khi đọc stdout: ảnh có thể lớn, và CLI chỉ bắt đầu trả lời sau khi nhận đủ input
+        if let (Some(payload), Some(mut pipe)) = (stdin_payload, stdin_pipe) {
+            let _ = pipe.write_all(payload.as_bytes()).await;
+            let _ = pipe.shutdown().await;
+        }
+
         let mut st = TurnState {
             tracked_id: initial_cid,
             committed: String::new(),

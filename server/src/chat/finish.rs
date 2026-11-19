@@ -57,6 +57,7 @@ pub(super) fn finish_turn(
         started_at: ctx.started_at.clone(),
         error,
         thinking_text: st.thinking_text,
+        thinking_tokens: 0,
     };
     if let Ok(mut streams) = state.active_streams.lock() {
         streams.insert(st.tracked_id.clone(), final_state.clone());

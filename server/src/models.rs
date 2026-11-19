@@ -31,6 +31,10 @@ pub struct ChatTurnStreamState {
     pub error: String,
     #[serde(default)]
     pub thinking_text: String,
+    /// Số token suy nghĩ ước lượng của block thinking đang chạy (Claude CLI `thinking_tokens`),
+    /// dùng khi nội dung thinking không được gửi về. Chỉ có nghĩa khi `active_step_type == "thinking"`.
+    #[serde(default)]
+    pub thinking_tokens: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -65,6 +69,12 @@ pub struct AgentStep {
     /// Model thực tế đã trả lời (vd. `claude-haiku-5-5`), rỗng nếu không xác định
     #[serde(default)]
     pub model: String,
+    /// Số ảnh đính kèm của bước người dùng (chỉ có ý nghĩa với `USER_INPUT`)
+    #[serde(default)]
+    pub image_count: usize,
+    /// URL lấy từng ảnh đính kèm (`/api/chat/attachment?...`), chỉ có với `USER_INPUT`
+    #[serde(default)]
+    pub image_urls: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -239,6 +249,22 @@ pub struct ChatSendRequest {
     pub agent_name: String,
     #[serde(default)]
     pub model: String,
+    /// Ảnh đính kèm (base64). Rỗng nếu tin nhắn chỉ có chữ.
+    #[serde(default)]
+    pub images: Vec<ChatImage>,
+}
+
+/// Một ảnh người dùng đính kèm vào tin nhắn chat
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatImage {
+    #[serde(default)]
+    pub name: String,
+    /// MIME khai báo từ client (chỉ để tham khảo; server tự nhận diện định dạng từ nội dung)
+    #[serde(default)]
+    pub mime_type: String,
+    /// Nội dung file, base64 (có thể kèm tiền tố `data:<mime>;base64,`)
+    pub data_base64: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -39,3 +39,8 @@ app.*.map.json
 # Release builds
 *.apk
 *.ipa
+# Gradle build reports (generated)
+android/build/
+
+# macOS build archive (generated)
+/muop-agent-macos.zip

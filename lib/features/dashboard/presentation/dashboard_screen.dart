@@ -14,6 +14,7 @@ import 'package:muop_agent/features/chat/presentation/chat_canvas_view.dart';
 import 'package:muop_agent/features/connection/domain/connection_entities.dart';
 import 'package:muop_agent/features/connection/domain/connection_repository.dart';
 import 'package:muop_agent/features/docker/presentation/docker_screen.dart';
+import 'package:muop_agent/features/screen/presentation/screen_stream_screen.dart';
 import 'package:muop_agent/features/interactions/domain/interaction_entities.dart';
 import 'package:muop_agent/features/interactions/domain/interactions_repository.dart';
 import 'package:muop_agent/features/interactions/presentation/ai_question_dialog.dart';
@@ -53,7 +54,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
   final GlobalKey<ScaffoldState> _scaffoldKey = GlobalKey<ScaffoldState>();
   /// Trang SSH / Docker / log đang mở trong vùng chính (desktop), xếp chồng lên màn hình chính
   final List<_PanelEntry> _panelPages = [];
-  final GlobalKey<NavigatorState> _panelNavKey = GlobalKey<NavigatorState>();
   int _panelSeq = 0;
   final ChatRepository _chatRepo = AppDependencies.chat;
   final ConnectionRepository _connectionRepo = AppDependencies.connection;
@@ -298,6 +298,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
           _refreshSessions(silent: true);
         }
       });
+      if (connected) _resyncSelectedConversation();
     });
 
     // Lắng nghe cập nhật granular cho từng conversation riêng lẻ
@@ -391,7 +392,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
       if (existingIndex >= 0) {
         final existing = _sessions[existingIndex];
         final mergedFiles = _mergeFilesTouched(existing.filesTouched, updated.filesTouched);
-        final mergedLanes = updated.subagentLanes.isNotEmpty ? updated.subagentLanes : existing.subagentLanes;
+        final mergedLanes = _carryLanes(existing.subagentLanes, updated);
 
         List<AgentStep> finalSteps;
         if (existing.steps.isNotEmpty && existing.steps.length > updated.steps.length) {
@@ -447,6 +448,14 @@ class _DashboardScreenState extends State<DashboardScreen> {
     });
   }
 
+  /// Lane của session: lấy từ server nếu có; nếu không thì giữ lane cũ, nhưng khi session đã dừng
+  /// thì không giữ trạng thái đang chạy của lane cũ (danh sách session không mang lane).
+  List<SubagentLane> _carryLanes(List<SubagentLane> existing, ConversationSession incoming) {
+    if (incoming.subagentLanes.isNotEmpty) return incoming.subagentLanes;
+    if (incoming.status == AgentStatus.running) return existing;
+    return [for (final lane in existing) lane.settledFor(incoming.status)];
+  }
+
   /// Gộp danh sách session mới với dữ liệu đã nạp (steps, files, lanes) của session cũ
   List<ConversationSession> _mergeSessionList(List<ConversationSession> incoming) {
     final merged = <ConversationSession>[];
@@ -457,7 +466,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
         continue;
       }
       final mergedFiles = _mergeFilesTouched(existing.filesTouched, s.filesTouched);
-      final mergedLanes = s.subagentLanes.isNotEmpty ? s.subagentLanes : existing.subagentLanes;
+      final mergedLanes = _carryLanes(existing.subagentLanes, s);
       List<AgentStep>? steps;
       if (existing.steps.isNotEmpty && existing.steps.length > s.steps.length) {
         steps = _mergeNewerSteps(existing.steps, s.steps);
@@ -568,6 +577,17 @@ class _DashboardScreenState extends State<DashboardScreen> {
     setState(() {
       _sessions = _sessions.where((s) => s.id != id).toList();
     });
+  }
+
+  /// Sau khi socket kết nối lại: server đã mất room và các sự kiện đã bỏ lỡ, nên join lại room
+  /// và tải lại chi tiết conversation đang chọn để steps, lanes, trạng thái khớp với server.
+  void _resyncSelectedConversation() {
+    final id = _selectedSessionId;
+    if (id == null || _isNewConversationMode) return;
+    if (_currentConversationRoom == id) {
+      _sessionsRepo.joinConversation(id);
+    }
+    _loadFullSessionDetail(id);
   }
 
   Future<void> _loadFullSessionDetail(String sessionId) async {
@@ -771,7 +791,10 @@ class _DashboardScreenState extends State<DashboardScreen> {
     }
   }
 
-  Future<void> _handleSendPrompt(String promptText) async {
+  Future<void> _handleSendPrompt(
+    String promptText,
+    List<ChatImageAttachment> images,
+  ) async {
     final targetProjectPath = _activeChatProject?.path ??
         _activeSession?.projectPath ??
         '/home/john/Documents/muop-ecosystem/muop-erp-server';
@@ -782,7 +805,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
     final optState = ChatTurnStreamState(
       conversationId: optKey,
       projectPath: targetProjectPath,
-      userPrompt: promptText,
+      userPrompt: promptText.isNotEmpty
+          ? promptText
+          : 'Ảnh đính kèm (${images.length})',
       streamingText: '',
       isRunning: true,
       activeStepType: 'starting',
@@ -807,6 +832,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
       conversationId: targetConvId,
       agentName: _selectedAgent,
       model: effectiveModel,
+      images: images,
     );
 
     if (!mounted) return;
@@ -1892,6 +1918,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
     } else {
       scaffoldBody = PanelScope(
         open: _openPanel,
+        close: _closeTopPanel,
         child: SafeArea(child: _buildDesktopLayout(context, activeSession, width)),
       );
     }
@@ -1918,55 +1945,59 @@ class _DashboardScreenState extends State<DashboardScreen> {
   /// Không dùng [openPanelPage] ở đây vì context của State nằm phía trên [PanelScope].
   Future<void> _openFromSidebar(BuildContext context, Widget page) {
     final desktop = MediaQuery.sizeOf(context).width >= 760;
-    if (desktop) return _openPanel(page);
+    if (desktop) return _showPanel(page, replace: true);
     return Navigator.of(context).push(MaterialPageRoute<void>(builder: (_) => page));
   }
 
-  Future<void> _openPanel(Widget page) {
+  /// Mount một trang vào vùng chính desktop (không push route). [replace]: thay toàn bộ trang panel
+  /// đang mở (bấm sidebar); không thì xếp thêm lên trên (trang mở từ trong một panel).
+  Future<void> _showPanel(Widget page, {required bool replace}) {
     final entry = _PanelEntry(ValueKey('panel-${_panelSeq++}'), page);
-    setState(() => _panelPages.add(entry));
+    setState(() {
+      if (replace) _completeAndClearPanels();
+      _panelPages.add(entry);
+    });
     return entry.done.future;
   }
 
-  /// Quay về màn hình chính (explorer + chat): đóng mọi trang SSH/Docker đang mở trong vùng chính.
-  /// Đóng qua Navigator (pop): trang được gỡ khỏi danh sách trong [_onPanelRemovePage].
-  void _closePanelPages() {
+  /// Dùng cho [PanelScope.open]: mở trang lồng trong một panel
+  Future<void> _openPanel(Widget page) => _showPanel(page, replace: false);
+
+  /// Đóng trang panel trên cùng, quay về trang trước đó (hoặc chat)
+  void _closeTopPanel() {
     if (_panelPages.isEmpty) return;
-    final nav = _panelNavKey.currentState;
-    if (nav != null) {
-      nav.popUntil((route) => route.isFirst);
-      return;
-    }
-    // Chưa có Navigator (chưa dựng lần nào): gỡ thẳng khỏi danh sách
-    final closed = List<_PanelEntry>.of(_panelPages);
-    setState(() => _panelPages.clear());
-    for (final e in closed) {
+    final entry = _panelPages.removeLast();
+    if (!entry.done.isCompleted) entry.done.complete();
+    setState(() {});
+  }
+
+  void _completeAndClearPanels() {
+    for (final e in _panelPages) {
       if (!e.done.isCompleted) e.done.complete();
     }
+    _panelPages.clear();
   }
 
-  /// Navigator đã gỡ một trang (nút back / pop): đồng bộ danh sách. Không gọi setState ở đây vì callback
-  /// có thể chạy trong lúc Navigator build; dashboard sẽ dựng lại với danh sách đã gỡ ở lần build sau.
-  void _onPanelRemovePage(Page<Object?> page) {
-    final idx = _panelPages.indexWhere((e) => e.key == page.key);
-    if (idx < 0) return;
-    final entry = _panelPages.removeAt(idx);
-    if (!entry.done.isCompleted) entry.done.complete();
-    // Dựng lại sau frame hiện tại (callback có thể chạy trong lúc Navigator build): explorer hiện lại khi panel đóng
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (mounted) setState(() {});
-    });
+  /// Quay về màn hình chính (explorer + chat): đóng mọi trang panel đang mở.
+  void _closePanelPages() {
+    if (_panelPages.isEmpty) return;
+    setState(_completeAndClearPanels);
   }
 
-  /// Vùng chính desktop: trang dashboard ở đáy, các trang SSH/Docker/log xếp lên trên
-  Widget _buildPanelNavigator(BuildContext context, {required Widget mainPage}) {
-    return Navigator(
-      key: _panelNavKey,
-      pages: [
-        MaterialPage<void>(key: const ValueKey('dashboard-main'), child: mainPage),
-        for (final e in _panelPages) MaterialPage<void>(key: e.key, child: e.page),
+  /// Vùng content desktop: chat luôn được giữ trong cây (Offstage) để không mất nháp/vị trí cuộn;
+  /// trang panel đang chọn được mount đè lên, không push route.
+  Widget _buildPanelStack({required Widget chat}) {
+    final top = _panelPages.isEmpty ? null : _panelPages.last;
+    return Stack(
+      children: [
+        Positioned.fill(
+          child: Offstage(offstage: top != null, child: chat),
+        ),
+        if (top != null)
+          Positioned.fill(
+            child: KeyedSubtree(key: top.key, child: top.page),
+          ),
       ],
-      onDidRemovePage: _onPanelRemovePage,
     );
   }
 
@@ -2056,13 +2087,13 @@ class _DashboardScreenState extends State<DashboardScreen> {
               // Key cố định: explorer ẩn/hiện không được làm Navigator (và state chat bên trong) bị dựng lại
               Expanded(
                 key: const ValueKey('desktop-main'),
-                child: _buildPanelNavigator(
-                  context,
-                  mainPage: _buildMainColumn(
+                child: _buildMainColumn(
                   context,
                   activeSession,
                   isMobile: false,
-                  content: ResizableSplitView(
+                  // Header chat giữ nguyên ở trên; trang panel (SSH/Docker/Màn hình...) mount vào vùng content bên dưới
+                  content: _buildPanelStack(
+                    chat: ResizableSplitView(
                     showLeft: viewerOpen,
                     left: viewerOpen
                         ? FileDiffAndContentPane(
@@ -2074,8 +2105,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
                           )
                         : const SizedBox.shrink(),
                     right: _buildChatArea(context, activeSession),
+                  )
                   ),
-                ),
                 ),
               ),
             ],
@@ -2210,6 +2241,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                   _activeChatProject,
                 ),
                 onSendMessage: _handleSendPrompt,
+                serverBaseUrl: normalizeBaseUrl(_serverAddress),
                 onStopTurn: _handleStopTurn,
                 pendingRetry: _pendingRetryFor(_selectedSessionId),
                 onCancelRetry: _selectedSessionId == null
@@ -2665,6 +2697,27 @@ class _DashboardScreenState extends State<DashboardScreen> {
                     size: 16, color: colorScheme.primary),
                 label: Text(
                   'LSP',
+                  style: textTheme.labelMedium?.copyWith(
+                    color: colorScheme.primary,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ),
+              TextButton.icon(
+                style: TextButton.styleFrom(
+                  visualDensity: VisualDensity.compact,
+                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                ),
+                onPressed: () {
+                  if (Navigator.of(context).canPop() && isMobileDrawer) {
+                    Navigator.of(context).pop();
+                  }
+                  _openFromSidebar(context, const ScreenStreamScreen());
+                },
+                icon: Icon(Icons.cast_rounded,
+                    size: 16, color: colorScheme.primary),
+                label: Text(
+                  'Màn hình',
                   style: textTheme.labelMedium?.copyWith(
                     color: colorScheme.primary,
                     fontWeight: FontWeight.w600,

@@ -21,4 +21,6 @@ regex = "1.10"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 ksni = "0.3.7"
-image = { version = "0.25", default-features = false, features = ["png"] }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp"] }
+zbus = "5"
+futures-util = "0.3"
