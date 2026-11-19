@@ -272,6 +272,8 @@ pub fn scan_all_sessions(
                         vietnamese_title: "Tiến trình Agent bị gián đoạn".to_string(),
                         vietnamese_detail: "Tiến trình xử lý của Agent đã bị ngắt do server restart hoặc dừng đột ngột. Bạn có thể tiếp tục bằng cách gửi tin nhắn tiếp theo.".to_string(),
                         model: String::new(),
+                        image_count: 0,
+                        image_urls: Vec::new(),
                     });
                 }
             }

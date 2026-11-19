@@ -5,7 +5,7 @@ part of '../chat_canvas_view.dart';
 /// - Hộp Inline code màu vàng hổ phách trên nền tối, không tràn dòng
 /// - Chip liên kết tệp bấm được với biểu tượng tệp màu xanh lam
 /// - Danh sách số thứ tự & bullet tròn căn lề thẳng thớm, thụt lề chuẩn
-/// - Hỗ trợ mở rộng / thu gọn 10 dòng cuối
+/// - Hỗ trợ mở rộng / thu gọn 5 dòng cuối
 class _AntigravityMarkdownSegment extends StatelessWidget {
   const _AntigravityMarkdownSegment({
     required this.text,

@@ -204,6 +204,7 @@ fn adopt_found(state: &AppState, found: Vec<LiveTurn>) -> usize {
                     started_at: Utc::now().to_rfc3339(),
                     error: String::new(),
                     thinking_text: String::new(),
+                    thinking_tokens: 0,
                 },
             );
         }

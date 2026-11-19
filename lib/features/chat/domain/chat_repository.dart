@@ -13,6 +13,7 @@ abstract class ChatRepository {
     String? conversationId,
     String? agentName,
     String? model,
+    List<ChatImageAttachment> images = const [],
   });
 
   Future<bool> stopRemoteChatTurn({

@@ -1,15 +1,164 @@
 part of '../chat_canvas_view.dart';
 
+/// Giới hạn ảnh đính kèm, khớp với server (`server/src/chat/attachments.rs`)
+const int _kMaxComposerImages = 6;
+const int _kMaxComposerImageBytes = 20 * 1024 * 1024;
+
 extension _CanvasExtComposer on _ChatCanvasViewState {
   void _handleSend() {
     final text = _promptController.text.trim();
-    if (text.isEmpty || widget.isSending) return;
+    final images = _pendingImages;
+    if ((text.isEmpty && images.isEmpty) || widget.isSending) return;
     _promptController.clear();
-    _applyState(() => _composerRevealed = false);
-    widget.onSendMessage(text);
+    _applyState(() {
+      _composerRevealed = false;
+      _pendingImages = const [];
+    });
+    widget.onSendMessage(text, images);
     Future.delayed(const Duration(milliseconds: 100), () {
       _scrollToBottom(animated: true);
     });
+  }
+
+  void _showComposerNotice(String message) {
+    ScaffoldMessenger.maybeOf(context)?.showSnackBar(
+      SnackBar(content: Text(message)),
+    );
+  }
+
+  /// Chọn ảnh từ máy (desktop: hộp thoại file; Android: trình chọn file/ảnh của hệ thống)
+  Future<void> _pickComposerImages() async {
+    final remaining = _kMaxComposerImages - _pendingImages.length;
+    if (remaining <= 0) {
+      _showComposerNotice('Tối đa $_kMaxComposerImages ảnh cho mỗi tin nhắn');
+      return;
+    }
+    final files = await FilePicker.pickFiles(
+      type: FileType.custom,
+      allowedExtensions: const ['png', 'jpg', 'jpeg', 'webp'],
+    );
+    if (!mounted || files.isEmpty) return;
+
+    final picked = <ChatImageAttachment>[];
+    String? problem;
+    for (final file in files) {
+      if (picked.length >= remaining) {
+        problem = 'Chỉ thêm tối đa $_kMaxComposerImages ảnh cho mỗi tin nhắn';
+        break;
+      }
+      final mime = _imageMimeFor(file.extension);
+      if (mime == null) {
+        problem = '${file.name}: chỉ hỗ trợ PNG, JPEG, WebP';
+        continue;
+      }
+      final size = await file.length();
+      if (size != null && size > _kMaxComposerImageBytes) {
+        problem = '${file.name}: vượt quá 20 MB';
+        continue;
+      }
+      final bytes = await file.readAsBytes();
+      if (bytes.length > _kMaxComposerImageBytes) {
+        problem = '${file.name}: vượt quá 20 MB';
+        continue;
+      }
+      picked.add(
+        ChatImageAttachment(name: file.name, mimeType: mime, bytes: bytes),
+      );
+    }
+    if (!mounted) return;
+    if (picked.isNotEmpty) {
+      _applyState(() => _pendingImages = [..._pendingImages, ...picked]);
+    }
+    if (problem != null) _showComposerNotice(problem);
+  }
+
+  static String? _imageMimeFor(String? extension) {
+    switch (extension?.toLowerCase()) {
+      case 'png':
+        return 'image/png';
+      case 'jpg':
+      case 'jpeg':
+        return 'image/jpeg';
+      case 'webp':
+        return 'image/webp';
+      default:
+        return null;
+    }
+  }
+
+  /// Dải ảnh đang chờ gửi, mỗi ảnh có nút bỏ
+  Widget _buildPendingImagesStrip(ColorScheme colorScheme, bool isMobile) {
+    final size = isMobile ? 56.0 : 64.0;
+    return Padding(
+      padding: EdgeInsets.fromLTRB(
+        isMobile ? 12 : 16,
+        isMobile ? 8 : 10,
+        isMobile ? 12 : 16,
+        0,
+      ),
+      child: SizedBox(
+        height: size + 6,
+        child: ListView.separated(
+          scrollDirection: Axis.horizontal,
+          itemCount: _pendingImages.length,
+          separatorBuilder: (context, index) => const SizedBox(width: 8),
+          itemBuilder: (context, index) {
+            final image = _pendingImages[index];
+            return Stack(
+              clipBehavior: Clip.none,
+              children: [
+                ClipRRect(
+                  borderRadius: BorderRadius.circular(10),
+                  child: Image.memory(
+                    image.bytes,
+                    width: size,
+                    height: size,
+                    fit: BoxFit.cover,
+                    cacheWidth: 160,
+                    gaplessPlayback: true,
+                    errorBuilder: (context, error, stack) => Container(
+                      width: size,
+                      height: size,
+                      color: colorScheme.surfaceContainerHighest,
+                      child: Icon(
+                        Icons.broken_image_outlined,
+                        color: colorScheme.onSurfaceVariant,
+                      ),
+                    ),
+                  ),
+                ),
+                Positioned(
+                  top: -6,
+                  right: -6,
+                  child: GestureDetector(
+                    behavior: HitTestBehavior.opaque,
+                    onTap: () => _applyState(() {
+                      _pendingImages = [..._pendingImages]..removeAt(index);
+                    }),
+                    child: Container(
+                      padding: const EdgeInsets.all(3),
+                      decoration: BoxDecoration(
+                        color: colorScheme.surface,
+                        shape: BoxShape.circle,
+                        border: Border.all(
+                          color: colorScheme.outlineVariant,
+                          width: 0.8,
+                        ),
+                      ),
+                      child: Icon(
+                        Icons.close_rounded,
+                        size: 13,
+                        color: colorScheme.onSurface,
+                      ),
+                    ),
+                  ),
+                ),
+              ],
+            );
+          },
+        ),
+      ),
+    );
   }
 
   KeyEventResult _handleComposerKeyEvent(FocusNode node, KeyEvent event) {
@@ -57,6 +206,8 @@ extension _CanvasExtComposer on _ChatCanvasViewState {
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
+          if (_pendingImages.isNotEmpty)
+            _buildPendingImagesStrip(colorScheme, isMobile),
           Padding(
             padding: EdgeInsets.fromLTRB(
               isMobile ? 12 : 16,
@@ -219,6 +370,19 @@ extension _CanvasExtComposer on _ChatCanvasViewState {
                             icon: Icons.smart_toy_outlined,
                             label: widget.selectedAgent,
                             hasDropdown: true,
+                            colorScheme: colorScheme,
+                          ),
+                        ),
+                        const SizedBox(width: 5),
+
+                        InkWell(
+                          borderRadius: BorderRadius.circular(8),
+                          onTap: widget.isSending ? null : _pickComposerImages,
+                          child: _ComposerPill(
+                            icon: Icons.image_outlined,
+                            label: _pendingImages.isEmpty
+                                ? (isMobile ? 'Ảnh' : 'Đính kèm ảnh')
+                                : 'Ảnh (${_pendingImages.length})',
                             colorScheme: colorScheme,
                           ),
                         ),

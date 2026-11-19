@@ -87,7 +87,7 @@ Future<void> _pump(
           onSelectAgent: (_) {},
           onSelectModel: (_) {},
           onStartNewConversation: () {},
-          onSendMessage: (_) {},
+          onSendMessage: (_, _) {},
           onStopTurn: () {},
           onOpenFileBrowser: () {},
           onOpenChangesTab: () {},

@@ -28,12 +28,16 @@ pub struct AppState {
     pub last_quotas_json: Arc<Mutex<String>>,
     /// Câu hỏi từ AI: key = conversation_id, value = danh sách câu hỏi
     pub ai_questions: Arc<Mutex<HashMap<String, Vec<crate::models::AIQuestion>>>>,
+    /// Quay màn hình và phát luồng về app (bật bằng checkbox trên tray)
+    pub screen: Arc<crate::screen::ScreenManager>,
 }
 
 impl AppState {
     pub fn new(io: SocketIo) -> Self {
+        let screen = crate::screen::ScreenManager::new(io.clone());
         Self {
             io,
+            screen,
             active_streams: Arc::new(Mutex::new(HashMap::new())),
             running_pids: Arc::new(Mutex::new(HashMap::new())),
             adopted_turns: Arc::new(Mutex::new(HashMap::new())),

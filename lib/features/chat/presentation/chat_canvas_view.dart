@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:math' as math;
 
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/services.dart';
 import 'package:material_ui/material_ui.dart';
 
@@ -8,6 +9,7 @@ import 'package:muop_agent/core/theme/app_theme.dart';
 import 'package:muop_agent/features/chat/domain/chat_entities.dart';
 import 'package:muop_agent/features/chat/domain/model_groups.dart';
 import 'package:muop_agent/features/chat/presentation/quota_detail_sheet.dart';
+import 'package:muop_agent/features/chat/presentation/text_tail.dart';
 import 'package:muop_agent/features/interactions/domain/interaction_entities.dart';
 import 'package:muop_agent/features/interactions/presentation/interaction_dialogs.dart';
 import 'package:muop_agent/features/interactions/presentation/interaction_widgets.dart';
@@ -61,6 +63,7 @@ class ChatCanvasView extends StatefulWidget {
     required this.onSelectModel,
     required this.onStartNewConversation,
     required this.onSendMessage,
+    this.serverBaseUrl = '',
     required this.onStopTurn,
     required this.onOpenFileBrowser,
     required this.onOpenChangesTab,
@@ -112,7 +115,13 @@ class ChatCanvasView extends StatefulWidget {
   final ValueChanged<String> onSelectAgent;
   final ValueChanged<String> onSelectModel;
   final VoidCallback onStartNewConversation;
-  final ValueChanged<String> onSendMessage;
+
+  /// Gửi tin nhắn: nội dung chữ (có thể rỗng nếu có ảnh) và danh sách ảnh đính kèm
+  final void Function(String text, List<ChatImageAttachment> images)
+  onSendMessage;
+
+  /// Địa chỉ gốc của Rust server (vd. `http://192.168.1.10:8787`), dùng để tải ảnh đính kèm trong lịch sử
+  final String serverBaseUrl;
   final VoidCallback onStopTurn;
 
   /// Lịch tự gửi lại sau rate limit của conversation đang mở (null nếu không có)
@@ -144,12 +153,16 @@ class _ChatCanvasViewState extends State<ChatCanvasView> {
   /// Gọi setState từ các extension trong thư mục canvas/ (setState là @protected)
   void _applyState(VoidCallback fn) => setState(fn);
   static const int _pageSize = 20;
-  static const int _collapsedTailLines = 10;
+  static const int _collapsedTailLines = 5;
 
   final TextEditingController _promptController = TextEditingController();
 
   /// Nội dung đang gõ dở của từng conversation (khóa theo [_draftKey]); chuyển conversation thì đổi nội dung ô nhập
   final Map<String, String> _drafts = {};
+
+  /// Ảnh đính kèm đang chọn cho conversation hiện tại (chưa gửi), và ảnh của các nháp khác
+  List<ChatImageAttachment> _pendingImages = const [];
+  final Map<String, List<ChatImageAttachment>> _draftImages = {};
   final ScrollController _scrollController = ScrollController();
   final FocusNode _inputFocusNode = FocusNode();
 
@@ -261,6 +274,12 @@ class _ChatCanvasViewState extends State<ChatCanvasView> {
     } else {
       _drafts[oldKey] = typed;
     }
+    if (_pendingImages.isEmpty) {
+      _draftImages.remove(oldKey);
+    } else {
+      _draftImages[oldKey] = _pendingImages;
+    }
+    _pendingImages = _draftImages.remove(newKey) ?? const [];
     final next = _drafts[newKey] ?? '';
     _promptController.value = TextEditingValue(
       text: next,

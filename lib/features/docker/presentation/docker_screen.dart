@@ -389,7 +389,7 @@ class _DockerSessionScreenState extends State<DockerSessionScreen> {
       _session.sessionId,
     );
     if (!mounted) return;
-    Navigator.of(context).maybePop();
+    closePanelPage(context);
   }
 
   /// Mở màn hình log của container (mở luồng SSH riêng trên server)

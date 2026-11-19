@@ -106,6 +106,7 @@ pub async fn handle_claude_respond(
             conversation_id: cid,
             agent_name: String::new(),
             model: req.model,
+            images: Vec::new(),
         },
     )
     .await;

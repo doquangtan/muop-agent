@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:material_ui/material_ui.dart';
 import 'package:xterm/xterm.dart';
 
+import 'package:muop_agent/core/widgets/desktop_panel.dart';
 import 'package:muop_agent/core/di/app_dependencies.dart';
 import 'package:muop_agent/core/theme/app_theme.dart';
 import 'package:muop_agent/features/ssh/domain/ssh_entities.dart';
@@ -97,7 +98,7 @@ class _SshTerminalScreenState extends State<SshTerminalScreen> {
     if (ok != true) return;
     final sid = _sessionId;
     if (sid != null) AppDependencies.ssh.closeSshTerminal(sid);
-    if (mounted) Navigator.of(context).maybePop();
+    if (mounted) closePanelPage(context);
   }
 
   Future<void> _open() async {

@@ -70,7 +70,20 @@ pub(super) fn handle_claude_event(ctx: &TurnCtx, st: &mut TurnState, map: &Value
         }
         // Đầu tiên: session_id của Claude Code
         "system" => {
-            if map.get("subtype").and_then(|v| v.as_str()) != Some("init") {
+            let subtype = map.get("subtype").and_then(|v| v.as_str());
+            // Tiến độ suy nghĩ khi nội dung thinking không được gửi về (Claude 5.x)
+            if subtype == Some("thinking_tokens") {
+                if !st.tracked_id.is_empty() {
+                    let tokens = map
+                        .get("estimated_tokens")
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(0);
+                    let tid = st.tracked_id.clone();
+                    ctx.set_thinking_tokens(&tid, tokens);
+                }
+                return;
+            }
+            if subtype != Some("init") {
                 return;
             }
             let cid = map
@@ -118,6 +131,10 @@ pub(super) fn handle_claude_event(ctx: &TurnCtx, st: &mut TurnState, map: &Value
                     };
                     if !st.tracked_id.is_empty() {
                         let tid = st.tracked_id.clone();
+                        // Block thinking mới bắt đầu từ 0 token
+                        if step == "thinking" {
+                            ctx.set_thinking_tokens(&tid, 0);
+                        }
                         ctx.emit(
                             &tid,
                             compose_text(&st.committed, &st.live),

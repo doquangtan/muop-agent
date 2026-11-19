@@ -18,6 +18,9 @@ pub fn setup_socket_handlers(io: &SocketIo, state: AppState) {
             let _ = socket.emit("retry:update", &val);
         }
 
+        // Trạng thái quay màn hình (có URL RTSP khi đang bật) cho client vừa kết nối
+        let _ = socket.emit("screen:status", &connect_state.screen.status());
+
         // Quota hiện tại cho client vừa kết nối: server chỉ phát `quotas:update` khi số liệu thay đổi,
         // nên nếu không gửi ngay, client mới (hoặc app mở lại) sẽ không thấy quota cho tới lần đổi kế tiếp.
         connect_state.spawn_quotas_update(false, true);
@@ -63,6 +66,15 @@ pub fn setup_socket_handlers(io: &SocketIo, state: AppState) {
                         let _ = s.emit("meta:update", &val);
                     }
                 }
+            }
+        });
+
+        // Màn hình mở sau khi kết nối: client hỏi lại trạng thái quay màn hình
+        let screen_req_state = connect_state.clone();
+        socket.on("request-screen-status", move |s: SocketRef| {
+            let st = screen_req_state.clone();
+            async move {
+                let _ = s.emit("screen:status", &st.screen.status());
             }
         });
 

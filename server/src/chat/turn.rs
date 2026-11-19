@@ -27,19 +27,38 @@ pub(super) struct TurnCtx {
 
 impl TurnCtx {
     pub(super) fn emit(&self, cid: &str, text: String, step: &str, thinking: String) {
-        let stream_state = ChatTurnStreamState {
-            conversation_id: cid.to_string(),
-            project_path: self.cwd.clone(),
-            user_prompt: self.prompt.clone(),
-            streaming_text: text,
-            is_running: true,
-            active_step_type: step.to_string(),
-            started_at: self.started_at.clone(),
-            error: String::new(),
-            thinking_text: thinking,
-        };
+        // Số token thinking chỉ có ý nghĩa trong block thinking: giữ giá trị đang có khi còn
+        // ở bước thinking, ngoài ra đặt lại về 0
+        let mut thinking_tokens = 0;
         if let Ok(mut streams) = self.state.active_streams.lock() {
-            streams.insert(cid.to_string(), stream_state);
+            if step == "thinking" {
+                thinking_tokens = streams.get(cid).map_or(0, |s| s.thinking_tokens);
+            }
+            streams.insert(
+                cid.to_string(),
+                ChatTurnStreamState {
+                    conversation_id: cid.to_string(),
+                    project_path: self.cwd.clone(),
+                    user_prompt: self.prompt.clone(),
+                    streaming_text: text,
+                    is_running: true,
+                    active_step_type: step.to_string(),
+                    started_at: self.started_at.clone(),
+                    error: String::new(),
+                    thinking_text: thinking,
+                    thinking_tokens,
+                },
+            );
+        }
+        self.state.broadcast_stream_throttled(cid);
+    }
+
+    /// Cập nhật số token thinking ước lượng của lượt đang chạy (không đổi nội dung khác)
+    pub(super) fn set_thinking_tokens(&self, cid: &str, tokens: u64) {
+        if let Ok(mut streams) = self.state.active_streams.lock() {
+            if let Some(s) = streams.get_mut(cid) {
+                s.thinking_tokens = tokens;
+            }
         }
         self.state.broadcast_stream_throttled(cid);
     }

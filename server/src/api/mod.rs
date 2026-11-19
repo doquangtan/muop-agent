@@ -31,6 +31,7 @@ pub fn router() -> Router<AppState> {
         .route("/api/ping", get(meta::handle_ping))
         .route("/api/chat/send", post(chat::handle_chat_send))
         .route("/api/chat/stop", post(chat::handle_chat_stop))
+        .route("/api/chat/attachment", get(chat::handle_chat_attachment))
         .route(
             "/api/chat/retry/cancel",
             post(chat::handle_chat_retry_cancel),

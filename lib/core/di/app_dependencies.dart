@@ -11,6 +11,8 @@ import 'package:muop_agent/features/lsp/data/lsp_repository_impl.dart';
 import 'package:muop_agent/features/lsp/domain/lsp_repository.dart';
 import 'package:muop_agent/features/projects/data/projects_repository_impl.dart';
 import 'package:muop_agent/features/projects/domain/projects_repository.dart';
+import 'package:muop_agent/features/screen/data/screen_repository_impl.dart';
+import 'package:muop_agent/features/screen/domain/screen_repository.dart';
 import 'package:muop_agent/features/server_files/data/server_files_repository_impl.dart';
 import 'package:muop_agent/features/server_files/domain/server_files_repository.dart';
 import 'package:muop_agent/features/sessions/data/session_repository_impl.dart';
@@ -37,4 +39,5 @@ class AppDependencies {
   static final SshRepository ssh = SshRepositoryImpl(socket);
   static final DockerRepository docker = DockerRepositoryImpl(socket);
   static final LspRepository lsp = LspRepositoryImpl();
+  static final ScreenRepository screen = ScreenRepositoryImpl(socket);
 }

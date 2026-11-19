@@ -65,30 +65,37 @@ extension _CanvasExtBlocks on _ChatCanvasViewState {
                       text: promptContent,
                       style: textStyle,
                     );
+                    final textDirection = Directionality.of(context);
                     final textPainter = TextPainter(
                       text: textSpan,
                       maxLines: 5,
-                      textDirection: Directionality.of(context),
+                      textDirection: textDirection,
                     )..layout(maxWidth: boxConstraints.maxWidth);
-
                     final exceedsFiveLines = textPainter.didExceedMaxLines;
+
+                    // Đo toàn bộ nội dung (không giới hạn dòng) để biết số dòng ẩn và lấy 5 dòng cuối
+                    final fullPainter = TextPainter(
+                      text: textSpan,
+                      textDirection: textDirection,
+                    )..layout(maxWidth: boxConstraints.maxWidth);
+                    final totalLines = fullPainter.computeLineMetrics().length;
+                    final hiddenPromptLines = exceedsFiveLines
+                        ? math.max(0, totalLines - 5)
+                        : 0;
+                    final collapsedPrompt = exceedsFiveLines
+                        ? textFromVisualLine(
+                            fullPainter,
+                            promptContent,
+                            hiddenPromptLines,
+                          )
+                        : promptContent;
 
                     return Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       mainAxisSize: MainAxisSize.min,
                       children: [
-                        Text(
-                          promptContent,
-                          maxLines: (exceedsFiveLines && !isExpanded)
-                              ? 5
-                              : null,
-                          overflow: (exceedsFiveLines && !isExpanded)
-                              ? TextOverflow.ellipsis
-                              : TextOverflow.visible,
-                          style: textStyle,
-                        ),
+                        // Nút xem toàn bộ nằm trên cùng, căn phải
                         if (exceedsFiveLines) ...[
-                          const SizedBox(height: 6),
                           Align(
                             alignment: Alignment.centerRight,
                             child: InkWell(
@@ -111,7 +118,9 @@ extension _CanvasExtBlocks on _ChatCanvasViewState {
                                   mainAxisSize: MainAxisSize.min,
                                   children: [
                                     Text(
-                                      isExpanded ? 'Thu gọn' : '... More',
+                                      isExpanded
+                                          ? 'Thu gọn'
+                                          : 'Xem toàn bộ ($hiddenPromptLines dòng ẩn)',
                                       style: TextStyle(
                                         fontSize: 12,
                                         fontWeight: FontWeight.w600,
@@ -121,8 +130,8 @@ extension _CanvasExtBlocks on _ChatCanvasViewState {
                                     const SizedBox(width: 2),
                                     Icon(
                                       isExpanded
-                                          ? Icons.keyboard_arrow_up_rounded
-                                          : Icons.keyboard_arrow_down_rounded,
+                                          ? Icons.unfold_less_rounded
+                                          : Icons.unfold_more_rounded,
                                       size: 16,
                                       color: colorScheme.primary,
                                     ),
@@ -131,7 +140,46 @@ extension _CanvasExtBlocks on _ChatCanvasViewState {
                               ),
                             ),
                           ),
+                          const SizedBox(height: 4),
                         ],
+                        if (userStep.imageUrls.isNotEmpty) ...[
+                          Align(
+                            alignment: Alignment.centerRight,
+                            child: _UserAttachmentThumbs(
+                              urls: userStep.imageUrls,
+                              baseUrl: widget.serverBaseUrl,
+                            ),
+                          ),
+                          const SizedBox(height: 8),
+                        ] else if (userStep.imageCount > 0) ...[
+                          Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Icon(
+                                Icons.image_outlined,
+                                size: 14,
+                                color: colorScheme.onSurfaceVariant,
+                              ),
+                              const SizedBox(width: 4),
+                              Text(
+                                '${userStep.imageCount} ảnh đính kèm',
+                                style: TextStyle(
+                                  fontSize: 12,
+                                  fontWeight: FontWeight.w600,
+                                  color: colorScheme.onSurfaceVariant,
+                                ),
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 6),
+                        ],
+                        // Thu gọn: hiện 5 dòng cuối; mở rộng: toàn bộ nội dung
+                        Text(
+                          (isExpanded || !exceedsFiveLines)
+                              ? promptContent
+                              : collapsedPrompt,
+                          style: textStyle,
+                        ),
                       ],
                     );
                   },
@@ -337,7 +385,7 @@ extension _CanvasExtBlocks on _ChatCanvasViewState {
             _buildRunningStatusRow(
               colorScheme,
               textTheme,
-              lastStep?.vietnameseTitle ?? 'Đang xử lý...',
+              _liveRunningTitle(stream, lastStep?.vietnameseTitle),
             ),
           if (stream.error.isNotEmpty) ...[
             const SizedBox(height: 8),
@@ -389,6 +437,18 @@ extension _CanvasExtBlocks on _ChatCanvasViewState {
   }
 
   /// Dòng trạng thái khi lượt đang chạy: chỉ có spinner nhỏ và tiêu đề, không có khung
+  /// Tiêu đề dòng đang chạy. Khi đang ở block thinking và CLI báo số token suy nghĩ
+  /// (Claude 5.x không gửi chữ thinking) thì hiện số token thay cho tên bước cuối.
+  String _liveRunningTitle(ChatTurnStreamState stream, String? lastStepTitle) {
+    if (stream.activeStepType == 'thinking' && stream.thinkingTokens > 0) {
+      final tokens = _ChatCanvasViewState._formatTokensShort(
+        stream.thinkingTokens,
+      );
+      return 'Đang suy nghĩ… ~$tokens token';
+    }
+    return lastStepTitle ?? 'Đang xử lý...';
+  }
+
   Widget _buildRunningStatusRow(
     ColorScheme colorScheme,
     TextTheme textTheme,
@@ -485,22 +545,6 @@ extension _CanvasExtBlocks on _ChatCanvasViewState {
       colorScheme: colorScheme,
       isMobile: isMobile,
       children: [
-        if (responseText.isNotEmpty)
-          _AiResponseTypewriter(
-            text: responseText,
-            builder: (ctx, visibleText) => _buildResponseSegmentsColumn(
-              ctx,
-              canCollapse && !isExpanded
-                  ? _lastLinesOf(
-                      visibleText,
-                      _ChatCanvasViewState._collapsedTailLines,
-                    )
-                  : visibleText.trimRight(),
-              turnIndex: turn.turnIndex,
-              isExpanded: isExpanded,
-              isMobile: isMobile,
-            ),
-          ),
         if (canCollapse)
           Align(
             alignment: Alignment.centerLeft,
@@ -528,12 +572,29 @@ extension _CanvasExtBlocks on _ChatCanvasViewState {
               ),
             ),
           ),
+        if (canCollapse) const SizedBox(height: 4),
+        if (responseText.isNotEmpty)
+          _AiResponseTypewriter(
+            text: responseText,
+            builder: (ctx, visibleText) => _buildResponseSegmentsColumn(
+              ctx,
+              canCollapse && !isExpanded
+                  ? _lastLinesOf(
+                      visibleText,
+                      _ChatCanvasViewState._collapsedTailLines,
+                    )
+                  : visibleText.trimRight(),
+              turnIndex: turn.turnIndex,
+              isExpanded: isExpanded,
+              isMobile: isMobile,
+            ),
+          ),
         if (liveStream != null) ...[
           const SizedBox(height: 8),
           _buildRunningStatusRow(
             colorScheme,
             textTheme,
-            lastStep?.vietnameseTitle ?? 'Đang xử lý...',
+            _liveRunningTitle(liveStream, lastStep?.vietnameseTitle),
           ),
         ] else if (isLastTurn && isSessionRunning && responseText.isEmpty)
           _buildRunningStatusRow(
@@ -613,6 +674,73 @@ extension _CanvasExtBlocks on _ChatCanvasViewState {
       ),
       label: Text('$count tệp thay đổi'),
       onPressed: () => _showFilesChangedDialog(context, turn),
+    );
+  }
+}
+
+/// Ảnh đính kèm của một tin nhắn người dùng trong lịch sử. Bấm vào một ảnh để xem lớn.
+class _UserAttachmentThumbs extends StatelessWidget {
+  const _UserAttachmentThumbs({required this.urls, required this.baseUrl});
+
+  final List<String> urls;
+  final String baseUrl;
+
+  static const double _size = 120;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = context.scheme;
+    return Wrap(
+      alignment: WrapAlignment.end,
+      spacing: 6,
+      runSpacing: 6,
+      children: [
+        for (final url in urls)
+          GestureDetector(
+            onTap: () => _showFullImage(context, url),
+            child: ClipRRect(
+              borderRadius: BorderRadius.circular(10),
+              child: Image.network(
+                '$baseUrl$url',
+                width: _size,
+                height: _size,
+                fit: BoxFit.cover,
+                cacheWidth: 240,
+                loadingBuilder: (context, child, progress) {
+                  if (progress == null) return child;
+                  return SizedBox(
+                    width: _size,
+                    height: _size,
+                    child: const Center(
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    ),
+                  );
+                },
+                errorBuilder: (context, error, stack) => Container(
+                  width: _size,
+                  height: _size,
+                  alignment: Alignment.center,
+                  color: scheme.surfaceContainerHighest,
+                  child: Icon(
+                    Icons.broken_image_outlined,
+                    color: scheme.onSurfaceVariant,
+                  ),
+                ),
+              ),
+            ),
+          ),
+      ],
+    );
+  }
+
+  void _showFullImage(BuildContext context, String url) {
+    showDialog<void>(
+      context: context,
+      builder: (dialogContext) => Dialog(
+        child: InteractiveViewer(
+          child: Image.network('$baseUrl$url', fit: BoxFit.contain),
+        ),
+      ),
     );
   }
 }

@@ -99,6 +99,7 @@ mod unfinished_turn_tests {
                 started_at: String::new(),
                 error: String::new(),
                 thinking_text: String::new(),
+                thinking_tokens: 0,
             },
         );
         m

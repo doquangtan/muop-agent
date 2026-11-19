@@ -1,8 +1,14 @@
+use crate::screen::ScreenManager;
 use ksni::menu::*;
 use ksni::{Icon, MenuItem, ToolTip, Tray, TrayMethods};
-use std::sync::LazyLock;
+use std::sync::{Arc, LazyLock, OnceLock};
 
-pub struct MuopAgentTray;
+/// Handle của tray đang chạy, để làm mới menu sau khi trạng thái quay màn hình đổi
+static TRAY_HANDLE: OnceLock<ksni::Handle<MuopAgentTray>> = OnceLock::new();
+
+pub struct MuopAgentTray {
+    pub screen: Arc<ScreenManager>,
+}
 
 impl Tray for MuopAgentTray {
     fn id(&self) -> String {
@@ -94,6 +100,14 @@ impl Tray for MuopAgentTray {
                 ..Default::default()
             }
             .into(),
+            CheckmarkItem {
+                label: screen_label(&self.screen.status()),
+                checked: self.screen.is_active(),
+                enabled: true,
+                activate: Box::new(|this: &mut Self| this.screen.toggle()),
+                ..Default::default()
+            }
+            .into(),
             StandardItem {
                 label: "📂 Mở Thư mục muop-agent".to_string(),
                 icon_name: "folder".to_string(),
@@ -133,6 +147,30 @@ impl Tray for MuopAgentTray {
     }
 }
 
+/// Nhãn checkbox quay màn hình: hiện trạng thái đang chờ xác nhận hoặc lỗi gần nhất
+fn screen_label(status: &crate::screen::ScreenStatus) -> String {
+    if status.starting {
+        "📺 Quay màn hình — đang chờ xác nhận…".to_string()
+    } else if status.streaming && !status.rtsp_url.is_empty() {
+        // Đang phát: hiện địa chỉ để mở bằng VLC/mpv/ffplay
+        format!("📺 Đang phát: {}", status.rtsp_url)
+    } else if !status.error.is_empty() {
+        format!("📺 Stream màn hình (lỗi: {})", status.error)
+    } else {
+        "📺 Stream màn hình (RTSP 720p)".to_string()
+    }
+}
+
+/// Làm mới menu tray (checkbox) sau khi trạng thái đổi. Gọi từ trong runtime Tokio.
+pub fn refresh() {
+    if let Some(handle) = TRAY_HANDLE.get() {
+        let handle = handle.clone();
+        tokio::spawn(async move {
+            handle.update(|_| {}).await;
+        });
+    }
+}
+
 fn launch_linux_app() {
     let app_path =
         "/home/john/Documents/muop-ecosystem/muop-agent/build/linux/x64/release/bundle/muop_agent";
@@ -155,7 +193,7 @@ const TRAY_RETRY_INTERVAL: tokio::time::Duration = tokio::time::Duration::from_s
 const TRAY_RETRY_MIN: tokio::time::Duration = tokio::time::Duration::from_secs(5);
 const TRAY_RETRY_MAX: tokio::time::Duration = tokio::time::Duration::from_secs(30);
 
-pub fn spawn_system_tray() {
+pub fn spawn_system_tray(screen: Arc<ScreenManager>) {
     tokio::spawn(async move {
         tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
         let mut delay = TRAY_RETRY_MIN;
@@ -163,9 +201,16 @@ pub fn spawn_system_tray() {
         loop {
             // assume_sni_available: nếu watcher chưa có, ksni vẫn giữ service và tự đăng ký lại
             // khi org.kde.StatusNotifierWatcher xuất hiện (khi đăng nhập), thay vì trả lỗi.
-            match MuopAgentTray.assume_sni_available(true).spawn().await {
+            let tray = MuopAgentTray {
+                screen: screen.clone(),
+            };
+            match tray.assume_sni_available(true).spawn().await {
                 Ok(handle) => {
                     tracing::info!("✅ System Tray Icon đã khởi chạy trên khay hệ thống Linux");
+                    let _ = TRAY_HANDLE.set(handle.clone());
+                    // Tray đã đăng ký: tự bật stream nếu lần trước đã bật và đã được cấp quyền
+                    let autostart_screen = screen.clone();
+                    tokio::spawn(async move { autostart_screen.autostart().await });
                     // Handle phải sống suốt vòng đời server, nếu không ksni dừng service
                     let _keep_alive = handle;
                     std::future::pending::<()>().await;

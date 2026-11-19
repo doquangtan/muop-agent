@@ -1,4 +1,6 @@
+pub mod attachments;
 pub mod context_window;
+pub mod quota_stall;
 pub mod recovery;
 pub mod retry;
 

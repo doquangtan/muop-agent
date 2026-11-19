@@ -79,6 +79,7 @@ pub async fn handle_plan_action(
             conversation_id: conv_id.to_string(),
             agent_name: "Coordinator".to_string(),
             model: req.model.clone(),
+            images: Vec::new(),
         };
 
         let result = chat::start_chat_turn(state.clone(), send_req).await;
@@ -114,6 +115,7 @@ pub async fn handle_plan_action(
             conversation_id: conv_id.to_string(),
             agent_name: "Coordinator".to_string(),
             model: req.model.clone(),
+            images: Vec::new(),
         };
 
         let result = chat::start_chat_turn(state.clone(), send_req).await;

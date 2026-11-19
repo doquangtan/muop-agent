@@ -44,6 +44,7 @@ class ChatRepositoryImpl implements ChatRepository {
     String? conversationId,
     String? agentName,
     String? model,
+    List<ChatImageAttachment> images = const [],
   }) async {
     final baseUrl = normalizeBaseUrl(address);
     final client = HttpClient()
@@ -59,9 +60,12 @@ class ChatRepositoryImpl implements ChatRepository {
           'conversationId': conversationId ?? '',
           'agentName': agentName ?? '',
           'model': model ?? '',
+          'images': images.map((image) => image.toJson()).toList(),
         }),
       );
-      final resp = await req.close().timeout(const Duration(seconds: 15));
+      // Ảnh base64 làm body lớn hơn nhiều, nên cho thời gian gửi lâu hơn khi có ảnh
+      final sendTimeout = Duration(seconds: images.isEmpty ? 15 : 90);
+      final resp = await req.close().timeout(sendTimeout);
       final body = await resp.transform(utf8.decoder).join();
       final map = jsonDecode(body) as Map<String, dynamic>;
       if (resp.statusCode == 200 && map['ok'] == true) {

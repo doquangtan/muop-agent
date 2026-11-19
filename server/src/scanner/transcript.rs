@@ -102,6 +102,19 @@ pub(super) fn parse_single_agent_step(
     let (vn_title, vn_detail) =
         describe_step_vietnamese(&step_type, &tool_calls, &content, &thinking);
     let step_agent = classify_step_agent(&step_type, &tool_calls, &content, &thinking);
+    // Agy ghi khối ảnh đính kèm vào prompt: tách ra để hiển thị chữ sạch và đếm số ảnh
+    let (user_content, image_paths) = if step_type == "USER_INPUT" {
+        crate::chat::attachments::split_agy_attachments(&clean_user_request_envelope(
+            &step_type, &content,
+        ))
+    } else {
+        (clean_user_request_envelope(&step_type, &content), Vec::new())
+    };
+    let image_count = image_paths.len();
+    let image_urls = image_paths
+        .iter()
+        .map(|p| crate::chat::attachments::agy_attachment_url(p))
+        .collect();
 
     AgentStep {
         step_index,
@@ -109,7 +122,9 @@ pub(super) fn parse_single_agent_step(
         step_type: step_type.clone(),
         status,
         created_at: step_time.to_rfc3339(),
-        content: clean_user_request_envelope(&step_type, &content),
+        content: user_content,
+        image_count,
+        image_urls,
         thinking,
         tool_calls,
         input_tokens: in_tok,

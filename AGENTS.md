@@ -426,6 +426,17 @@ lsof -i :8787
 - Hạn chế: lượt muop trước khi có bảng này không có trong tập, nên không được gắn `interrupted`.
 - Đã kiểm chứng: kill server + tiến trình con giữa lượt → `interrupted` đúng; các session tương tác vẫn `completed` (40/40 sau khi sửa).
 
+### 8.6k Ảnh đính kèm trong chat (`server/src/chat/attachments.rs`)
+- Client gửi ảnh base64 trong `images: [{name, mimeType, dataBase64}]` của `POST /api/chat/send` (đi qua REST, không qua socket). Tối đa 6 ảnh, mỗi ảnh tối đa 20MB trước khi thu nhỏ. Body REST và gói socket được nâng lên 64MB (`MAX_REQUEST_BODY_BYTES` trong `main.rs`); mặc định của axum (2MB) và socket.io (100KB) đều quá nhỏ cho ảnh.
+- Server nhận diện định dạng từ nội dung thật (PNG/JPEG/WebP), thu nhỏ cạnh dài về 1568px và chuyển WebP hoặc ảnh có alpha sang PNG/JPEG, rồi lưu vào `~/.local/share/muop-agent/uploads/`. Việc xử lý ảnh chạy trong `spawn_blocking`.
+- **Claude CLI**: `claude -p --input-format stream-json` và ghi một dòng JSON có block `image` (base64) rồi đóng stdin. Đã kiểm chứng: model thấy đúng ảnh và `--resume` vẫn giữ ngữ cảnh. Khi không có ảnh, giữ nguyên đường `-p <prompt>`.
+- **agy**: không có cờ ảnh (đã kiểm tra `agy --help`). Prompt được thêm khối `[Ảnh đính kèm]` liệt kê đường dẫn file, agent mở bằng tool `read_file`. Đã kiểm chứng: model trả lời đúng màu của ảnh. Scanner tách khối này khỏi nội dung hiển thị (`split_agy_attachments`) và đếm vào `imageCount`.
+- Chỉ có ảnh, không có chữ: server dùng câu mặc định "Hãy mô tả các ảnh đính kèm." để lượt chat có nội dung trong lịch sử.
+- `AgentStep.imageCount` và `AgentStep.imageUrls` (bước `USER_INPUT`) để bong bóng user hiện thumbnail khi mở lại conversation (bấm để xem lớn). Lấy ảnh qua `GET /api/chat/attachment`: agy dùng `?path=<file>` (chỉ đọc trong thư mục uploads); Claude dùng `?cid=<session>&uuid=<dòng user>&i=<n>` và đọc lại block base64 từ transcript. Không có `imageUrls` (lịch sử cũ) thì bong bóng chỉ hiện "N ảnh đính kèm". `ChatCanvasView.serverBaseUrl` cung cấp địa chỉ server để tải ảnh.
+- Flutter: `file_picker` (13.x) chọn ảnh ở composer; ảnh chờ gửi lưu theo nháp của từng conversation (`_draftImages`). Gửi thất bại thì ảnh chờ đã bị xóa khỏi composer, giống cách xử lý với chữ.
+- **Test API**: `python3 server/scripts/test_chat_images.py [--only claude|agy]` (cần server đang chạy và Pillow). Mỗi lượt là lượt chat thật, tốn quota model nhỏ. Mặc định dùng `claude-haiku-5-5` và `agy:gemini-4-hydrogen-low`.
+- Lưu ý khi test agy: model `gemini-4-argon-low` đã hết quota (reset sau ~131h), lượt chat thất bại và `rate_retry` xếp lịch tự gửi lại. Hủy bằng `POST /api/chat/retry/cancel`. Chọn model khác khi cần test.
+
 ### 8.7. Skill liên quan
 - `.claude/skills/design/SKILL.md`: quyết định thiết kế và vấn đề đã gặp của app này.
 - `.claude/skills/design-uiux/SKILL.md`: nguyên tắc UI/UX khi chỉnh sửa giao diện Flutter.
