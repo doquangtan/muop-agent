@@ -22,7 +22,9 @@ pub async fn handle_chat_attachment(Query(q): Query<HashMap<String, String>>) ->
         let cid = q.get("cid").map(String::as_str).unwrap_or("");
         let uuid = q.get("uuid").map(String::as_str).unwrap_or("");
         let valid = |s: &str| {
-            !s.is_empty() && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+            !s.is_empty()
+                && s.chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
         };
         if !valid(cid) || !valid(uuid) {
             return Err("thiếu hoặc sai conversation/uuid".to_string());

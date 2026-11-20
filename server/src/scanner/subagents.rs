@@ -58,6 +58,167 @@ pub(super) fn classify_step_agent(
     "Coordinator".to_string()
 }
 
+/// Quá khoảng này không có hoạt động nào trong transcript thì coi như không còn đang chạy
+/// (tiến trình có thể đã chết). Lệnh chạy lâu có thể im lặng nhiều phút, nên ngưỡng khá rộng.
+const CHILD_STALE_AFTER: chrono::Duration = chrono::Duration::minutes(30);
+
+/// Subagent còn đang thực thi hay không, suy ra từ cấu trúc bước trong transcript.
+/// Transcript của agy chỉ được ghi khi bước xong, nên:
+/// - bước cuối là gọi tool (chưa có kết quả), hoặc là kết quả/system (model chưa trả lời): đang chạy;
+/// - bước cuối là câu trả lời không gọi tool: đã xong, trừ khi còn một công cụ chạy nền
+///   (bước `RUNNING` không có `SYSTEM_MESSAGE` báo hoàn tất theo sau; bước `RUNNING` không tự đổi thành `DONE` trong file).
+/// Không dùng ngưỡng vài giây như trạng thái session, vì nó làm subagent "tắt" khi chạy lệnh lâu.
+fn child_is_active(child: &ParsedTranscript) -> bool {
+    if Utc::now() - child.updated_at > CHILD_STALE_AFTER {
+        return false;
+    }
+    let steps = &child.steps;
+    let Some(last) = steps.last() else {
+        return false;
+    };
+    if last.step_type != "PLANNER_RESPONSE" || !last.tool_calls.is_empty() {
+        return true;
+    }
+    match steps.iter().rposition(|s| s.status == "RUNNING") {
+        Some(idx) => !steps[idx + 1..]
+            .iter()
+            .any(|s| s.step_type == "SYSTEM_MESSAGE"),
+        None => false,
+    }
+}
+
+/// Trạng thái hiển thị của một subagent từ transcript con
+fn child_status(child: &ParsedTranscript) -> String {
+    if child_is_active(child) {
+        "running".to_string()
+    } else {
+        child.status.clone()
+    }
+}
+
+/// Số tầng subagent lồng nhau tối đa khi dựng lane (agent con gọi agent cháu...)
+const MAX_SPAWN_DEPTH: usize = 4;
+
+/// Thêm lane cho các subagent mà `parent` đã gọi (`invoke_subagent`). Với subagent có transcript,
+/// đệ quy để thêm các agent cháu do nó gọi; `parentId` của lane là id lane của agent đã gọi.
+fn push_spawned_lanes(
+    lanes: &mut Vec<SubagentLane>,
+    parent: &ParsedTranscript,
+    parent_lane_id: &str,
+    all_parsed: &HashMap<String, ParsedTranscript>,
+    is_session_actually_running: bool,
+    depth: usize,
+) {
+    for spawned in &parent.spawned_subagents {
+        let child_transcript = if !spawned.id.is_empty() {
+            all_parsed.get(&spawned.id)
+        } else {
+            None
+        };
+        let mut child_steps = child_transcript
+            .map(|c| c.steps.clone())
+            .unwrap_or_else(|| {
+                parent
+                    .steps
+                    .iter()
+                    .filter(|s| s.agent_name == spawned.name)
+                    .cloned()
+                    .collect()
+            });
+        if child_steps.len() > 25 {
+            child_steps = child_steps[child_steps.len() - 25..].to_vec();
+        }
+        let last_child_step = child_steps.last();
+
+        let status = if !is_session_actually_running {
+            let st = child_transcript
+                .map(child_status)
+                .unwrap_or_else(|| spawned.status.clone());
+            if st == "running" {
+                "interrupted".to_string()
+            } else {
+                st
+            }
+        } else {
+            child_transcript
+                .map(child_status)
+                .unwrap_or_else(|| spawned.status.clone())
+        };
+
+        let mut modified_files = Vec::new();
+        if let Some(ct) = child_transcript {
+            for f in &ct.files_touched {
+                if (f.action == "WRITE" || f.action == "EDIT") && !modified_files.contains(&f.path)
+                {
+                    modified_files.push(f.path.clone());
+                }
+            }
+        }
+
+        let progress = if status == "completed" {
+            1.0
+        } else if !child_steps.is_empty() {
+            ((child_steps.len() as f64) / ((child_steps.len() + 4) as f64)).clamp(0.25, 0.9)
+        } else {
+            0.15
+        };
+
+        let current_tool_name = last_child_step
+            .and_then(|s| s.tool_calls.first().map(|t| t.name.clone()))
+            .unwrap_or_else(|| spawned.tool_name.clone());
+
+        let child_lane_id = if !spawned.id.is_empty() {
+            spawned.id.clone()
+        } else {
+            spawned.name.clone()
+        };
+        lanes.push(SubagentLane {
+            id: if !spawned.id.is_empty() {
+                spawned.id.clone()
+            } else {
+                spawned.name.clone()
+            },
+            name: spawned.name.clone(),
+            role: spawned.role.clone(),
+            target_repo: infer_target_repo(&spawned.name, &spawned.role, &spawned.prompt),
+            status,
+            current_phase: last_child_step
+                .map(|s| s.phase.clone())
+                .unwrap_or_else(|| parent.current_phase.clone()),
+            current_step_index: last_child_step
+                .map(|s| s.step_index)
+                .unwrap_or(spawned.step_index),
+            current_action_text: last_child_step
+                .map(|s| s.vietnamese_title.clone())
+                .unwrap_or_else(|| spawned.last_action.clone()),
+            current_tool_name,
+            prompt_brief: spawned.prompt.clone(),
+            steps: child_steps,
+            progress,
+            files_modified: modified_files,
+            last_updated: Some(
+                child_transcript
+                    .map(|c| c.updated_at.to_rfc3339())
+                    .unwrap_or_else(|| parent.updated_at.to_rfc3339()),
+            ),
+            parent_id: parent_lane_id.to_string(),
+            spawned: true,
+        });
+        if depth < MAX_SPAWN_DEPTH {
+            if let Some(ct) = child_transcript {
+                push_spawned_lanes(
+                    lanes,
+                    ct,
+                    &child_lane_id,
+                    all_parsed,
+                    is_session_actually_running,
+                    depth + 1,
+                );
+            }
+        }
+    }
+}
+
 pub(super) fn build_subagent_lanes(
     parent: &ParsedTranscript,
     all_parsed: &HashMap<String, ParsedTranscript>,
@@ -120,99 +281,22 @@ pub(super) fn build_subagent_lanes(
         progress: if is_session_running { 0.6 } else { 1.0 },
         files_modified: Vec::new(),
         last_updated: Some(parent.updated_at.to_rfc3339()),
-    });
+    parent_id: String::new(),
+        spawned: true,
+});
     added_names.insert("Coordinator".to_string());
 
-    // 1. Spawned Subagents (via invoke_subagent / define_subagent)
-    for spawned in &parent.spawned_subagents {
-        let child_transcript = if !spawned.id.is_empty() {
-            all_parsed.get(&spawned.id)
-        } else {
-            None
-        };
-        let mut child_steps = child_transcript
-            .map(|c| c.steps.clone())
-            .unwrap_or_else(|| {
-                parent
-                    .steps
-                    .iter()
-                    .filter(|s| s.agent_name == spawned.name)
-                    .cloned()
-                    .collect()
-            });
-        if child_steps.len() > 25 {
-            child_steps = child_steps[child_steps.len() - 25..].to_vec();
-        }
-        let last_child_step = child_steps.last();
-
-        let status = if !is_session_actually_running {
-            let st = child_transcript
-                .map(|c| c.status.as_str())
-                .unwrap_or_else(|| spawned.status.as_str());
-            if st == "running" {
-                "interrupted".to_string()
-            } else {
-                st.to_string()
-            }
-        } else {
-            child_transcript
-                .map(|c| c.status.clone())
-                .unwrap_or_else(|| spawned.status.clone())
-        };
-
-        let mut modified_files = Vec::new();
-        if let Some(ct) = child_transcript {
-            for f in &ct.files_touched {
-                if (f.action == "WRITE" || f.action == "EDIT") && !modified_files.contains(&f.path)
-                {
-                    modified_files.push(f.path.clone());
-                }
-            }
-        }
-
-        let progress = if status == "completed" {
-            1.0
-        } else if !child_steps.is_empty() {
-            ((child_steps.len() as f64) / ((child_steps.len() + 4) as f64)).clamp(0.25, 0.9)
-        } else {
-            0.15
-        };
-
-        let current_tool_name = last_child_step
-            .and_then(|s| s.tool_calls.first().map(|t| t.name.clone()))
-            .unwrap_or_else(|| spawned.tool_name.clone());
-
-        lanes.push(SubagentLane {
-            id: if !spawned.id.is_empty() {
-                spawned.id.clone()
-            } else {
-                spawned.name.clone()
-            },
-            name: spawned.name.clone(),
-            role: spawned.role.clone(),
-            target_repo: infer_target_repo(&spawned.name, &spawned.role, &spawned.prompt),
-            status,
-            current_phase: last_child_step
-                .map(|s| s.phase.clone())
-                .unwrap_or_else(|| parent.current_phase.clone()),
-            current_step_index: last_child_step
-                .map(|s| s.step_index)
-                .unwrap_or(spawned.step_index),
-            current_action_text: last_child_step
-                .map(|s| s.vietnamese_title.clone())
-                .unwrap_or_else(|| spawned.last_action.clone()),
-            current_tool_name,
-            prompt_brief: spawned.prompt.clone(),
-            steps: child_steps,
-            progress,
-            files_modified: modified_files,
-            last_updated: Some(
-                child_transcript
-                    .map(|c| c.updated_at.to_rfc3339())
-                    .unwrap_or_else(|| parent.updated_at.to_rfc3339()),
-            ),
-        });
-        added_names.insert(spawned.name.clone());
+    // 1. Spawned Subagents (via invoke_subagent / define_subagent), đệ quy xuống agent cháu
+    push_spawned_lanes(
+        &mut lanes,
+        parent,
+        "Coordinator",
+        all_parsed,
+        is_session_running,
+        1,
+    );
+    for lane in &lanes {
+        added_names.insert(lane.name.clone());
     }
 
     // 2. Dual-Repo Parallel Agents (Chỉ nạp nếu là dự án ERP)
@@ -370,6 +454,8 @@ pub(super) fn build_subagent_lanes(
                     progress,
                     files_modified: related_files,
                     last_updated: Some(parent.updated_at.to_rfc3339()),
+                    parent_id: "Coordinator".to_string(),
+                    spawned: false,
                 });
                 added_names.insert(name.to_string());
             }
@@ -418,6 +504,8 @@ pub(super) fn build_subagent_lanes(
                                     progress: 0.0,
                                     files_modified: Vec::new(),
                                     last_updated: Some(parent.updated_at.to_rfc3339()),
+                                    parent_id: "Coordinator".to_string(),
+                                    spawned: false,
                                 });
                                 added_names.insert(name);
                             }
@@ -450,4 +538,37 @@ pub(super) fn infer_target_repo(name: &str, role: &str, prompt: &str) -> String 
         return "muop-erp-server".to_string();
     }
     "muop-ecosystem".to_string()
+}
+
+/// Nạp transcript của mọi sub-agent (kể cả agent cháu) bắt đầu từ `roots` (id conversation con).
+/// Trả về map id -> transcript đã parse; bỏ qua id đã nạp để không lặp vô hạn khi dữ liệu có vòng.
+pub(super) fn load_subagent_transcripts(
+    brain_dir: &std::path::Path,
+    roots: Vec<String>,
+    db_meta_map: &HashMap<String, DbConversationMeta>,
+) -> HashMap<String, ParsedTranscript> {
+    const MAX_LOADED: usize = 300;
+    let mut loaded: HashMap<String, ParsedTranscript> = HashMap::new();
+    let mut pending = roots;
+    while let Some(sub_id) = pending.pop() {
+        if sub_id.is_empty() || loaded.contains_key(&sub_id) || loaded.len() >= MAX_LOADED {
+            continue;
+        }
+        let sub_path = brain_dir
+            .join(&sub_id)
+            .join(".system_generated/logs/transcript.jsonl");
+        let Ok(meta) = fs::metadata(&sub_path) else {
+            continue;
+        };
+        let modified: DateTime<Utc> = meta.modified().unwrap_or(SystemTime::UNIX_EPOCH).into();
+        if let Some(parsed) = parse_transcript_file(&sub_id, modified, db_meta_map.get(&sub_id)) {
+            for s in &parsed.spawned_subagents {
+                if !s.id.is_empty() {
+                    pending.push(s.id.clone());
+                }
+            }
+            loaded.insert(sub_id, parsed);
+        }
+    }
+    loaded
 }

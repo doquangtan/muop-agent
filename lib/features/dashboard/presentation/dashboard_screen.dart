@@ -20,7 +20,7 @@ import 'package:muop_agent/features/interactions/domain/interactions_repository.
 import 'package:muop_agent/features/interactions/presentation/ai_question_dialog.dart';
 import 'package:muop_agent/features/interactions/presentation/rate_retry_widgets.dart';
 import 'package:muop_agent/features/lsp/presentation/lsp_settings_screen.dart';
-import 'package:muop_agent/features/parallel_flow/presentation/parallel_agent_flow_screen.dart';
+import 'package:muop_agent/features/agent_map/presentation/agent_map_screen.dart';
 import 'package:muop_agent/features/projects/domain/project_entities.dart';
 import 'package:muop_agent/features/projects/domain/projects_repository.dart';
 import 'package:muop_agent/features/projects/presentation/project_git_history_sheet.dart';
@@ -1119,19 +1119,11 @@ class _DashboardScreenState extends State<DashboardScreen> {
     return page.hasMore && addedSteps;
   }
 
-  void _openParallelAgentFlowScreen() {
-    final active = _activeSession;
+  void _openAgentMapScreen() {
+    // Đọc session qua hàm để màn hình tự cập nhật khi snapshot đổi (subagent mới, trạng thái mới)
     Navigator.of(context).push(
       MaterialPageRoute(
-        builder: (_) => ParallelAgentFlowScreen(
-          session: active,
-          activeStream: _activeStreams[active?.id ?? ''],
-          serverAddress: _serverAddress,
-          onStopTurn: () {
-            if (active != null) _handleStopTurn();
-          },
-          onInspectFile: (path, gf) => _inspectFileChange(path, gf),
-        ),
+        builder: (_) => AgentMapScreen(sessionReader: () => _activeSession),
       ),
     );
   }
@@ -2260,7 +2252,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 onCancelPlan: _handleCancelPlan,
                 onLoadOlderHistory: _handleLoadOlderHistory,
                 onFetchClaudeExtensions: _handleFetchClaudeExtensions,
-                onOpenParallelFlow: _openParallelAgentFlowScreen,
+                onOpenAgentMap: _openAgentMapScreen,
                 onOpenCreateProject: () =>
                     _showCreateProjectDialog(context),
                 onGitPush: _handleGitPush,

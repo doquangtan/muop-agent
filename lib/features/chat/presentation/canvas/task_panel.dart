@@ -57,13 +57,6 @@ extension _CanvasExtTaskPanel on _ChatCanvasViewState {
     final int activeTaskCount =
         (isCoordinatorRunning ? 1 : 0) + runningSubagents.length;
 
-    final bool canShowParallelFlow =
-        session?.hasParallelFlow == true ||
-        ((session?.projectName == 'muop-erp-server' ||
-                session?.projectName == 'muop-erp-app') &&
-            session != null &&
-            session.subagentLanes.length > 1);
-
     // Khi không có tác vụ nào đang chạy và không có file changed:
     // Ẩn hoàn toàn panel tasks running
     if (activeTaskCount == 0 &&
@@ -150,33 +143,6 @@ extension _CanvasExtTaskPanel on _ChatCanvasViewState {
               ),
             ),
             const SizedBox(width: 8),
-            if (widget.onOpenParallelFlow != null && canShowParallelFlow) ...[
-              InkWell(
-                borderRadius: BorderRadius.circular(6),
-                onTap: widget.onOpenParallelFlow,
-                child: Container(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 8,
-                    vertical: 3,
-                  ),
-                  decoration: BoxDecoration(
-                    color: context.scheme.tertiary.withAlpha(35),
-                    borderRadius: BorderRadius.circular(6),
-                    border: Border.all(
-                      color: context.scheme.tertiary.withAlpha(120),
-                    ),
-                  ),
-                  child: Text(
-                    'Parallel Flow',
-                    style: TextStyle(
-                      fontSize: 10.5,
-                      fontWeight: FontWeight.w700,
-                      color: context.scheme.tertiary,
-                    ),
-                  ),
-                ),
-              ),
-            ],
           ],
         ),
       );
@@ -485,47 +451,6 @@ extension _CanvasExtTaskPanel on _ChatCanvasViewState {
                                 ),
                               ),
                             ],
-                          ],
-                        ),
-                      ),
-                    ),
-                    const SizedBox(width: 6),
-                  ],
-                  // Nút chuyển nhanh sang màn hình trực quan Luồng chạy Parallel Agent
-                  if (widget.onOpenParallelFlow != null &&
-                      canShowParallelFlow) ...[
-                    InkWell(
-                      borderRadius: BorderRadius.circular(6),
-                      onTap: widget.onOpenParallelFlow,
-                      child: Container(
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 6,
-                          vertical: 2,
-                        ),
-                        decoration: BoxDecoration(
-                          color: context.scheme.tertiary.withAlpha(35),
-                          borderRadius: BorderRadius.circular(6),
-                          border: Border.all(
-                            color: context.scheme.tertiary.withAlpha(120),
-                          ),
-                        ),
-                        child: Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            Icon(
-                              Icons.alt_route_rounded,
-                              size: 11,
-                              color: context.scheme.tertiary,
-                            ),
-                            const SizedBox(width: 3),
-                            Text(
-                              'Flow',
-                              style: textTheme.labelSmall?.copyWith(
-                                fontSize: 9.5,
-                                fontWeight: FontWeight.w800,
-                                color: context.scheme.tertiary,
-                              ),
-                            ),
                           ],
                         ),
                       ),
@@ -930,52 +855,6 @@ extension _CanvasExtTaskPanel on _ChatCanvasViewState {
                         fontSize: 11,
                       ),
                     ),
-
-                  if (widget.onOpenParallelFlow != null &&
-                      canShowParallelFlow) ...[
-                    const SizedBox(height: 8),
-                    InkWell(
-                      borderRadius: BorderRadius.circular(8),
-                      onTap: widget.onOpenParallelFlow,
-                      child: Container(
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 10,
-                          vertical: 6,
-                        ),
-                        decoration: BoxDecoration(
-                          color: context.scheme.tertiary.withAlpha(25),
-                          borderRadius: BorderRadius.circular(8),
-                          border: Border.all(
-                            color: context.scheme.tertiary.withAlpha(90),
-                          ),
-                        ),
-                        child: Row(
-                          mainAxisAlignment: MainAxisAlignment.center,
-                          children: [
-                            Icon(
-                              Icons.account_tree_outlined,
-                              size: 14,
-                              color: context.scheme.tertiary,
-                            ),
-                            const SizedBox(width: 6),
-                            Text(
-                              'Xem biểu đồ trực quan Luồng chạy Parallel Agent (Swimlanes & Checklist)',
-                              style: textTheme.labelSmall?.copyWith(
-                                fontWeight: FontWeight.w700,
-                                color: context.scheme.tertiary,
-                              ),
-                            ),
-                            const SizedBox(width: 4),
-                            Icon(
-                              Icons.arrow_forward_rounded,
-                              size: 13,
-                              color: context.scheme.tertiary,
-                            ),
-                          ],
-                        ),
-                      ),
-                    ),
-                  ],
                 ],
               ),
             ),

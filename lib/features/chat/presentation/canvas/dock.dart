@@ -124,6 +124,12 @@ extension _CanvasExtDock on _ChatCanvasViewState {
                 const SizedBox(height: 5),
               ],
 
+              // [2.5] HÀNG CÔNG CỤ (Agent map, SFTP, Git Tree): luôn hiện, kể cả khi khung chat ẩn
+              Padding(
+                padding: const EdgeInsets.only(bottom: 6),
+                child: _buildComposerToolRow(context, isMobile),
+              ),
+
               // [3] PHẦN DƯỚI: KHUNG NHẬP CHAT (ẩn khi đang chạy, bấm để hiện)
               if (isTurnRunning && !_composerRevealed)
                 _buildHiddenComposerBar(context)

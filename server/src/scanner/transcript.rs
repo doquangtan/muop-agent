@@ -108,7 +108,10 @@ pub(super) fn parse_single_agent_step(
             &step_type, &content,
         ))
     } else {
-        (clean_user_request_envelope(&step_type, &content), Vec::new())
+        (
+            clean_user_request_envelope(&step_type, &content),
+            Vec::new(),
+        )
     };
     let image_count = image_paths.len();
     let image_urls = image_paths
@@ -215,7 +218,14 @@ pub(super) fn parse_transcript_file(
             Err(_) => file_modified,
         };
         if step.step_type == "PLANNER_RESPONSE" {
-            step.model = agy_turn_model_at(&agy_turns, step_time);
+            // agy ghi model ngay trong từng bước (kể cả subagent, vốn không có bản ghi DB theo lượt).
+            // Chỉ dùng bản ghi DB khi bước không có model.
+            step.model = map
+                .get("model")
+                .and_then(|v| v.as_str())
+                .filter(|m| !m.is_empty())
+                .map(String::from)
+                .unwrap_or_else(|| agy_turn_model_at(&agy_turns, step_time));
         }
 
         if created_at.is_none() {

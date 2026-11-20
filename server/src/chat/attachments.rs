@@ -72,16 +72,10 @@ pub fn prepare_images(images: &[ChatImage]) -> Result<Vec<PreparedImage>, String
             ));
         }
         let (bytes, mime, ext) = normalize(&raw).map_err(|e| format!("{label}: {e}"))?;
-        let stamp = chrono::Utc::now()
-            .timestamp_nanos_opt()
-            .unwrap_or_default();
+        let stamp = chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default();
         let path = dir.join(format!("{stamp}-{i}.{ext}"));
         std::fs::write(&path, &bytes).map_err(|e| format!("{label}: không ghi được file: {e}"))?;
-        out.push(PreparedImage {
-            mime,
-            bytes,
-            path,
-        });
+        out.push(PreparedImage { mime, bytes, path });
     }
     Ok(out)
 }
@@ -89,7 +83,10 @@ pub fn prepare_images(images: &[ChatImage]) -> Result<Vec<PreparedImage>, String
 /// Giải base64, chấp nhận cả dạng `data:<mime>;base64,<dữ liệu>`
 fn decode_payload(data: &str) -> Result<Vec<u8>, String> {
     let s = data.trim();
-    let body = match s.strip_prefix("data:").and_then(|rest| rest.find(";base64,")) {
+    let body = match s
+        .strip_prefix("data:")
+        .and_then(|rest| rest.find(";base64,"))
+    {
         Some(p) => &s["data:".len() + p + ";base64,".len()..],
         None => s,
     };
@@ -104,8 +101,7 @@ fn decode_payload(data: &str) -> Result<Vec<u8>, String> {
 
 /// Trả về (bytes, MIME, đuôi file). Giữ nguyên file gốc khi đã là PNG/JPEG và không cần thu nhỏ.
 fn normalize(raw: &[u8]) -> Result<(Vec<u8>, &'static str, &'static str), String> {
-    let format =
-        image::guess_format(raw).map_err(|_| "không phải file ảnh hợp lệ".to_string())?;
+    let format = image::guess_format(raw).map_err(|_| "không phải file ảnh hợp lệ".to_string())?;
     let (mime, ext) = match format {
         ImageFormat::Png => ("image/png", "png"),
         ImageFormat::Jpeg => ("image/jpeg", "jpg"),

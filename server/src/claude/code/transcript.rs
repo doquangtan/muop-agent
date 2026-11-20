@@ -13,6 +13,15 @@ pub(super) struct SpawnedAgent {
 /// Parse toàn bộ file session thành `ConversationSession` (đủ mọi step).
 /// `is_subagent`: file là transcript của sub-agent (mọi dòng đều là sidechain).
 pub(super) fn parse_session_file(path: &Path, is_subagent: bool) -> Option<ConversationSession> {
+    parse_session_parts(path, is_subagent).map(|(session, _)| session)
+}
+
+/// Như [`parse_session_file`] nhưng trả thêm các sub-agent mà file này gọi (tool `Agent`/`Task`).
+/// Dùng để dựng cây sub-agent: agent con có thể spawn agent cháu.
+pub(super) fn parse_session_parts(
+    path: &Path,
+    is_subagent: bool,
+) -> Option<(ConversationSession, Vec<SpawnedAgent>)> {
     let session_id = path.file_stem()?.to_str()?.to_string();
     let content = fs::read_to_string(path).ok()?;
 
@@ -67,9 +76,7 @@ pub(super) fn parse_session_file(path: &Path, is_subagent: bool) -> Option<Conve
                 }
             }
             "user" => {
-                if !is_subagent {
-                    record_agent_results(&v, &mut spawns);
-                }
+                record_agent_results(&v, &mut spawns);
                 if v.get("isMeta").and_then(|x| x.as_bool()).unwrap_or(false) {
                     continue;
                 }
@@ -220,7 +227,7 @@ pub(super) fn parse_session_file(path: &Path, is_subagent: bool) -> Option<Conve
                                     .iter()
                                     .find_map(|k| args.get(*k).and_then(|x| x.as_str()))
                                     .map(String::from);
-                                if !is_subagent && (name == "Agent" || name == "Task") {
+                                if name == "Agent" || name == "Task" {
                                     spawns.push(SpawnedAgent {
                                         tool_use_id: b
                                             .get("id")
@@ -350,10 +357,15 @@ pub(super) fn parse_session_file(path: &Path, is_subagent: bool) -> Option<Conve
     commands.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
     commands.truncate(50);
 
-    let subagent_lanes = build_subagent_lanes(path, &spawns, &project_name);
+    // Chỉ session chính dựng cây sub-agent; transcript con đã được dựng từ lane của cha
+    let subagent_lanes = if is_subagent {
+        Vec::new()
+    } else {
+        build_subagent_lanes(path, &spawns, &project_name)
+    };
     let has_parallel_flow = !subagent_lanes.is_empty();
 
-    Some(ConversationSession {
+    let session = ConversationSession {
         id: session_id,
         title,
         created_at,
@@ -381,5 +393,6 @@ pub(super) fn parse_session_file(path: &Path, is_subagent: bool) -> Option<Conve
         context_tokens,
         context_model,
         selected_model: String::new(),
-    })
+    };
+    Some((session, spawns))
 }
