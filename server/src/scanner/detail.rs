@@ -45,20 +45,16 @@ pub(super) fn get_single_session_inner(
 
     let parsed = parse_transcript_file(target_id, modified, db_meta)?;
 
-    let mut raw_sessions: HashMap<String, ParsedTranscript> = HashMap::new();
-    for s in &parsed.spawned_subagents {
-        if !s.id.is_empty() {
-            let sub_path = brain_dir
-                .join(&s.id)
-                .join(".system_generated/logs/transcript.jsonl");
-            if let Ok(smeta) = fs::metadata(&sub_path) {
-                let smod: DateTime<Utc> = smeta.modified().unwrap_or(SystemTime::UNIX_EPOCH).into();
-                if let Some(sparsed) = parse_transcript_file(&s.id, smod, db_meta_map.get(&s.id)) {
-                    raw_sessions.insert(s.id.clone(), sparsed);
-                }
-            }
-        }
-    }
+    // Transcript của sub-agent, kể cả agent cháu do sub-agent gọi
+    let raw_sessions = load_subagent_transcripts(
+        brain_dir,
+        parsed
+            .spawned_subagents
+            .iter()
+            .map(|s| s.id.clone())
+            .collect(),
+        &db_meta_map,
+    );
 
     let live_agy_cids = scan_running_agy_conversations();
     let cut_turns = crate::infra::store::cut_short_turns();

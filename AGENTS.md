@@ -125,17 +125,14 @@ muop-agent/
      - Do dùng `ListView(reverse: true)`, vị trí cuộn của người dùng được giữ nguyên hoàn hảo, không bị nhảy hay giật về đáy.
      - Banner tải thêm tự nạp lặp lại khi còn nằm trong khung nhìn (`_maybeLoadOlderTurns`); khi `hasMore == false` hoặc trang không thêm bước mới thì banner bị ẩn.
 
-### 4.4. Trực quan hóa Luồng Parallel Agents (`ParallelAgentFlowScreen`)
-- **Tích hợp Quy chuẩn Parallel ERP Sync (`parallel-erp-sync.md`)**:
-  - Khi Agent điều phối triển khai các subagent song song (`erp-server-agent`, `erp-app-agent`, `erp-contract-verifier`), ứng dụng trực quan hóa toàn bộ luồng hoạt động.
-- **Nút chuyển đổi trong `Tasks Running`**:
-  - Nằm ngay trong khối thanh tác vụ "tasks running" ở đáy `ChatCanvasView`.
-  - Hiển thị badge số lượng Subagents đang hoạt động và cho phép một chạm mở màn hình `ParallelAgentFlowScreen`.
-- **Thành phần trên màn hình `ParallelAgentFlowScreen`**:
-  - **Sơ đồ Khối DAG (Visual Workflow Graph)**: Thể hiện luồng từ Coordinator (Antigravity Engine) rẽ nhánh song song tới Server Agent (`muop-erp-server`), App Agent (`muop-erp-app`), và Verifier Agent, hội tụ tại bước nghiệm thu `go build` & `flutter analyze`.
-  - **Thẻ Agent Chi Tiết (Agent Lane Cards)**: Hiển thị tên, role, target repo, thanh tiến trình %, hành động hiện tại (`currentActionText`), công cụ đang gọi (`currentToolName`), danh sách file đã sửa đổi kèm chỉ số `+X / -Y`.
-  - **Trạng thái Đối soát Chéo (Cross-Repo Sync Status)**: Trạng thái biên dịch Backend Go và trạng thái phân tích tĩnh Frontend Flutter.
-  - **Nhật ký Sự kiện Song song (Live Parallel Event Log)**: Dòng thời gian hiển thị đan xen các thao tác của các subagents theo thời gian thực.
+### 4.4. Sơ đồ Agent map (`AgentMapScreen`, `lib/features/agent_map/`)
+- Màn hình thay thế `ParallelAgentFlowScreen` (đã xóa cùng dữ liệu giả `parallel_flow/`). Mở bằng nút **Agent map** trên hàng nút của composer (`onOpenAgentMap` → `_openAgentMapScreen` trong dashboard).
+- Gốc của cây là **Coordinator** (điều phối viên); lane `Coordinator` của agy được dùng làm gốc, không vẽ thành nút con. Mỗi nhánh là một `SubagentLane` có `spawned == true`: lần gọi subagent thật (tool `Agent`/`Task` của Claude, `invoke_subagent` của agy). Lane `spawned == false` (suy đoán từ tên agent trong `.agents`, các agent ERP cố định) không được vẽ. Quan hệ cha-con lấy từ `SubagentLane.parentId`: Claude dựng đệ quy từ transcript nơi tool được gọi, tối đa 4 tầng (`MAX_LANE_DEPTH`, `claude/code/lanes.rs`); agy dựng đệ quy qua transcript con (`push_spawned_lanes`, `load_subagent_transcripts` trong `scanner/subagents.rs`), tối đa 4 tầng: lần gọi từ Coordinator có `parentId = "Coordinator"`, lần gọi từ subagent có `parentId` là id lane của subagent đó.
+- Trạng thái subagent của agy (`child_is_active`, `scanner/subagents.rs`) suy ra từ cấu trúc bước, không dùng ngưỡng vài giây: transcript chỉ ghi khi bước xong nên một lệnh chạy lâu (ví dụ `sleep 90`) làm subagent bị hiện là xong rồi lại chạy. Bước `RUNNING` không tự đổi thành `DONE` trong file; tín hiệu hoàn tất là `SYSTEM_MESSAGE` theo sau. Đã kiểm chứng: subagent chạy lệnh 90 giây hiện `running` liên tục, chuyển `completed` khi xong.
+- Chiều cao nút tính động (`_heightOf`), nhánh con căn giữa theo nút cha, đường nối vẽ bằng `_BracketPainter`. Nút đang chạy có chấm xanh (`context.status.success`), nút xong có chấm xám. Mỗi nút hiện thời lượng và tổng token (input + output).
+- Màn hình tự vẽ lại mỗi giây từ `sessionReader` (không giữ bản chụp). Bấm nút agent mở chi tiết (nhiệm vụ, file đã sửa, lịch sử bước). Nút **Lịch sử** trên thanh tiêu đề gộp bước của conversation và của mọi agent theo thời gian.
+- Test: `test/agent_map_screen_test.dart` (cây lồng nhau, mở chi tiết, không có session), `server/src/claude/code/lanes.rs` (`nested_subagent_gets_parent_lane_id`).
+- Đã kiểm chứng end-to-end bằng REST `/api/chat/send` trên cả hai provider: Coordinator gọi SUB-A, SUB-A gọi SUB-B. Claude: SUB-B có `parentId` = id lane SUB-A. agy: SUB-B có `parentId` = id lane SUB-A (trước đó agy bỏ sót cháu vì chỉ đọc transcript con một tầng).
 
 ### 4.5. Cơ chế Tương tác CLI Agent (`agy cli`)
 - Để đảm bảo tính ổn định tuyệt đối và tránh lỗi giới hạn tài nguyên (429 Resource Exhausted) của các cầu nối tự động, hệ thống sử dụng trực tiếp CLI chính thức của Antigravity:

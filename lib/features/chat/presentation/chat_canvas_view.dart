@@ -76,7 +76,7 @@ class ChatCanvasView extends StatefulWidget {
     this.onCancelPlan,
     this.onLoadOlderHistory,
     this.onFetchClaudeExtensions,
-    this.onOpenParallelFlow,
+    this.onOpenAgentMap,
     this.onOpenCreateProject,
     this.onGitPush,
     this.onOpenGitHistory,
@@ -139,7 +139,9 @@ class ChatCanvasView extends StatefulWidget {
   final Future<bool> Function()? onLoadOlderHistory;
   final Future<List<CustomAgentSpec>?> Function(String projectPath)?
   onFetchClaudeExtensions;
-  final VoidCallback? onOpenParallelFlow;
+
+  /// Mở sơ đồ Agent map (cây subagent) của conversation đang chọn
+  final VoidCallback? onOpenAgentMap;
   final VoidCallback? onOpenCreateProject;
   final Future<GitPushResponse> Function(String projectPath, String branch)?
   onGitPush;

@@ -222,6 +222,8 @@ class SubagentLane {
     required this.progress,
     required this.filesModified,
     this.lastUpdated,
+    this.parentId = '',
+    this.spawned = false,
   });
 
   final String id;
@@ -238,6 +240,12 @@ class SubagentLane {
   final double progress;
   final List<String> filesModified;
   final DateTime? lastUpdated;
+
+  /// Id của lane cha (sub-agent đã spawn ra lane này); rỗng nếu là con trực tiếp của conversation
+  final String parentId;
+
+  /// `true` nếu là subagent thật được gọi (hoặc coordinator); `false` nếu chỉ suy đoán từ tên agent
+  final bool spawned;
 
   /// Lane cũ của một session đã dừng: lane còn đang chạy/chờ thì chuyển sang trạng thái kết thúc,
   /// để không hiển thị subagent "đang chạy" khi conversation đã hoàn tất hoặc bị gián đoạn.
@@ -261,6 +269,8 @@ class SubagentLane {
       progress: 1.0,
       filesModified: filesModified,
       lastUpdated: lastUpdated,
+      parentId: parentId,
+      spawned: spawned,
     );
   }
 
@@ -268,6 +278,8 @@ class SubagentLane {
         'id': id,
         'name': name,
         'role': role,
+        'parentId': parentId,
+        'spawned': spawned,
         'targetRepo': targetRepo,
         'status': status.name,
         'currentPhase': currentPhase.name,
@@ -316,6 +328,8 @@ class SubagentLane {
       lastUpdated: json['lastUpdated'] != null
           ? DateTime.tryParse('${json['lastUpdated']}')
           : null,
+      parentId: '${json['parentId'] ?? ''}',
+      spawned: json['spawned'] == true,
     );
   }
 }

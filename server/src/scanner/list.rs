@@ -111,22 +111,17 @@ pub fn scan_all_sessions(
         }
     }
 
-    for sub_id in &child_subagent_ids {
-        if !sub_id.is_empty() && !raw_sessions.contains_key(sub_id) {
-            let sub_path = PathBuf::from(BRAIN_DIR_PATH)
-                .join(sub_id)
-                .join(".system_generated/logs/transcript.jsonl");
-            if let Ok(meta) = fs::metadata(&sub_path) {
-                let modified: DateTime<Utc> =
-                    meta.modified().unwrap_or(SystemTime::UNIX_EPOCH).into();
-                if let Some(parsed) =
-                    parse_transcript_file(sub_id, modified, db_meta_map.get(sub_id))
-                {
-                    raw_sessions.insert(sub_id.clone(), parsed);
-                }
-            }
-        }
-    }
+    // Transcript của sub-agent (kể cả agent cháu) để dựng cây lane
+    let extra_roots: Vec<String> = child_subagent_ids
+        .iter()
+        .filter(|id| !raw_sessions.contains_key(*id))
+        .cloned()
+        .collect();
+    raw_sessions.extend(load_subagent_transcripts(
+        Path::new(BRAIN_DIR_PATH),
+        extra_roots,
+        &db_meta_map,
+    ));
 
     let live_agy_cids = scan_running_agy_conversations();
     let cut_turns = crate::infra::store::cut_short_turns();

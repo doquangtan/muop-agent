@@ -165,8 +165,18 @@ mod claude_effort_args_tests {
 
     #[test]
     fn stream_input_keeps_prompt_out_of_argv() {
-        let args = claude_args("nội dung", "claude-haiku-5-5", Some("cid-1"), "/tmp", false, true);
-        assert_eq!(arg_after(&args, "--input-format").as_deref(), Some("stream-json"));
+        let args = claude_args(
+            "nội dung",
+            "claude-haiku-5-5",
+            Some("cid-1"),
+            "/tmp",
+            false,
+            true,
+        );
+        assert_eq!(
+            arg_after(&args, "--input-format").as_deref(),
+            Some("stream-json")
+        );
         assert!(!args.iter().any(|a| a == "nội dung"));
         assert_eq!(arg_after(&args, "--resume").as_deref(), Some("cid-1"));
     }

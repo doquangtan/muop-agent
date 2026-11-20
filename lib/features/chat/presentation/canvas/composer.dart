@@ -176,6 +176,52 @@ extension _CanvasExtComposer on _ChatCanvasViewState {
     return KeyEventResult.handled;
   }
 
+  /// Hàng công cụ nằm ngay trên khung chat: Agent map, duyệt SFTP và Git Tree.
+  /// Tách khỏi khung chat để vẫn dùng được khi khung chat đang ẩn (lúc agent đang chạy).
+  Widget _buildComposerToolRow(BuildContext context, bool isMobile) {
+    final colorScheme = Theme.of(context).colorScheme;
+    return SingleChildScrollView(
+      scrollDirection: Axis.horizontal,
+      child: Row(
+        children: [
+          if (widget.onOpenAgentMap != null) ...[
+            InkWell(
+              borderRadius: BorderRadius.circular(8),
+              onTap: widget.onOpenAgentMap,
+              child: _ComposerPill(
+                icon: Icons.hub_outlined,
+                label: isMobile ? 'Agent' : 'Agent map',
+                colorScheme: colorScheme,
+              ),
+            ),
+            const SizedBox(width: 5),
+          ],
+          InkWell(
+            borderRadius: BorderRadius.circular(8),
+            onTap: widget.onOpenFileBrowser,
+            child: _ComposerPill(
+              icon: Icons.dns_outlined,
+              label: isMobile ? 'SFTP' : 'Duyệt SFTP Server',
+              colorScheme: colorScheme,
+            ),
+          ),
+          if (widget.onOpenGitHistory != null) ...[
+            const SizedBox(width: 5),
+            InkWell(
+              borderRadius: BorderRadius.circular(8),
+              onTap: widget.onOpenGitHistory,
+              child: _ComposerPill(
+                icon: Icons.account_tree_outlined,
+                label: isMobile ? 'Git Tree' : 'Git Tree & History',
+                colorScheme: colorScheme,
+              ),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
   /// [3] KHUNG NHẬP CHAT HỢP NHẤT (COMPOSER BOX) — Nằm dưới cùng
   Widget _buildAntigravityComposer(
     BuildContext context,
@@ -386,31 +432,6 @@ extension _CanvasExtComposer on _ChatCanvasViewState {
                             colorScheme: colorScheme,
                           ),
                         ),
-                        const SizedBox(width: 5),
-
-                        InkWell(
-                          borderRadius: BorderRadius.circular(8),
-                          onTap: widget.onOpenFileBrowser,
-                          child: _ComposerPill(
-                            icon: Icons.dns_outlined,
-                            label: isMobile ? 'SFTP' : 'Duyệt SFTP Server',
-                            colorScheme: colorScheme,
-                          ),
-                        ),
-                        if (widget.onOpenGitHistory != null) ...[
-                          const SizedBox(width: 5),
-                          InkWell(
-                            borderRadius: BorderRadius.circular(8),
-                            onTap: widget.onOpenGitHistory,
-                            child: _ComposerPill(
-                              icon: Icons.account_tree_outlined,
-                              label: isMobile
-                                  ? 'Git Tree'
-                                  : 'Git Tree & History',
-                              colorScheme: colorScheme,
-                            ),
-                          ),
-                        ],
                       ],
                     ),
                   ),

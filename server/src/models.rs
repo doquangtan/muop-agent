@@ -94,6 +94,13 @@ pub struct SubagentLane {
     pub progress: f64,
     pub files_modified: Vec<String>,
     pub last_updated: Option<String>,
+    /// Id của lane cha (agent đã gọi tool spawn ra lane này); rỗng nếu là con trực tiếp của session
+    #[serde(default)]
+    pub parent_id: String,
+    /// `true` nếu lane đến từ một lần gọi subagent thật (tool spawn) hoặc là coordinator.
+    /// `false` với lane suy đoán từ tên agent trong .agents (không chứng minh được là đã được gọi).
+    #[serde(default)]
+    pub spawned: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

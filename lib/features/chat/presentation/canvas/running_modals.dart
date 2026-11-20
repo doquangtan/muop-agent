@@ -448,36 +448,6 @@ extension _CanvasExtRunningModals on _ChatCanvasViewState {
                       ],
 
                       const SizedBox(height: 20),
-                      if (widget.onOpenParallelFlow != null &&
-                          (widget.session?.hasParallelFlow == true ||
-                              ((widget.session?.projectName ==
-                                          'muop-erp-server' ||
-                                      widget.session?.projectName ==
-                                          'muop-erp-app') &&
-                                  (widget.session?.subagentLanes.length ?? 0) >
-                                      1)))
-                        OutlinedButton.icon(
-                          onPressed: () {
-                            Navigator.of(ctx).pop();
-                            widget.onOpenParallelFlow!();
-                          },
-                          icon: Icon(
-                            Icons.alt_route_rounded,
-                            size: 16,
-                            color: context.scheme.tertiary,
-                          ),
-                          label: Text(
-                            'Xem toàn bộ Sơ đồ Luồng Parallel Agent',
-                            style: TextStyle(color: context.scheme.tertiary),
-                          ),
-                          style: OutlinedButton.styleFrom(
-                            side: BorderSide(color: context.scheme.tertiary),
-                            padding: const EdgeInsets.symmetric(vertical: 12),
-                            shape: RoundedRectangleBorder(
-                              borderRadius: BorderRadius.circular(10),
-                            ),
-                          ),
-                        ),
                     ],
                   ),
                 ),

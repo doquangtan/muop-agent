@@ -107,10 +107,18 @@ pub async fn start_chat_turn_attempt(
                 };
             }
             let stream_input = !images.is_empty();
-            let payload = stream_input.then(|| attachments::claude_stream_input_line(body, &images));
+            let payload =
+                stream_input.then(|| attachments::claude_stream_input_line(body, &images));
             (
                 crate::claude::code::claude_bin(),
-                claude_args(body, &model, resume_id, &effective_cwd, plan_mode, stream_input),
+                claude_args(
+                    body,
+                    &model,
+                    resume_id,
+                    &effective_cwd,
+                    plan_mode,
+                    stream_input,
+                ),
                 payload,
             )
         }
