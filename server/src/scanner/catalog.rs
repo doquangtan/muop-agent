@@ -146,7 +146,7 @@ pub(super) fn agy_models() -> Vec<AgyModel> {
     let retry_ok = cache.retry_at.map(|t| now >= t).unwrap_or(true);
     if stale && retry_ok && !cache.refreshing {
         cache.refreshing = true;
-        std::thread::spawn(|| {
+        crate::infra::jobs::submit("agy-models", || {
             let fetched = run_agy_models();
             if let Ok(mut cache) = agy_models_cache().lock() {
                 match fetched {

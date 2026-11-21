@@ -202,4 +202,45 @@ void main() {
     await tester.pumpAndSettle();
     expect(results, [null]);
   });
+
+  testWidgets('unreachable splash: "Đổi máy chủ" closes splash and calls the handler', (tester) async {
+    final repo = _FakeSetupRepository([SetupStatus.failure('Chưa kết nối tới server')]);
+    var changeCalls = 0;
+    final results = <bool?>[];
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Builder(
+          builder: (context) => Scaffold(
+            body: TextButton(
+              onPressed: () async {
+                results.add(
+                  await Navigator.of(context).push<bool>(
+                    MaterialPageRoute<bool>(
+                      builder: (_) => SetupSplashScreen(
+                        serverAddress: '192.168.31.216:8787',
+                        repository: repo,
+                        agyRepository: _FakeAgy(loginRequired: false),
+                        onChangeServer: () => changeCalls++,
+                      ),
+                    ),
+                  ),
+                );
+              },
+              child: const Text('open'),
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.tap(find.text('open'));
+    await tester.pump();
+    for (var i = 0; i < SetupSplashScreen.maxAttempts + 2; i++) {
+      await tester.pump(const Duration(seconds: 1));
+    }
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Đổi máy chủ'));
+    await tester.pumpAndSettle();
+    expect(changeCalls, 1);
+    expect(results, [null]);
+  });
 }

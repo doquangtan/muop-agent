@@ -117,7 +117,11 @@ async fn main() {
         let mut ticker = interval(Duration::from_secs(15));
         loop {
             ticker.tick().await;
-            quota_state.spawn_quotas_update(false, false);
+            // Khử trùng theo khóa: nếu lần trước còn chạy (quota qua TUI có thể 30 giây) thì bỏ qua lần này
+            let st = quota_state.clone();
+            crate::infra::jobs::submit("quota-tick", move || {
+                let _ = st.broadcast_quotas_update(false);
+            });
         }
     });
 
@@ -128,7 +132,9 @@ async fn main() {
         loop {
             ticker.tick().await;
             let st = stall_state.clone();
-            let _ = tokio::task::spawn_blocking(move || chat::quota_stall::check(&st)).await;
+            crate::infra::jobs::submit("quota-stall", move || {
+                let _ = chat::quota_stall::check(&st);
+            });
         }
     });
 

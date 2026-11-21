@@ -9,6 +9,7 @@ import 'package:muop_agent/core/theme/app_theme.dart';
 import 'package:muop_agent/features/chat/domain/chat_entities.dart';
 import 'package:muop_agent/features/chat/domain/model_groups.dart';
 import 'package:muop_agent/features/chat/presentation/quota_detail_sheet.dart';
+import 'package:muop_agent/features/chat/presentation/run_command_dialog.dart';
 import 'package:muop_agent/features/chat/presentation/text_tail.dart';
 import 'package:muop_agent/features/interactions/domain/interaction_entities.dart';
 import 'package:muop_agent/features/interactions/presentation/interaction_dialogs.dart';

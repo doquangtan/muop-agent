@@ -6,6 +6,7 @@ import 'package:muop_agent/core/config/server_config.dart';
 import 'package:muop_agent/core/network/socket_gateway.dart';
 import 'package:muop_agent/features/connection/domain/connection_entities.dart';
 import 'package:muop_agent/features/connection/domain/connection_repository.dart';
+import 'package:muop_agent/features/connection/domain/lan_scan.dart';
 import 'package:muop_agent/features/connection/domain/saved_servers.dart';
 
 class ConnectionRepositoryImpl implements ConnectionRepository {
@@ -89,6 +90,73 @@ class ConnectionRepositoryImpl implements ConnectionRepository {
         ? (servers.isNotEmpty ? servers.first : defaultHostAddress)
         : (current.isNotEmpty ? current : defaultHostAddress);
     await _writeConfig(nextCurrent, servers);
+  }
+
+  /// Quét mạng LAN của máy client: thăm `/api/ping` cổng 8787 trên mọi IP của các dải /24
+  /// (song song, tối đa [_scanConcurrency] kết nối cùng lúc).
+  @override
+  Future<List<LanServer>> scanLanServers({
+    void Function(int done, int total)? onProgress,
+  }) async {
+    final locals = <String>[];
+    try {
+      final interfaces = await NetworkInterface.list(
+        type: InternetAddressType.IPv4,
+        includeLoopback: false,
+      );
+      for (final iface in interfaces) {
+        if (isVirtualInterfaceName(iface.name)) continue;
+        for (final addr in iface.addresses) {
+          locals.add(addr.address);
+        }
+      }
+    } catch (_) {}
+    final hosts = lanHostsFor(locals);
+    final total = hosts.length;
+    final found = <LanServer>[];
+    var next = 0;
+    var done = 0;
+
+    Future<void> worker() async {
+      while (next < hosts.length) {
+        final ip = hosts[next++];
+        final server = await _probeLanServer(ip);
+        if (server != null) found.add(server);
+        done++;
+        onProgress?.call(done, total);
+      }
+    }
+
+    await Future.wait([
+      for (var i = 0; i < _scanConcurrency; i++) worker(),
+    ]);
+    return sortByIp(found);
+  }
+
+  static const int _scanConcurrency = 48;
+  static const Duration _scanTimeout = Duration(milliseconds: 700);
+
+  /// Thăm `http://<ip>:8787/api/ping`; trả về server nếu đúng là muop-agent
+  Future<LanServer?> _probeLanServer(String ip) async {
+    final client = HttpClient()..connectionTimeout = _scanTimeout;
+    try {
+      final uri = Uri.parse('http://$ip:$defaultBridgePort/api/ping');
+      final req = await client.getUrl(uri).timeout(_scanTimeout);
+      final resp = await req.close().timeout(_scanTimeout);
+      if (resp.statusCode != 200) return null;
+      final body = await resp.transform(utf8.decoder).join().timeout(_scanTimeout);
+      final decoded = jsonDecode(body);
+      if (decoded is! Map || !isMuopServerPing(decoded)) return null;
+      return LanServer(
+        ip: ip,
+        hostname: '${decoded['hostname'] ?? ''}',
+        engine: '${decoded['engine'] ?? ''}',
+      );
+    } catch (_) {
+      return null;
+    } finally {
+      client.close(force: true);
+    }
   }
 
   /// Kiểm tra kết nối tới Rust Server qua HTTP `/api/ping`

@@ -85,8 +85,8 @@ impl AppState {
             Some(delay) => {
                 let st = self.clone();
                 let cid = cid.to_string();
-                std::thread::spawn(move || {
-                    std::thread::sleep(delay);
+                let key = format!("stream:{cid}");
+                crate::infra::jobs::submit_after(key, delay, move || {
                     if let Ok(mut map) = stream_throttle().lock() {
                         if let Some(entry) = map.get_mut(&cid) {
                             entry.trailing = false;

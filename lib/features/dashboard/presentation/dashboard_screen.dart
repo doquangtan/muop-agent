@@ -12,6 +12,7 @@ import 'package:muop_agent/features/chat/domain/model_groups.dart';
 import 'package:muop_agent/features/chat/presentation/chat_canvas_view.dart';
 import 'package:muop_agent/features/connection/domain/connection_entities.dart';
 import 'package:muop_agent/features/connection/domain/connection_repository.dart';
+import 'package:muop_agent/features/connection/domain/lan_scan.dart';
 import 'package:muop_agent/features/docker/presentation/docker_screen.dart';
 import 'package:muop_agent/features/screen/presentation/screen_stream_screen.dart';
 import 'package:muop_agent/features/interactions/domain/interaction_entities.dart';
@@ -341,7 +342,11 @@ class _DashboardScreenState extends ConsumerState<DashboardScreenView> {
     try {
       final needsSetup = await Navigator.of(context).push<bool>(
         MaterialPageRoute<bool>(
-          builder: (_) => SetupSplashScreen(serverAddress: _serverAddress),
+          builder: (_) => SetupSplashScreen(
+            serverAddress: _serverAddress,
+            // Đóng splash rồi mở hộp thoại IP; đổi máy chủ sẽ dựng lại dashboard và kiểm tra lại
+            onChangeServer: () => unawaited(_showServerConfigDialog()),
+          ),
         ),
       );
       if (!mounted || needsSetup != true) return;
@@ -1640,6 +1645,12 @@ class _DashboardScreenState extends ConsumerState<DashboardScreenView> {
     final ipController = TextEditingController(text: _serverAddress);
     RemotePingResult? pingResult;
     bool isPinging = false;
+    // Quét mạng LAN tìm máy chủ
+    bool isScanning = false;
+    bool scanned = false;
+    int scanDone = 0;
+    int scanTotal = 0;
+    List<LanServer> lanServers = const [];
     // Các server đã kết nối trước đây (mới nhất đứng đầu)
     final saved = List<String>.of(await _connectionRepo.loadSavedServers());
     if (!mounted) return;
@@ -1661,6 +1672,32 @@ class _DashboardScreenState extends ConsumerState<DashboardScreenView> {
               setModalState(() {
                 isPinging = false;
                 pingResult = res;
+              });
+            }
+
+            Future<void> scanLan() async {
+              setModalState(() {
+                isScanning = true;
+                scanned = false;
+                scanDone = 0;
+                scanTotal = 0;
+                lanServers = const [];
+              });
+              final found = await _connectionRepo.scanLanServers(
+                onProgress: (done, total) {
+                  // Dialog đã đóng thì bỏ qua cập nhật
+                  if (!context.mounted) return;
+                  setModalState(() {
+                    scanDone = done;
+                    scanTotal = total;
+                  });
+                },
+              );
+              if (!context.mounted) return;
+              setModalState(() {
+                isScanning = false;
+                scanned = true;
+                lanServers = found;
               });
             }
 
@@ -1787,8 +1824,8 @@ class _DashboardScreenState extends ConsumerState<DashboardScreenView> {
                       controller: ipController,
                       keyboardType: TextInputType.url,
                       decoration: InputDecoration(
-                        labelText: 'Địa chỉ IP & Cổng (Rust Server)',
-                        hintText: '192.168.31.96:8787',
+                        labelText: 'Địa chỉ IP máy chủ (cổng 8787)',
+                        hintText: '192.168.31.96',
                         prefixIcon: const Icon(Icons.dns_rounded),
                         suffixIcon: IconButton(
                           icon: const Icon(Icons.clear_rounded, size: 18),
@@ -1832,6 +1869,70 @@ class _DashboardScreenState extends ConsumerState<DashboardScreenView> {
                               : context.scheme.error,
                         ),
                       ),
+                    ],
+                    const SizedBox(height: 10),
+                    SizedBox(
+                      width: double.infinity,
+                      child: OutlinedButton.icon(
+                        onPressed: isScanning ? null : scanLan,
+                        icon: isScanning
+                            ? const SizedBox(
+                                width: 14,
+                                height: 14,
+                                child: CircularProgressIndicator(strokeWidth: 2),
+                              )
+                            : const Icon(Icons.wifi_find_rounded, size: 17),
+                        label: Text(
+                          isScanning
+                              ? (scanTotal == 0
+                                  ? 'Đang quét…'
+                                  : 'Đang quét $scanDone/$scanTotal…')
+                              : 'Quét mạng LAN tìm máy chủ',
+                        ),
+                      ),
+                    ),
+                    if (scanned) ...[
+                      const SizedBox(height: 8),
+                      if (lanServers.isEmpty)
+                        Text(
+                          'Không tìm thấy máy chủ muop-agent nào trên mạng LAN (cổng 8787).',
+                          style: textTheme.bodySmall?.copyWith(
+                            color: colorScheme.onSurfaceVariant,
+                          ),
+                        )
+                      else ...[
+                        Text(
+                          'Tìm thấy ${lanServers.length} máy chủ (bấm để kết nối)',
+                          style: textTheme.labelLarge?.copyWith(
+                            fontWeight: FontWeight.w700,
+                          ),
+                        ),
+                        for (final server in lanServers)
+                          ListTile(
+                            dense: true,
+                            contentPadding: const EdgeInsets.symmetric(horizontal: 4),
+                            leading: Icon(
+                              Icons.dns_rounded,
+                              size: 20,
+                              color: colorScheme.primary,
+                            ),
+                            title: Text(
+                              server.ip,
+                              style: const TextStyle(
+                                fontFamily: 'monospace',
+                                fontSize: 13,
+                                fontWeight: FontWeight.w700,
+                              ),
+                            ),
+                            subtitle: server.hostname.isEmpty
+                                ? null
+                                : Text(server.hostname),
+                            onTap: () {
+                              Navigator.of(ctx).pop();
+                              unawaited(_connectToServer(server.ip));
+                            },
+                          ),
+                      ],
                     ],
                   ],
                 ),

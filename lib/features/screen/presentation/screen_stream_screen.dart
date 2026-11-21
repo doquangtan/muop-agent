@@ -32,6 +32,8 @@ class _ScreenStreamScreenState extends State<ScreenStreamScreen> {
   String _playingUrl = '';
   bool _buffering = true;
   String _playError = '';
+  /// Vài dòng log cảnh báo/lỗi gần nhất của libmpv, hiện dưới thông báo để chẩn đoán
+  final List<String> _recentLogs = [];
   int _retries = 0;
   Timer? _retryTimer;
 
@@ -91,6 +93,7 @@ class _ScreenStreamScreenState extends State<ScreenStreamScreen> {
     _playingUrl = url;
     _buffering = true;
     _playError = '';
+    _recentLogs.clear();
 
     // libmpv: RTSP qua TCP (server chỉ hỗ trợ TCP) và giảm độ trễ
     final native = player.platform;
@@ -99,11 +102,22 @@ class _ScreenStreamScreenState extends State<ScreenStreamScreen> {
       unawaited(native.setProperty('profile', 'low-latency'));
       unawaited(native.setProperty('cache', 'no'));
       unawaited(native.setProperty('network-timeout', '10'));
+      // Luồng live không seek được: cho phép seek thử để mpv không báo lỗi "Cannot seek" làm luồng bị đóng
+      unawaited(native.setProperty('force-seekable', 'yes'));
     }
 
     _playerSubs.add(
       player.stream.log.listen((log) {
-        debugPrint('[screen/mpv] ${log.level}: ${log.text.trim()}');
+        final text = log.text.trim();
+        debugPrint('[screen/mpv] ${log.level}: $text');
+        if (!mounted || text.isEmpty) return;
+        if (log.level != 'warn' && log.level != 'error' && log.level != 'fatal') {
+          return;
+        }
+        setState(() {
+          _recentLogs.add('${log.level}: $text');
+          if (_recentLogs.length > 3) _recentLogs.removeAt(0);
+        });
       }),
     );
     _playerSubs.add(
@@ -194,12 +208,26 @@ class _ScreenStreamScreenState extends State<ScreenStreamScreen> {
             left: 12,
             right: 12,
             bottom: 12,
-            child: Text(
-              _retries < _maxRetries
-                  ? 'Mất kết nối, đang thử lại…'
-                  : 'Không phát được luồng: $_playError',
-              textAlign: TextAlign.center,
-              style: textTheme.bodySmall?.copyWith(color: colorScheme.error),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(
+                  _retries < _maxRetries
+                      ? 'Mất kết nối, đang thử lại…'
+                      : 'Không phát được luồng',
+                  textAlign: TextAlign.center,
+                  style: textTheme.bodySmall?.copyWith(color: colorScheme.error),
+                ),
+                // Lỗi gốc và log gần nhất của libmpv, để biết nguyên nhân khi báo lại
+                for (final line in [_playError, ..._recentLogs])
+                  Text(
+                    line,
+                    textAlign: TextAlign.center,
+                    style: textTheme.labelSmall?.copyWith(
+                      color: colorScheme.error.withValues(alpha: 0.8),
+                    ),
+                  ),
+              ],
             ),
           ),
       ],
