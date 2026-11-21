@@ -589,6 +589,8 @@ pub struct SshHostDto {
     pub auth_type: String,
     pub has_password: bool,
     pub has_key: bool,
+    /// Mục mặc định "Máy này": không sửa, không xóa
+    pub builtin: bool,
 }
 
 /// Thêm/sửa máy SSH. Để trống `password` hoặc `privateKey` khi sửa nghĩa là giữ nguyên giá trị đã lưu.

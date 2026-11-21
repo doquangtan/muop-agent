@@ -1,8 +1,18 @@
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     // The Flutter Gradle Plugin must be applied after the Android and Kotlin Gradle plugins.
     id("dev.flutter.flutter-gradle-plugin")
 }
+
+// Khóa ký release riêng (android/key.properties, không commit). Thiếu khóa thì rơi về debug key
+// kèm cảnh báo: APK ký bằng "Android Debug" bị Google Play Protect chặn ("Harmful app blocked").
+val keystoreProps = Properties().apply {
+    val f = rootProject.file("key.properties")
+    if (f.exists()) f.inputStream().use { load(it) }
+}
+val releaseKeyFile: File? = keystoreProps.getProperty("storeFile")?.let { file(it) }?.takeIf { it.exists() }
 
 android {
     namespace = "vn.muop.muop_agent"
@@ -29,11 +39,25 @@ android {
         versionName = flutter.versionName
     }
 
+    signingConfigs {
+        create("release") {
+            if (releaseKeyFile != null) {
+                storeFile = releaseKeyFile
+                storePassword = keystoreProps.getProperty("storePassword")
+                keyAlias = keystoreProps.getProperty("keyAlias")
+                keyPassword = keystoreProps.getProperty("keyPassword")
+            }
+        }
+    }
+
     buildTypes {
         release {
-            // TODO: Add your own signing config for the release build.
-            // Signing with the debug keys for now, so `flutter run --release` works.
-            signingConfig = signingConfigs.getByName("debug")
+            signingConfig = if (releaseKeyFile != null) {
+                signingConfigs.getByName("release")
+            } else {
+                logger.warn("⚠ Không có android/key.properties: APK release ký bằng debug key (Play Protect có thể chặn).")
+                signingConfigs.getByName("debug")
+            }
         }
     }
 }

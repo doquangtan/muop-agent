@@ -15,11 +15,15 @@ class SetupSplashScreen extends StatefulWidget {
     required this.serverAddress,
     this.repository,
     this.agyRepository,
+    this.onChangeServer,
   });
 
   final String serverAddress;
   final SetupRepository? repository;
   final AgyAuthRepository? agyRepository;
+
+  /// Mở hộp thoại đổi máy chủ. Splash tự đóng (kết quả `null`) trước khi gọi.
+  final VoidCallback? onChangeServer;
 
   static const maxAttempts = 15;
   static const retryInterval = Duration(seconds: 1);
@@ -121,18 +125,28 @@ class _SetupSplashScreenState extends State<SetupSplashScreen> {
                     textAlign: TextAlign.center,
                   ),
                   const SizedBox(height: 16),
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.center,
+                  Wrap(
+                    alignment: WrapAlignment.center,
+                    spacing: 12,
+                    runSpacing: 8,
                     children: [
                       TextButton(
                         onPressed: () => Navigator.of(context).pop(),
                         child: const Text('Bỏ qua'),
                       ),
-                      const SizedBox(width: 12),
                       FilledButton(
                         onPressed: _check,
                         child: const Text('Thử lại'),
                       ),
+                      if (widget.onChangeServer != null)
+                        OutlinedButton.icon(
+                          onPressed: () {
+                            Navigator.of(context).pop();
+                            widget.onChangeServer!();
+                          },
+                          icon: const Icon(Icons.dns_rounded, size: 18),
+                          label: const Text('Đổi máy chủ'),
+                        ),
                     ],
                   ),
                 ],

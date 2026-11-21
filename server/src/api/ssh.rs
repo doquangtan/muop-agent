@@ -4,11 +4,20 @@ use serde_json::json;
 
 /// Danh sách máy SSH đã lưu (không kèm bí mật)
 pub async fn handle_ssh_hosts_list() -> impl IntoResponse {
-    let hosts: Vec<_> = crate::infra::store::list_ssh_hosts()
-        .iter()
-        .map(crate::ssh::hosts::to_dto)
-        .collect();
+    // "Máy này" luôn có và đứng đầu danh sách
+    crate::setup::ssh::ensure_local_host();
+    let mut rows = crate::infra::store::list_ssh_hosts();
+    rows.sort_by_key(|r| !crate::ssh::hosts::is_builtin(r));
+    let hosts: Vec<_> = rows.iter().map(crate::ssh::hosts::to_dto).collect();
     Json(hosts)
+}
+
+/// Mục mặc định không sửa/xóa được
+fn builtin_refused() -> (StatusCode, Json<serde_json::Value>) {
+    (
+        StatusCode::FORBIDDEN,
+        Json(json!({"ok": false, "error": "Máy này là mục mặc định, không sửa hay xóa được"})),
+    )
 }
 
 /// Phiên terminal SSH đang chạy (REST, không cần socket)
@@ -18,6 +27,9 @@ pub async fn handle_ssh_sessions_list() -> impl IntoResponse {
 
 /// Thêm hoặc sửa máy SSH
 pub async fn handle_ssh_host_save(Json(req): Json<SshHostSaveRequest>) -> impl IntoResponse {
+    if req.id > 0 && crate::setup::ssh::local_host_id() == Some(req.id) {
+        return builtin_refused();
+    }
     let existing = if req.id > 0 {
         match crate::infra::store::get_ssh_host(req.id) {
             Some(row) => Some(row),
@@ -77,6 +89,9 @@ pub async fn handle_ssh_host_save(Json(req): Json<SshHostSaveRequest>) -> impl I
 
 /// Xóa máy SSH đã lưu
 pub async fn handle_ssh_host_delete(Json(req): Json<SshHostIdRequest>) -> impl IntoResponse {
+    if crate::setup::ssh::local_host_id() == Some(req.id) {
+        return builtin_refused();
+    }
     let ok = crate::infra::store::delete_ssh_host(req.id);
     (
         if ok {

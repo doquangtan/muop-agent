@@ -65,7 +65,7 @@ pub fn invalidate_quota_cache() {
     crate::claude::code::invalidate_limits_cache();
     if let Some(cache) = QUOTA_CACHE.get() {
         if let Ok(mut guard) = cache.lock() {
-            guard.0 = Instant::now() - Duration::from_secs(3600);
+            guard.at = Instant::now() - Duration::from_secs(3600);
         }
     }
 }

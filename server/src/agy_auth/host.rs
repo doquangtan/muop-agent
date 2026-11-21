@@ -12,6 +12,7 @@
 //! Host bị tắt khi không còn thao tác người dùng, và khi đổi tài khoản (để lần sau đọc trạng thái mới).
 
 use super::tui::{self, Session};
+use super::usage::{self, USAGE_COMMAND};
 use crate::chat::context_window::discover_hub;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
@@ -137,12 +138,70 @@ fn screen_logged_in(session: &Session) -> Option<bool> {
     }
 }
 
-/// Hub đang chạy (chỉ dùng cho RPC), hoặc `None` nếu chưa có
-pub fn ensure_hub(need: Need) -> Option<(u16, String)> {
-    match probe(need) {
-        Probe::Hub(port, token) => Some((port, token)),
-        _ => None,
+/// Thời gian tối đa chờ màn `/usage` vẽ xong
+const USAGE_WAIT: Duration = Duration::from_secs(20);
+/// Màn `/usage` được coi là đã vẽ xong khi chữ không đổi trong khoảng này
+const USAGE_SETTLE: Duration = Duration::from_millis(1500);
+
+/// Mở màn `/usage` của agy trong TUI host và trả về chữ của màn đó (chưa phân tích).
+/// Dùng để đọc quota khi không có hub. Giữ khóa `HOST` suốt lần đọc, xong thì nhấn Escape để về màn chat.
+pub fn read_usage_screen() -> Result<String, String> {
+    note_user_activity();
+    if super::login_active() {
+        return Err("Đang đăng nhập agy, chưa đọc được quota".to_string());
     }
+    let mut guard = HOST
+        .lock()
+        .map_err(|_| "Không khóa được phiên agy".to_string())?;
+    if !guard.as_ref().is_some_and(tui::session_alive) {
+        if let Some(old) = guard.take() {
+            tui::close_session(old);
+        }
+        *guard = Some(tui::spawn_tui()?);
+    }
+    let session = guard
+        .as_mut()
+        .ok_or_else(|| "Không mở được phiên agy".to_string())?;
+
+    // Chờ màn chat (màn chọn màu lần đầu được nhấn Enter tự động)
+    let deadline = Instant::now() + PROBE_WAIT;
+    loop {
+        session.nudge_first_run();
+        match screen_logged_in(session) {
+            Some(true) => break,
+            Some(false) => return Err("Chưa đăng nhập agy".to_string()),
+            None => {}
+        }
+        if Instant::now() >= deadline {
+            return Err("agy chưa vào màn chat nên chưa đọc được quota".to_string());
+        }
+        std::thread::sleep(POLL);
+    }
+
+    // Chỉ đọc chữ in ra sau lệnh này, không lẫn màn cũ
+    let mark = tui::output_mark(session);
+    tui::type_line(session, USAGE_COMMAND)?;
+    let deadline = Instant::now() + USAGE_WAIT;
+    let mut text = String::new();
+    let mut stable_since = Instant::now();
+    loop {
+        let now_text = tui::text_since(session, mark);
+        if now_text != text {
+            text = now_text;
+            stable_since = Instant::now();
+        }
+        let drawn = usage::quota_block_ready(&text);
+        if (drawn && stable_since.elapsed() >= USAGE_SETTLE) || Instant::now() >= deadline {
+            break;
+        }
+        std::thread::sleep(POLL);
+    }
+    // Thoát màn quota về màn chat để lần sau không bị kẹt
+    let _ = tui::send_raw(session, "\u{1b}");
+    if usage::still_loading(&text) {
+        return Err("Quota agy chưa tải xong sau 20 giây, thử lại sau".to_string());
+    }
+    Ok(text)
 }
 
 /// Thời gian tối đa chờ `agy models` báo đã đăng xuất sau khi gõ `/logout`

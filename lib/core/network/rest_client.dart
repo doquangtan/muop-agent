@@ -33,12 +33,16 @@ Future<(int, Map<String, dynamic>)> restRequest(
 }
 
 /// GET một endpoint JSON; trả null nếu lỗi hoặc không phải 200
-Future<Map<String, dynamic>?> restGetJson(String address, String path) async {
+Future<Map<String, dynamic>?> restGetJson(
+  String address,
+  String path, {
+  Duration timeout = const Duration(seconds: 6),
+}) async {
   final baseUrl = normalizeBaseUrl(address);
   final client = HttpClient()..connectionTimeout = const Duration(seconds: 4);
   try {
     final req = await client.getUrl(Uri.parse('$baseUrl$path'));
-    final resp = await req.close().timeout(const Duration(seconds: 6));
+    final resp = await req.close().timeout(timeout);
     if (resp.statusCode == 200) {
       final body = await resp.transform(utf8.decoder).join();
       final map = jsonDecode(body);

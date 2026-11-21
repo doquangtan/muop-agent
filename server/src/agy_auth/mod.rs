@@ -13,6 +13,7 @@ mod flow;
 pub(crate) mod host;
 pub mod socket;
 mod tui;
+pub(crate) mod usage;
 
 use crate::chat::context_window::rpc_post;
 use crate::models::{AccountsStatus, AgyAuthEvent};
@@ -602,7 +603,7 @@ pub(crate) fn sync_quotas() {
     host::restart();
     crate::scanner::clear_antigravity_quota_cache();
     let Some(io) = IO.get() else { return };
-    let snapshot = crate::scanner::quota_snapshot();
+    let snapshot = crate::scanner::quota_snapshot(false);
     if let (Ok(val), Some(ns)) = (serde_json::to_value(&snapshot), io.of("/")) {
         let _ = ns.emit("quotas:update", &val);
     }

@@ -1,13 +1,26 @@
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:media_kit/media_kit.dart';
 
+import 'package:muop_agent/core/di/app_dependencies.dart';
+import 'package:muop_agent/core/state/server_address_provider.dart';
 import 'package:muop_agent/core/theme/app_theme.dart';
 import 'package:muop_agent/features/dashboard/presentation/dashboard_screen.dart';
 
-void main() {
+Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   MediaKit.ensureInitialized();
-  runApp(const MuopAgentMonitorApp());
+  // Địa chỉ server đã lưu được nạp trước khi dựng màn hình đầu tiên
+  final container = ProviderContainer();
+  container
+      .read(serverAddressProvider.notifier)
+      .change(await AppDependencies.connection.loadSavedServerAddress());
+  runApp(
+    UncontrolledProviderScope(
+      container: container,
+      child: const MuopAgentMonitorApp(),
+    ),
+  );
 }
 
 class MuopAgentMonitorApp extends StatefulWidget {
@@ -23,8 +36,9 @@ class _MuopAgentMonitorAppState extends State<MuopAgentMonitorApp> {
 
   void _toggleTheme() {
     setState(() {
-      _themeMode =
-          _themeMode == ThemeMode.dark ? ThemeMode.light : ThemeMode.dark;
+      _themeMode = _themeMode == ThemeMode.dark
+          ? ThemeMode.light
+          : ThemeMode.dark;
     });
   }
 
@@ -38,10 +52,7 @@ class _MuopAgentMonitorAppState extends State<MuopAgentMonitorApp> {
       title: 'Mướp Agents',
       debugShowCheckedModeBanner: false,
       themeMode: _themeMode,
-      theme: buildAppTheme(
-        seedColor: _seedColor,
-        brightness: Brightness.light,
-      ),
+      theme: buildAppTheme(seedColor: _seedColor, brightness: Brightness.light),
       darkTheme: buildAppTheme(
         seedColor: _seedColor,
         brightness: Brightness.dark,

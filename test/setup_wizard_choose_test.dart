@@ -4,6 +4,7 @@ import 'package:material_ui/material_ui.dart';
 import 'package:muop_agent/features/setup/domain/setup_entities.dart';
 import 'package:muop_agent/features/setup/domain/setup_repository.dart';
 import 'package:muop_agent/features/setup/presentation/setup_wizard_screen.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 /// Repository giả: trả về một trạng thái cố định, không gọi socket
 class _FakeSetupRepository implements SetupRepository {
@@ -68,14 +69,11 @@ SetupStatus _status({
 
 /// Mở wizard, bấm "Tiếp tục" ở bước kiểm tra để sang bước chọn CLI
 Future<void> _gotoChooseStep(WidgetTester tester, SetupStatus status) async {
-  await tester.pumpWidget(
-    MaterialApp(
+  await tester.pumpWidget(ProviderScope(child: MaterialApp(
       home: SetupWizardScreen(
-        serverAddress: '127.0.0.1:8787',
         repository: _FakeSetupRepository(status),
       ),
-    ),
-  );
+    ),));
   await tester.pumpAndSettle();
   // Khối SSH đẩy nút xuống dưới: cuộn tới nút rồi mới bấm
   final next = find.widgetWithText(FilledButton, 'Tiếp tục');

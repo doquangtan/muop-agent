@@ -3,21 +3,40 @@ import 'package:material_ui/material_ui.dart';
 import 'package:muop_agent/core/di/app_dependencies.dart';
 import 'package:muop_agent/core/theme/app_theme.dart';
 import 'package:muop_agent/features/lsp/domain/lsp_entities.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:muop_agent/core/state/server_address_provider.dart';
 
 /// Cài đặt đường dẫn language server (gopls, dart, rust-analyzer) cho các máy có đường dẫn khác.
 /// Đường dẫn được lưu trong SQLite trên server; để trống và lưu = dùng lại đường dẫn tự dò.
-class LspSettingsScreen extends StatefulWidget {
+/// Màn gắn với server đang kết nối: đổi địa chỉ (provider toàn cục) thì dựng lại và tải lại dữ liệu
+class LspSettingsScreen extends ConsumerWidget {
   const LspSettingsScreen({
+    super.key,
+  });
+
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final serverAddress = ref.watch(serverAddressProvider);
+    return LspSettingsScreenView(
+      key: ValueKey(serverAddress),
+      serverAddress: serverAddress,
+    );
+  }
+}
+
+class LspSettingsScreenView extends StatefulWidget {
+  const LspSettingsScreenView({
     super.key,
     required this.serverAddress,
   });
   final String serverAddress;
 
   @override
-  State<LspSettingsScreen> createState() => _LspSettingsScreenState();
+  State<LspSettingsScreenView> createState() => _LspSettingsScreenState();
 }
 
-class _LspSettingsScreenState extends State<LspSettingsScreen> {
+class _LspSettingsScreenState extends State<LspSettingsScreenView> {
   List<LspLanguageStatus> _languages = const [];
   bool _loading = true;
   String? _loadError;

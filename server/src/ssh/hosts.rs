@@ -16,21 +16,30 @@ use tokio::process::Command;
 
 const MAX_OUTPUT_BYTES: usize = 200 * 1024;
 
+/// "Máy này" là mục mặc định: luôn có, không sửa hay xóa được (xem `setup::ssh::ensure_local_host`)
+pub fn is_builtin(row: &SshHostRow) -> bool {
+    crate::setup::ssh::local_host_id() == Some(row.id)
+}
+
 pub fn to_dto(row: &SshHostRow) -> SshHostDto {
+    let builtin = is_builtin(row);
     SshHostDto {
         id: row.id,
         name: row.name.clone(),
         host: row.host.clone(),
         port: row.port,
         username: row.username.clone(),
-        // Khớp với `exec`: có mật khẩu thì dùng mật khẩu, không thì dùng key
-        auth_type: if row.password.is_empty() && !row.private_key.is_empty() {
+        // Mục mặc định không dùng mật khẩu/khóa; các máy khác: có mật khẩu thì dùng mật khẩu, không thì key
+        auth_type: if builtin {
+            "local".into()
+        } else if row.password.is_empty() && !row.private_key.is_empty() {
             "key".into()
         } else {
             "password".into()
         },
-        has_password: !row.password.is_empty(),
-        has_key: !row.private_key.is_empty(),
+        has_password: !builtin && !row.password.is_empty(),
+        has_key: !builtin && !row.private_key.is_empty(),
+        builtin,
     }
 }
 
@@ -103,37 +112,77 @@ fn error_response(msg: impl Into<String>) -> SshExecResponse {
     }
 }
 
+/// Máy trỏ về chính server (loopback, đúng user đang chạy server): mở shell và chạy lệnh trực tiếp,
+/// không qua `ssh` (không cần sshd hay khóa).
+pub fn is_local(row: &SshHostRow) -> bool {
+    is_local_with(&row.host, &row.username, &server_user())
+}
+
+pub fn is_local_with(host: &str, username: &str, server_user: &str) -> bool {
+    matches!(host.trim(), "127.0.0.1" | "localhost" | "::1")
+        && !username.is_empty()
+        && username == server_user
+}
+
+/// User đang chạy server
+pub fn server_user() -> String {
+    std::env::var("USER")
+        .or_else(|_| std::env::var("LOGNAME"))
+        .unwrap_or_default()
+}
+
+/// Shell của user trên máy server (`$SHELL`, hoặc `/bin/sh`)
+pub fn local_shell() -> PathBuf {
+    std::env::var_os("SHELL")
+        .map(PathBuf::from)
+        .filter(|p| p.is_absolute() && p.exists())
+        .unwrap_or_else(|| PathBuf::from("/bin/sh"))
+}
+
 /// Chạy `command` trên máy `row` và trả về stdout/stderr/exit code.
 pub async fn exec(row: &SshHostRow, command: &str, timeout_secs: u64) -> SshExecResponse {
     let command = command.trim();
     if command.is_empty() {
         return error_response("Lệnh trống");
     }
-    let Some(tmp) = TempDir::create() else {
-        return error_response("Không tạo được thư mục tạm");
+    // Máy này: shell của server chạy trực tiếp (giữ tmp để khóa tạm còn sống tới khi xong)
+    let (mut cmd, _tmp): (Command, Option<TempDir>) = if is_local(row) {
+        let mut c = Command::new(local_shell());
+        c.args(["-i", "-c", command]);
+        if let Some(home) = std::env::var_os("HOME")
+            .map(PathBuf::from)
+            .filter(|p| p.is_dir())
+        {
+            c.current_dir(home);
+        }
+        (c, None)
+    } else {
+        let Some(tmp) = TempDir::create() else {
+            return error_response("Không tạo được thư mục tạm");
+        };
+        let mut c = Command::new("ssh");
+        c.arg("-T")
+            .arg("-p")
+            .arg(row.port.to_string())
+            .args(["-o", "StrictHostKeyChecking=accept-new"])
+            .args(["-o", "ConnectTimeout=10"])
+            .args(["-o", "NumberOfPasswordPrompts=1"]);
+        if let Err(e) = apply_auth(&mut c, row, tmp.path()) {
+            return error_response(e);
+        }
+        // Chạy lệnh bằng shell tương tác của user (đọc .bashrc) để PATH giống khi mở terminal
+        c.arg(format!("{}@{}", row.username, row.host))
+            .arg(remote_interactive_command(command));
+        (c, Some(tmp))
     };
-    let mut cmd = Command::new("ssh");
-    cmd.arg("-T")
-        .arg("-p")
-        .arg(row.port.to_string())
-        .args(["-o", "StrictHostKeyChecking=accept-new"])
-        .args(["-o", "ConnectTimeout=10"])
-        .args(["-o", "NumberOfPasswordPrompts=1"]);
-    if let Err(e) = apply_auth(&mut cmd, row, tmp.path()) {
-        return error_response(e);
-    }
-
-    // Chạy lệnh bằng shell tương tác của user (đọc .bashrc) để PATH giống khi mở terminal
-    cmd.arg(format!("{}@{}", row.username, row.host))
-        .arg(remote_interactive_command(command))
-        .stdin(Stdio::null())
+    cmd.stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
 
     let child = match cmd.spawn() {
         Ok(c) => c,
-        Err(e) => return error_response(format!("Không chạy được ssh: {e}")),
+        Err(e) => return error_response(format!("Không chạy được lệnh: {e}")),
     };
     let output = match tokio::time::timeout(
         Duration::from_secs(timeout_secs.clamp(5, 300)),
@@ -281,5 +330,19 @@ mod tests {
         assert!(!json.contains("secret"));
         assert!(!json.contains("KEY"));
         assert!(dto.has_password && dto.has_key);
+    }
+}
+
+#[cfg(test)]
+mod local_tests {
+    use super::*;
+
+    #[test]
+    fn loopback_with_server_user_is_local() {
+        assert!(is_local_with("127.0.0.1", "john", "john"));
+        assert!(is_local_with("localhost", "john", "john"));
+        assert!(!is_local_with("192.168.31.216", "john", "john"));
+        assert!(!is_local_with("127.0.0.1", "root", "john"));
+        assert!(!is_local_with("127.0.0.1", "", ""));
     }
 }

@@ -239,7 +239,7 @@ pub fn auto_setup() -> Result<(), String> {
     let ok = test_login();
     store::set_app_setting(KEY_LOGIN_OK, if ok { "1" } else { "0" });
     if ok {
-        sync_local_host();
+        ensure_local_host();
     }
     Ok(())
 }
@@ -268,25 +268,30 @@ pub fn verify_pasted(pasted: &str) -> Result<(), String> {
     if !ok {
         return Err("Đã có khóa nhưng chưa đăng nhập được bằng khóa. Kiểm tra sshd cho phép đăng nhập bằng public key.".into());
     }
-    sync_local_host();
+    ensure_local_host();
     Ok(())
 }
 
 /// Lưu máy này vào danh sách máy SSH để mở terminal. Trả về id máy đã lưu.
-fn sync_local_host() -> Option<i64> {
-    let private_key = fs::read_to_string(key_path()).ok()?;
-    let existing = store::get_app_setting(KEY_HOST_ID)
-        .and_then(|s| s.parse::<i64>().ok())
+/// Id của "Máy này" (mục mặc định, không sửa/xóa được), nếu đã lưu
+pub fn local_host_id() -> Option<i64> {
+    store::get_app_setting(KEY_HOST_ID).and_then(|s| s.parse::<i64>().ok())
+}
+
+/// Đảm bảo "Máy này" luôn có trong `ssh_hosts`: loopback, đúng user đang chạy server, không khóa.
+/// Mục mặc định của màn SSH: gọi khi khởi động và mỗi lần liệt kê máy.
+pub fn ensure_local_host() -> Option<i64> {
+    let existing_id = local_host_id()
         .filter(|id| store::get_ssh_host(*id).is_some())
         .unwrap_or(0);
     let row = store::SshHostRow {
-        id: existing,
+        id: existing_id,
         name: HOST_NAME.into(),
         host: LOCAL_HOST.into(),
         port: LOCAL_PORT,
-        username: username(),
+        username: crate::ssh::hosts::server_user(),
         password: String::new(),
-        private_key,
+        private_key: String::new(),
     };
     let id = store::save_ssh_host(&row)?;
     store::set_app_setting(KEY_HOST_ID, &id.to_string());
@@ -298,29 +303,13 @@ fn sync_local_host() -> Option<i64> {
 /// Mở terminal SSH tới máy này chạy `agy` (đăng nhập, hoặc đồng ý điều khoản) trong màn hình SSH của app.
 /// Trả về (id phiên, id máy đã lưu).
 pub fn open_agy_terminal() -> Result<(String, i64), String> {
-    let st = status();
-    if !st.client {
-        return Err("chưa có OpenSSH client (lệnh ssh)".into());
-    }
-    if !st.sshd_running {
-        return Err(
-            "OpenSSH server (sshd) chưa chạy trên máy này, hãy bật sshd trong màn cài đặt".into(),
-        );
-    }
-    if !st.ready {
-        return Err("SSH của máy này chưa sẵn sàng, hãy thiết lập SSH trong màn cài đặt".into());
-    }
-    let host_id = sync_local_host().ok_or("không lưu được máy SSH của server")?;
-    let row = store::get_ssh_host(host_id).ok_or("không đọc được máy SSH vừa lưu")?;
+    // Không qua ssh: agy chạy trực tiếp trong PTY của server ("SSH ảo"), nên không cần sshd,
+    // khóa SSH hay máy SSH đã lưu. Cùng môi trường với các lệnh agy khác của server.
     let agy = crate::setup::install::find_bin("agy").ok_or("không tìm thấy lệnh agy")?;
     let io = crate::setup::io().ok_or("server chưa sẵn sàng")?;
     let sid = crate::ssh::terminal::new_session_id();
-    let remote = format!(
-        "exec {}",
-        crate::ssh::hosts::shell_quote(&agy.display().to_string())
-    );
-    crate::ssh::terminal::open_with(io, &sid, &row, 120, 40, Some(remote))?;
-    Ok((sid, host_id))
+    crate::ssh::terminal::open_local(io, &sid, &agy, &[], 120, 40, 0, "Agy (máy chủ)")?;
+    Ok((sid, 0))
 }
 
 #[cfg(test)]

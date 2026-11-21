@@ -1,6 +1,8 @@
 //! Quản lý Docker trên máy SSH đã lưu.
 //!
 //! - Mỗi máy có tối đa một **phiên Docker**: một kết nối SSH giữ sẵn (ControlMaster), tách biệt với phiên terminal.
+//! - **Máy này** (loopback, đúng user server, xem `ssh::hosts::is_local`): không dùng ssh, chạy docker trực tiếp
+//!   bằng shell của server (`$SHELL -i -c`). Không có ControlMaster, không cần sshd hay mật khẩu.
 //! - Phiên tồn tại khi màn hình đóng. Chỉ kết thúc khi người dùng bấm "Kết thúc phiên", khi không được dùng
 //!   quá `IDLE_TIMEOUT`, hoặc khi server khởi động lại.
 //! - Mỗi lần dùng, nếu kết nối đã rớt thì tự kết nối lại bằng thông tin đã lưu.
@@ -86,6 +88,24 @@ fn target(row: &SshHostRow) -> String {
     format!("{}@{}", row.username, row.host)
 }
 
+/// Máy này: chạy trực tiếp trên server, không qua ssh
+fn is_local_session(s: &DockerSession) -> bool {
+    crate::ssh::hosts::is_local(&s.host)
+}
+
+/// Lệnh shell trên máy server (`$SHELL -i -c`), cùng PATH với terminal của máy này
+fn local_command(command: &str) -> Command {
+    let mut cmd = Command::new(crate::ssh::hosts::local_shell());
+    cmd.args(["-i", "-c", command]);
+    if let Some(home) = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .filter(|p| p.is_dir())
+    {
+        cmd.current_dir(home);
+    }
+    cmd
+}
+
 fn snapshot(s: &DockerSession) -> DockerSessionDto {
     let inner = lock(&s.inner);
     DockerSessionDto {
@@ -117,7 +137,10 @@ pub async fn open(row: SshHostRow) -> Result<DockerSessionDto, String> {
     if row.host.is_empty() || row.username.is_empty() {
         return Err("Thiếu host hoặc username".into());
     }
-    if row.password.is_empty() && row.private_key.trim().is_empty() {
+    if !crate::ssh::hosts::is_local(&row)
+        && row.password.is_empty()
+        && row.private_key.trim().is_empty()
+    {
         return Err("Máy này chưa có mật khẩu hoặc private key".into());
     }
     let open_lock = OPEN_LOCK.get_or_init(|| AsyncMutex::new(()));
@@ -174,6 +197,14 @@ pub async fn stream_command(session_id: &str, command: &str) -> Result<Command, 
     };
     touch(&s);
     ensure_connected(&s).await?;
+    if is_local_session(&s) {
+        let mut cmd = local_command(command);
+        cmd.stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .kill_on_drop(true);
+        return Ok(cmd);
+    }
     let mut cmd = Command::new("ssh");
     cmd.arg("-S")
         .arg(&s.ctl)
@@ -278,6 +309,10 @@ pub fn cleanup_stale() {
 }
 
 async fn shutdown(s: &DockerSession) {
+    if is_local_session(s) {
+        let _ = fs::remove_dir_all(&s.dir);
+        return;
+    }
     let _ = tokio::time::timeout(
         Duration::from_secs(5),
         Command::new("ssh")
@@ -296,6 +331,10 @@ async fn shutdown(s: &DockerSession) {
 
 /// Thiết lập kết nối ControlMaster (`ssh -MNf`): sau khi xác thực, ssh tự chạy nền và giữ socket.
 async fn connect(s: &DockerSession) -> Result<(), String> {
+    if is_local_session(s) {
+        lock(&s.inner).connected = true;
+        return Ok(());
+    }
     let _ = fs::remove_file(&s.ctl);
     let mut cmd = Command::new("ssh");
     cmd.arg("-M")
@@ -338,6 +377,9 @@ async fn connect(s: &DockerSession) -> Result<(), String> {
 }
 
 async fn master_alive(s: &DockerSession) -> bool {
+    if is_local_session(s) {
+        return true;
+    }
     Command::new("ssh")
         .arg("-S")
         .arg(&s.ctl)
@@ -372,21 +414,26 @@ async fn run_once(
     command: &str,
     timeout: Duration,
 ) -> Result<RemoteOutput, String> {
-    let mut cmd = Command::new("ssh");
-    cmd.arg("-S")
-        .arg(&s.ctl)
-        .args(["-o", "ControlMaster=no"])
-        .args(["-o", "ConnectTimeout=10"])
-        .arg(target(&s.host))
-        // Shell tương tác của user để PATH đầy đủ (giống chạy lệnh SSH)
-        .arg(crate::ssh::hosts::remote_interactive_command(command))
-        .stdin(Stdio::null())
+    let mut cmd = if is_local_session(s) {
+        local_command(command)
+    } else {
+        let mut c = Command::new("ssh");
+        c.arg("-S")
+            .arg(&s.ctl)
+            .args(["-o", "ControlMaster=no"])
+            .args(["-o", "ConnectTimeout=10"])
+            .arg(target(&s.host))
+            // Shell tương tác của user để PATH đầy đủ (giống chạy lệnh SSH)
+            .arg(crate::ssh::hosts::remote_interactive_command(command));
+        c
+    };
+    cmd.stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
     let child = cmd
         .spawn()
-        .map_err(|e| format!("Không chạy được ssh: {e}"))?;
+        .map_err(|e| format!("Không chạy được lệnh: {e}"))?;
     let out = tokio::time::timeout(timeout, child.wait_with_output())
         .await
         .map_err(|_| "Hết thời gian chờ lệnh Docker".to_string())?

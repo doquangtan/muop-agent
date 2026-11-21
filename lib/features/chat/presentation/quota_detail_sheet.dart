@@ -165,7 +165,17 @@ class _QuotaReportSection extends StatelessWidget {
             ),
           ),
         ),
-        if (!report.hasData)
+        if (report.loading)
+          Padding(
+            padding: const EdgeInsets.symmetric(vertical: 8),
+            child: Text(
+              'Đang tải dữ liệu quota…',
+              style: textTheme.bodySmall?.copyWith(
+                color: colorScheme.onSurfaceVariant,
+              ),
+            ),
+          )
+        else if (!report.hasData)
           Padding(
             padding: const EdgeInsets.symmetric(vertical: 8),
             child: Text(

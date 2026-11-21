@@ -25,6 +25,7 @@ class SshTerminalPanel extends StatefulWidget {
     this.onEnded,
     this.onClosed,
     this.onRestart,
+    this.initialCommand,
   });
 
   final int hostId;
@@ -51,6 +52,9 @@ class SshTerminalPanel extends StatefulWidget {
 
   /// Bấm "Mở lại" khi phiên đã đóng. Null = mở phiên shell mới trên máy.
   final VoidCallback? onRestart;
+
+  /// Lệnh gõ vào shell ngay khi mở phiên mới (không áp dụng khi gắn lại phiên đang chạy)
+  final String? initialCommand;
 
   @override
   State<SshTerminalPanel> createState() => _SshTerminalPanelState();
@@ -180,6 +184,11 @@ class _SshTerminalPanelState extends State<SshTerminalPanel> {
         return;
       }
       sid = res.sessionId;
+      final cmd = widget.initialCommand;
+      if (cmd != null && cmd.trim().isNotEmpty) {
+        // PTY đệm đầu vào nên gửi sớm vẫn được shell đọc khi sẵn sàng
+        AppDependencies.ssh.sendSshInput(sid, utf8.encode('${cmd.trimRight()}\r'));
+      }
     }
     setState(() {
       _sessionId = sid;

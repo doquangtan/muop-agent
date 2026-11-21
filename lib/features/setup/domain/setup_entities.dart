@@ -207,11 +207,10 @@ class SetupStatus {
   bool isInstalled(String id) => tool(id)?.installed ?? false;
 
   /// Cần mở wizard khi thiếu một mục: chưa khởi tạo, chưa chọn CLI, CLI đã chọn chưa cài,
-  /// thiếu tool bắt buộc, hoặc SSH của máy này chưa sẵn sàng. Đăng nhập agy/claude không tính.
+  /// hoặc thiếu tool bắt buộc. SSH không tính: máy này dùng shell của server trực tiếp. Đăng nhập agy/claude không tính.
   bool get needsSetup =>
       !completed ||
       selectedClis.isEmpty ||
       selectedClis.any((id) => !isInstalled(id)) ||
-      tools.any((t) => t.group == 'base' && !t.installed) ||
-      !ssh.ready;
+      tools.any((t) => t.group == 'base' && !t.installed);
 }

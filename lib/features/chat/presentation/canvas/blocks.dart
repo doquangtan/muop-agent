@@ -273,6 +273,42 @@ extension _CanvasExtBlocks on _ChatCanvasViewState {
                     ),
                   ),
                   const Spacer(),
+                  if (isRunnableShellBlock(block.language, block.text)) ...[
+                    InkWell(
+                      borderRadius: BorderRadius.circular(4),
+                      onTap: () => showRunCommandDialog(
+                        context,
+                        serverAddress: widget.serverBaseUrl,
+                        command: block.text,
+                      ),
+                      child: Padding(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 6,
+                          vertical: 2,
+                        ),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(
+                              Icons.play_arrow_rounded,
+                              size: 14,
+                              color: colorScheme.primary,
+                            ),
+                            const SizedBox(width: 3),
+                            Text(
+                              'Run',
+                              style: TextStyle(
+                                fontSize: 11,
+                                color: colorScheme.primary,
+                                fontWeight: FontWeight.w700,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 4),
+                  ],
                   InkWell(
                     borderRadius: BorderRadius.circular(4),
                     onTap: () {

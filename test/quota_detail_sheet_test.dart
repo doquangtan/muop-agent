@@ -173,6 +173,15 @@ void main() {
     });
   }
 
+  testWidgets('đang đọc quota: hiện trạng thái đang tải, không hiện lỗi', (tester) async {
+    _usePhoneViewport(tester, const Size(360, 640));
+    await _openSheet(tester, [QuotaReport.loading('agy')]);
+
+    expect(find.text('Đang tải dữ liệu quota…'), findsOneWidget);
+    expect(find.textContaining('Không có dữ liệu quota'), findsNothing);
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets('provider không có dữ liệu hiện lý do, không hiện số', (tester) async {
     _usePhoneViewport(tester, const Size(360, 640));
     await _openSheet(tester, [

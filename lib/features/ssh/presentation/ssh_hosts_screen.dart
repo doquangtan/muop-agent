@@ -5,21 +5,40 @@ import 'package:muop_agent/core/theme/app_theme.dart';
 import 'package:muop_agent/core/widgets/desktop_panel.dart';
 import 'package:muop_agent/features/ssh/domain/ssh_entities.dart';
 import 'package:muop_agent/features/ssh/presentation/ssh_terminal_screen.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:muop_agent/core/state/server_address_provider.dart';
 
 /// Màn hình quản lý các máy SSH đã lưu (lưu trên Rust Server).
 /// Mật khẩu và private key được gửi lên server và không bao giờ trả về client.
-class SshHostsScreen extends StatefulWidget {
+/// Màn gắn với server đang kết nối: đổi địa chỉ (provider toàn cục) thì dựng lại và tải lại dữ liệu
+class SshHostsScreen extends ConsumerWidget {
   const SshHostsScreen({
+    super.key,
+  });
+
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final serverAddress = ref.watch(serverAddressProvider);
+    return SshHostsScreenView(
+      key: ValueKey(serverAddress),
+      serverAddress: serverAddress,
+    );
+  }
+}
+
+class SshHostsScreenView extends StatefulWidget {
+  const SshHostsScreenView({
     super.key,
     required this.serverAddress,
   });
   final String serverAddress;
 
   @override
-  State<SshHostsScreen> createState() => _SshHostsScreenState();
+  State<SshHostsScreenView> createState() => _SshHostsScreenState();
 }
 
-class _SshHostsScreenState extends State<SshHostsScreen> {
+class _SshHostsScreenState extends State<SshHostsScreenView> {
   List<SshHost> _hosts = const [];
   /// Phiên terminal đang chạy trên server
   List<SshTerminalSession> _sessions = const [];
@@ -65,7 +84,6 @@ class _SshHostsScreenState extends State<SshHostsScreen> {
       isScrollControlled: true,
       useSafeArea: true,
       builder: (_) => _SshHostForm(
-        serverAddress: widget.serverAddress,
         host: host,
       ),
     );
@@ -219,9 +237,11 @@ class _SshHostsScreenState extends State<SshHostsScreen> {
                             leading: CircleAvatar(
                               backgroundColor: scheme.primaryContainer,
                               child: Icon(
-                                isKey
-                                    ? Icons.vpn_key_rounded
-                                    : Icons.password_rounded,
+                                host.builtin
+                                    ? Icons.computer_rounded
+                                    : isKey
+                                        ? Icons.vpn_key_rounded
+                                        : Icons.password_rounded,
                                 size: 18,
                                 color: scheme.onPrimaryContainer,
                               ),
@@ -230,7 +250,9 @@ class _SshHostsScreenState extends State<SshHostsScreen> {
                                 style: textTheme.titleSmall
                                     ?.copyWith(fontWeight: FontWeight.w600)),
                             subtitle: Text(
-                              '${host.address} · ${isKey ? 'SSH key' : 'mật khẩu'}'
+                              host.builtin
+                                  ? 'Máy chủ này · mở shell trực tiếp'
+                                  : '${host.address} · ${isKey ? 'SSH key' : 'mật khẩu'}'
                               '${_runningSessionFor(host) != null ? ' · đang có phiên chạy' : ''}',
                               style: textTheme.bodySmall?.copyWith(
                                 color: scheme.onSurfaceVariant,
@@ -244,17 +266,20 @@ class _SshHostsScreenState extends State<SshHostsScreen> {
                                   icon: const Icon(Icons.bolt_rounded),
                                   onPressed: () => _openExec(host),
                                 ),
-                                IconButton(
-                                  tooltip: 'Sửa',
-                                  icon: const Icon(Icons.edit_outlined),
-                                  onPressed: () => _openForm(host),
-                                ),
-                                IconButton(
-                                  tooltip: 'Xóa',
-                                  icon: Icon(Icons.delete_outline_rounded,
-                                      color: scheme.error),
-                                  onPressed: () => _confirmDelete(host),
-                                ),
+                                // Máy mặc định: không sửa, không xóa
+                                if (!host.builtin) ...[
+                                  IconButton(
+                                    tooltip: 'Sửa',
+                                    icon: const Icon(Icons.edit_outlined),
+                                    onPressed: () => _openForm(host),
+                                  ),
+                                  IconButton(
+                                    tooltip: 'Xóa',
+                                    icon: Icon(Icons.delete_outline_rounded,
+                                        color: scheme.error),
+                                    onPressed: () => _confirmDelete(host),
+                                  ),
+                                ],
                               ],
                             ),
                           ),
@@ -266,8 +291,28 @@ class _SshHostsScreenState extends State<SshHostsScreen> {
 }
 
 /// Form thêm/sửa máy SSH
-class _SshHostForm extends StatefulWidget {
+/// Màn gắn với server đang kết nối: đổi địa chỉ (provider toàn cục) thì dựng lại và tải lại dữ liệu
+class _SshHostForm extends ConsumerWidget {
   const _SshHostForm({
+    this.host,
+  });
+
+  final SshHost? host;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final serverAddress = ref.watch(serverAddressProvider);
+    return _SshHostFormView(
+      key: ValueKey(serverAddress),
+      serverAddress: serverAddress,
+      host: host,
+    );
+  }
+}
+
+class _SshHostFormView extends StatefulWidget {
+  const _SshHostFormView({
+    super.key,
     required this.serverAddress,
     this.host,
   });
@@ -275,10 +320,10 @@ class _SshHostForm extends StatefulWidget {
   final SshHost? host;
 
   @override
-  State<_SshHostForm> createState() => _SshHostFormState();
+  State<_SshHostFormView> createState() => _SshHostFormState();
 }
 
-class _SshHostFormState extends State<_SshHostForm> {
+class _SshHostFormState extends State<_SshHostFormView> {
   late final TextEditingController _name;
   late final TextEditingController _host;
   late final TextEditingController _port;

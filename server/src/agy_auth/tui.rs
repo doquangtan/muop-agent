@@ -94,6 +94,21 @@ pub(super) fn type_line(session: &mut Session, text: &str) -> Result<(), String>
     session.write("\r")
 }
 
+/// Vị trí hiện tại của đầu ra TUI, để đọc chữ in ra sau đó
+pub(super) fn output_mark(session: &Session) -> usize {
+    total(&session.out)
+}
+
+/// Chữ TUI đã in ra từ vị trí `mark` (đã bỏ ANSI)
+pub(super) fn text_since(session: &Session, mark: usize) -> String {
+    snapshot_text(&session.out, mark).0
+}
+
+/// Gửi dữ liệu thô tới TUI (ví dụ phím Escape `\u{1b}`)
+pub(super) fn send_raw(session: &mut Session, data: &str) -> Result<(), String> {
+    session.write(data)
+}
+
 fn total(out: &Arc<Mutex<Output>>) -> usize {
     out.lock().map(|o| o.total).unwrap_or(0)
 }
