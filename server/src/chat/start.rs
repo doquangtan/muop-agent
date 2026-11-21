@@ -231,6 +231,7 @@ pub async fn start_chat_turn_attempt(
             result_error: None,
             init_tx: Some(tx),
             text_step: None,
+            thoughts: Vec::new(),
         };
 
         if let Some(out) = stdout {

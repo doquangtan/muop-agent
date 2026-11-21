@@ -184,6 +184,8 @@ pub(super) fn parse_transcript_file(
     let mut commands_deque: VecDeque<CommandExecutionRecord> = VecDeque::new();
     let mut spawned_subagents: Vec<SpawnedSubagentMeta> = Vec::new();
     let mut pending_subagent_indices: Vec<usize> = Vec::new();
+    // Vị trí đầu tiên trong `spawned_subagents` của lượt hiện tại (sau tin nhắn người dùng gần nhất)
+    let mut turn_spawn_start: usize = 0;
 
     let conv_id_re = Regex::new(r#""conversationId"\s*:\s*"([^"]+)""#).ok()?;
     let mut total_step_count: usize = 0;
@@ -238,6 +240,10 @@ pub(super) fn parse_transcript_file(
         total_input += step.input_tokens;
         total_output += step.output_tokens;
         total_cache += step.cache_read_tokens;
+
+        if step.step_type == "USER_INPUT" && !step.content.is_empty() {
+            turn_spawn_start = spawned_subagents.len();
+        }
 
         if step.step_type == "USER_INPUT"
             && !step.content.is_empty()
@@ -481,6 +487,7 @@ pub(super) fn parse_transcript_file(
         files_touched,
         commands_run,
         spawned_subagents,
+        turn_spawn_start,
         total_input_tokens: total_input,
         total_output_tokens: total_output,
         total_cache_tokens: total_cache,

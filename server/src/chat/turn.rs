@@ -105,6 +105,9 @@ pub(super) struct TurnState {
     pub(super) init_tx: Option<oneshot::Sender<String>>,
     /// Chỉ số bước agy đang ghép `text_delta` vào (để biết khi nào sang bước mới)
     pub(super) text_step: Option<u64>,
+    /// Suy nghĩ của agy trong lượt, kèm vị trí trong `committed` lúc suy nghĩ bắt đầu.
+    /// Chỉ dùng để hiện trong văn bản đang stream (`with_thoughts`), không lưu vào nội dung cuối.
+    pub(super) thoughts: Vec<(usize, String)>,
 }
 
 /// Ghép một `text_delta` của agy vào văn bản đã chốt. Khi sang bước trả lời khác (chỉ số bước đổi),
@@ -130,11 +133,102 @@ pub(super) fn append_agy_text(
     committed.push_str(delta);
 }
 
+/// Ghi một `thinking_delta` của agy vào danh sách suy nghĩ. Các delta liên tiếp (không có text mới
+/// xen vào) được nối vào cùng một khối.
+pub(super) fn push_agy_thought(
+    thoughts: &mut Vec<(usize, String)>,
+    committed_len: usize,
+    delta: &str,
+) {
+    if delta.is_empty() {
+        return;
+    }
+    match thoughts.last_mut() {
+        Some((pos, text)) if *pos == committed_len => text.push_str(delta),
+        _ => thoughts.push((committed_len, delta.to_string())),
+    }
+}
+
+/// Văn bản hiển thị khi đang stream: `committed` với các khối suy nghĩ chèn đúng vị trí, dạng trích dẫn.
+pub(super) fn with_thoughts(committed: &str, thoughts: &[(usize, String)]) -> String {
+    if thoughts.is_empty() {
+        return committed.to_string();
+    }
+    let mut out = String::with_capacity(committed.len() + thoughts.len() * 64);
+    let mut last = 0usize;
+    for (pos, text) in thoughts {
+        let pos = (*pos).min(committed.len());
+        out.push_str(&committed[last..pos]);
+        last = pos;
+        if !out.is_empty() && !out.ends_with("\n\n") {
+            out.push_str(if out.ends_with('\n') { "\n" } else { "\n\n" });
+        }
+        out.push_str("> *💭 Suy nghĩ*\n");
+        for line in text.trim().lines() {
+            out.push_str("> ");
+            out.push_str(line);
+            out.push('\n');
+        }
+        out.push('\n');
+    }
+    out.push_str(&committed[last..]);
+    out
+}
+
 impl TurnState {
     pub(super) fn set_init(&mut self, cid: String) {
         self.tracked_id = cid.clone();
         if let Some(sender) = self.init_tx.take() {
             let _ = sender.send(cid);
         }
+    }
+}
+
+#[cfg(test)]
+mod thought_tests {
+    use super::*;
+
+    #[test]
+    fn consecutive_thought_deltas_merge_into_one_block() {
+        let mut thoughts = Vec::new();
+        push_agy_thought(&mut thoughts, 0, "Tôi cần ");
+        push_agy_thought(&mut thoughts, 0, "cộng hai số.");
+        assert_eq!(thoughts, vec![(0, "Tôi cần cộng hai số.".to_string())]);
+    }
+
+    #[test]
+    fn thought_after_text_starts_a_new_block_at_that_position() {
+        let mut thoughts = Vec::new();
+        let mut committed = String::from("Đang đọc file.");
+        push_agy_thought(&mut thoughts, committed.len(), "Cần xem nội dung.");
+        committed.push_str(" Đã xong.");
+        push_agy_thought(&mut thoughts, committed.len(), "Kiểm tra lại.");
+        assert_eq!(thoughts.len(), 2);
+        assert_eq!(thoughts[0].0, "Đang đọc file.".len());
+        assert_eq!(thoughts[1].0, committed.len());
+    }
+
+    #[test]
+    fn with_thoughts_interleaves_quotes_and_keeps_committed_clean() {
+        let committed = "Đang đọc file. Đã xong.";
+        let thoughts = vec![
+            (0, "Cần đọc trước.".to_string()),
+            (
+                "Đang đọc file.".len(),
+                "Kiểm tra lại\nnội dung.".to_string(),
+            ),
+        ];
+        let shown = with_thoughts(committed, &thoughts);
+        assert!(shown.starts_with("> *💭 Suy nghĩ*\n> Cần đọc trước.\n\n"));
+        assert!(shown.contains(
+            "Đang đọc file.\n\n> *💭 Suy nghĩ*\n> Kiểm tra lại\n> nội dung.\n\n Đã xong."
+        ));
+        // Nội dung cuối (committed) không bị lẫn suy nghĩ
+        assert_eq!(committed, "Đang đọc file. Đã xong.");
+    }
+
+    #[test]
+    fn with_thoughts_without_thoughts_returns_committed() {
+        assert_eq!(with_thoughts("Xin chào", &[]), "Xin chào");
     }
 }

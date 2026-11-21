@@ -1,0 +1,66 @@
+import 'package:muop_agent/features/sessions/domain/session_entities.dart';
+
+/// Provider có quota: khớp với `/api/quota/<provider>` của server
+const String kQuotaProviderAgy = 'agy';
+const String kQuotaProviderClaude = 'claude';
+
+/// Quota của một provider. Khi không lấy được dữ liệu thì `groups` rỗng và `error` ghi lý do.
+class QuotaReport {
+  const QuotaReport({
+    required this.provider,
+    required this.groups,
+    this.error = '',
+  });
+
+  /// Báo cáo khi chưa có dữ liệu (chưa tải, không kết nối được server...)
+  factory QuotaReport.missing(String provider, [String error = 'Chưa lấy được dữ liệu quota']) =>
+      QuotaReport(provider: provider, groups: const [], error: error);
+
+  factory QuotaReport.fromJson(String provider, Map<String, dynamic> json) {
+    final groups = <ModelQuotaGroup>[];
+    if (json['groups'] is List) {
+      for (final item in json['groups'] as List) {
+        if (item is Map) {
+          groups.add(ModelQuotaGroup.fromJson(Map<String, dynamic>.from(item)));
+        }
+      }
+    }
+    return QuotaReport(
+      provider: '${json['provider'] ?? provider}',
+      groups: groups,
+      error: '${json['error'] ?? ''}',
+    );
+  }
+
+  final String provider;
+  final List<ModelQuotaGroup> groups;
+  final String error;
+
+  /// Có ít nhất một cửa sổ quota để hiển thị
+  bool get hasData => groups.any((g) => g.buckets.isNotEmpty);
+
+  String get providerLabel => provider == kQuotaProviderClaude
+      ? 'Claude Code CLI'
+      : 'Antigravity (agy)';
+}
+
+/// Quota của cả hai provider: `GET /api/quota`
+class QuotaSnapshot {
+  const QuotaSnapshot({required this.agy, required this.claude});
+
+  factory QuotaSnapshot.fromJson(Map<String, dynamic> json) => QuotaSnapshot(
+        agy: _reportOf(json, kQuotaProviderAgy),
+        claude: _reportOf(json, kQuotaProviderClaude),
+      );
+
+  final QuotaReport agy;
+  final QuotaReport claude;
+
+  static QuotaReport _reportOf(Map<String, dynamic> json, String provider) {
+    final value = json[provider];
+    if (value is Map) {
+      return QuotaReport.fromJson(provider, Map<String, dynamic>.from(value));
+    }
+    return QuotaReport.missing(provider, 'Không đọc được dữ liệu quota');
+  }
+}

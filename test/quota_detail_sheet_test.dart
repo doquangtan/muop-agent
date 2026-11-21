@@ -2,6 +2,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:muop_agent/core/theme/app_theme.dart';
 import 'package:muop_agent/features/chat/presentation/quota_detail_sheet.dart';
+import 'package:muop_agent/features/quota/domain/quota_entities.dart';
 import 'package:muop_agent/features/sessions/domain/session_entities.dart';
 
 List<ModelQuotaGroup> _groups(int count) => [
@@ -34,9 +35,15 @@ List<ModelQuotaGroup> _groups(int count) => [
         ),
     ];
 
+/// Một provider có dữ liệu với [count] nhóm
+QuotaReport _report(String provider, int count) => QuotaReport(
+      provider: provider,
+      groups: _groups(count),
+    );
+
 Future<void> _openSheet(
   WidgetTester tester,
-  List<ModelQuotaGroup> groups,
+  List<QuotaReport> reports,
 ) async {
   await tester.pumpWidget(
     MaterialApp(
@@ -48,7 +55,7 @@ Future<void> _openSheet(
         builder: (context) => Scaffold(
           body: Center(
             child: TextButton(
-              onPressed: () => showQuotaDetailSheet(context, groups),
+              onPressed: () => showQuotaDetailSheet(context, reports),
               child: const Text('mở'),
             ),
           ),
@@ -139,7 +146,7 @@ void main() {
         'bảng quota nhiều nhóm cuộn được trên ${size.width.toInt()}x${size.height.toInt()}',
         (tester) async {
       _usePhoneViewport(tester, size);
-      await _openSheet(tester, _groups(8));
+      await _openSheet(tester, [_report('agy', 8)]);
 
       expect(tester.takeException(), isNull, reason: 'không được tràn layout');
 
@@ -166,11 +173,46 @@ void main() {
     });
   }
 
-  testWidgets('hiển thị thông báo khi chưa có dữ liệu quota', (tester) async {
+  testWidgets('provider không có dữ liệu hiện lý do, không hiện số', (tester) async {
     _usePhoneViewport(tester, const Size(360, 640));
-    await _openSheet(tester, const []);
+    await _openSheet(tester, [
+      QuotaReport.missing('claude', 'Chưa đăng nhập Claude Code CLI'),
+    ]);
 
-    expect(find.text('Chưa có dữ liệu quota'), findsOneWidget);
+    expect(find.text('Claude Code CLI'), findsOneWidget);
+    expect(
+      find.text('Không có dữ liệu quota: Chưa đăng nhập Claude Code CLI'),
+      findsOneWidget,
+    );
+    expect(find.textContaining('%'), findsNothing);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('chỉ hiện provider được truyền vào (màn chat Claude không có agy)',
+      (tester) async {
+    _usePhoneViewport(tester, const Size(360, 640));
+    await _openSheet(tester, [_report('claude', 1)]);
+
+    expect(find.text('Claude Code CLI'), findsOneWidget);
+    expect(find.text('Antigravity (agy)'), findsNothing);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('màn chung: provider có dữ liệu và provider lỗi hiện cùng lúc',
+      (tester) async {
+    _usePhoneViewport(tester, const Size(360, 640));
+    await _openSheet(tester, [
+      _report('agy', 1),
+      QuotaReport.missing('claude', 'Không kết nối được server'),
+    ]);
+
+    expect(find.text('Antigravity (agy)'), findsOneWidget);
+    expect(find.text('Nhóm 1'), findsOneWidget);
+    expect(find.text('Claude Code CLI'), findsOneWidget);
+    expect(
+      find.text('Không có dữ liệu quota: Không kết nối được server'),
+      findsOneWidget,
+    );
     expect(tester.takeException(), isNull);
   });
 }

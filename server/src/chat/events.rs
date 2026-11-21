@@ -35,13 +35,18 @@ pub(super) fn handle_agy_event(ctx: &TurnCtx, st: &mut TurnState, map: &Value) {
                 .and_then(|v| v.as_str())
                 .unwrap_or("agent_response")
                 .to_string();
+            // Suy nghĩ của agy (proto `thinking_delta`): chèn vào văn bản đang stream theo đúng vị trí
+            if let Some(delta) = su.get("thinking_delta").and_then(|v| v.as_str()) {
+                push_agy_thought(&mut st.thoughts, st.committed.len(), delta);
+            }
             if let Some(delta) = su.get("text_delta").and_then(|v| v.as_str()) {
                 let step = su.get("step_index").and_then(|v| v.as_u64());
                 append_agy_text(&mut st.committed, &mut st.text_step, step, delta);
             }
             if !st.tracked_id.is_empty() {
                 let tid = st.tracked_id.clone();
-                ctx.emit(&tid, st.committed.clone(), &step_type, String::new());
+                let shown = with_thoughts(&st.committed, &st.thoughts);
+                ctx.emit(&tid, shown, &step_type, String::new());
             }
         }
         "result" => {

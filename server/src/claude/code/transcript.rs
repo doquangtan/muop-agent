@@ -38,6 +38,8 @@ pub(super) fn parse_session_parts(
     let (mut context_tokens, mut context_model) = (0u64, String::new());
     let mut first_user_text = String::new();
     let mut spawns: Vec<SpawnedAgent> = Vec::new();
+    // Vị trí đầu tiên trong `spawns` của lượt hiện tại (sau tin nhắn người dùng gần nhất)
+    let mut turn_spawn_start: usize = 0;
     let mut last_record: Option<LastRecord> = None;
 
     for line in content.lines() {
@@ -94,12 +96,21 @@ pub(super) fn parse_session_parts(
                     _ => Vec::new(),
                 };
                 let text = texts.join("\n").trim().to_string();
+                // Thông báo hoàn tất của subagent nền do Claude tạo, không phải tin nhắn của người dùng
+                // (đã được ghi nhận ở record_agent_results nên bỏ qua khỏi lịch sử)
+                if text.starts_with("<task-notification>") {
+                    continue;
+                }
                 // Output của lệnh slash (`<local-command-...>`) không có lượt trả lời nên không tính là lượt chưa xong
                 if !text.starts_with("<local-command") {
                     last_record = Some(LastRecord::User);
                 }
+                // Bản ghi chỉ có tool_result (text rỗng) không phải tin nhắn mới của người dùng
                 if text.is_empty() {
                     continue;
+                }
+                if !text.starts_with("<local-command") {
+                    turn_spawn_start = spawns.len();
                 }
                 // Bỏ qua các text bọc trong tag hệ thống (<ide_selection>, <command-name>...) khi lấy tiêu đề
                 if first_user_text.is_empty() && !text.starts_with('<') {
@@ -358,10 +369,12 @@ pub(super) fn parse_session_parts(
     commands.truncate(50);
 
     // Chỉ session chính dựng cây sub-agent; transcript con đã được dựng từ lane của cha
+    // Lane chỉ gồm các lần gọi của lượt hiện tại; lượt trước đã xong không hiện lại
     let subagent_lanes = if is_subagent {
         Vec::new()
     } else {
-        build_subagent_lanes(path, &spawns, &project_name)
+        let start = turn_spawn_start.min(spawns.len());
+        build_subagent_lanes(path, &spawns[start..], &project_name)
     };
     let has_parallel_flow = !subagent_lanes.is_empty();
 
@@ -374,6 +387,7 @@ pub(super) fn parse_session_parts(
         current_phase: base_status.to_string(),
         steps,
         subagent_lanes,
+        lanes_loaded: true,
         files_touched: files,
         commands_run: commands,
         total_input_tokens: total_in,

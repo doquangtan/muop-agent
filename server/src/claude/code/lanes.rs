@@ -1,15 +1,31 @@
 use super::*;
 
-/// Ghi nhận kết quả của tool `Agent`/`Task`: `toolUseResult.agentId` trỏ tới transcript con
+/// Ghi nhận kết quả của tool `Agent`/`Task`: `toolUseResult.agentId` trỏ tới transcript con.
+///
+/// Subagent chạy nền (`isAsync` / `async_launched`) trả kết quả khởi chạy ngay, nên tool_result
+/// đó KHÔNG có nghĩa là subagent đã xong. Khi xong, Claude gửi tin nhắn `<task-notification>`
+/// (chuỗi) có `<tool-use-id>` và `<status>`; chỉ khi đó lane mới được đánh dấu hoàn tất.
 pub(super) fn record_agent_results(v: &Value, spawns: &mut [SpawnedAgent]) {
+    if let Some(text) = v
+        .get("message")
+        .and_then(|m| m.get("content"))
+        .and_then(|c| c.as_str())
+    {
+        record_task_notification(text, spawns);
+        return;
+    }
     let Some(Value::Array(blocks)) = v.get("message").and_then(|m| m.get("content")) else {
         return;
     };
-    let agent_id = v
-        .get("toolUseResult")
+    let result = v.get("toolUseResult");
+    let agent_id = result
         .and_then(|r| r.get("agentId"))
         .and_then(|x| x.as_str())
         .map(String::from);
+    let is_async = result.is_some_and(|r| {
+        r.get("isAsync").and_then(|x| x.as_bool()) == Some(true)
+            || r.get("status").and_then(|x| x.as_str()) == Some("async_launched")
+    });
     for block in blocks {
         if block.get("type").and_then(|x| x.as_str()) != Some("tool_result") {
             continue;
@@ -18,11 +34,37 @@ pub(super) fn record_agent_results(v: &Value, spawns: &mut [SpawnedAgent]) {
             continue;
         };
         if let Some(spawn) = spawns.iter_mut().find(|s| s.tool_use_id == tool_use_id) {
-            spawn.completed = true;
+            if !is_async {
+                spawn.completed = true;
+            }
             if spawn.agent_id.is_none() {
                 spawn.agent_id = agent_id.clone();
             }
         }
+    }
+}
+
+/// Đọc thông báo hoàn tất của subagent chạy nền: `<tool-use-id>` và `<status>` (kết thúc khi
+/// `completed`, `failed`, `killed`...). Đánh dấu lane tương ứng là đã xong.
+fn record_task_notification(text: &str, spawns: &mut [SpawnedAgent]) {
+    if !text.contains("<task-notification>") {
+        return;
+    }
+    let tag = |name: &str| -> Option<&str> {
+        let open = format!("<{name}>");
+        let close = format!("</{name}>");
+        let start = text.find(&open)? + open.len();
+        let end = text[start..].find(&close)? + start;
+        Some(text[start..end].trim())
+    };
+    let (Some(tool_use_id), Some(status)) = (tag("tool-use-id"), tag("status")) else {
+        return;
+    };
+    if !matches!(status, "completed" | "failed" | "killed" | "stopped") {
+        return;
+    }
+    if let Some(spawn) = spawns.iter_mut().find(|s| s.tool_use_id == tool_use_id) {
+        spawn.completed = true;
     }
 }
 

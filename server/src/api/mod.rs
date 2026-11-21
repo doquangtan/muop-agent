@@ -1,5 +1,7 @@
+pub mod agy_auth;
 pub mod chat;
 pub mod claude;
+pub mod claude_auth;
 pub mod docker;
 pub mod files;
 pub mod git;
@@ -8,7 +10,9 @@ pub mod meta;
 pub mod models;
 pub mod plans;
 pub mod projects;
+pub mod quota;
 pub mod sessions;
+pub mod setup;
 pub mod ssh;
 
 use crate::chat::AppState;
@@ -23,6 +27,9 @@ pub fn router() -> Router<AppState> {
         .route("/api/sessions", get(sessions::handle_sessions_list))
         .route("/api/meta", get(meta::handle_meta))
         .route("/api/streams", get(meta::handle_streams))
+        .route("/api/quota", get(quota::handle_quota_all))
+        .route("/api/quota/agy", get(quota::handle_quota_agy))
+        .route("/api/quota/claude", get(quota::handle_quota_claude))
         .route("/api/session", get(sessions::handle_session_detail))
         .route("/api/session/detail", get(sessions::handle_session_detail))
         .route("/api/session/steps", get(sessions::handle_session_steps))
@@ -35,6 +42,72 @@ pub fn router() -> Router<AppState> {
         .route(
             "/api/chat/retry/cancel",
             post(chat::handle_chat_retry_cancel),
+        )
+        .route(
+            "/api/agy/auth/status",
+            get(agy_auth::handle_agy_auth_status),
+        )
+        .route("/api/agy/auth/check", post(agy_auth::handle_agy_auth_check))
+        .route(
+            "/api/agy/auth/logout",
+            post(agy_auth::handle_agy_auth_logout),
+        )
+        .route(
+            "/api/agy/auth/login/start",
+            post(agy_auth::handle_agy_login_start),
+        )
+        .route(
+            "/api/agy/auth/login/submit",
+            post(agy_auth::handle_agy_login_submit),
+        )
+        .route(
+            "/api/agy/auth/login/cancel",
+            post(agy_auth::handle_agy_login_cancel),
+        )
+        .route(
+            "/api/claude/auth/status",
+            get(claude_auth::handle_claude_auth_status),
+        )
+        .route(
+            "/api/claude/auth/logout",
+            post(claude_auth::handle_claude_auth_logout),
+        )
+        .route(
+            "/api/claude/auth/login/start",
+            post(claude_auth::handle_claude_login_start),
+        )
+        .route(
+            "/api/claude/auth/login/submit",
+            post(claude_auth::handle_claude_login_submit),
+        )
+        .route(
+            "/api/claude/auth/login/cancel",
+            post(claude_auth::handle_claude_login_cancel),
+        )
+        .route(
+            "/api/claude/auth/start",
+            post(claude_auth::handle_claude_login_start),
+        )
+        .route(
+            "/api/claude/auth/submit",
+            post(claude_auth::handle_claude_login_submit),
+        )
+        .route(
+            "/api/claude/auth/cancel",
+            post(claude_auth::handle_claude_login_cancel),
+        )
+        .route("/api/setup/status", get(setup::handle_setup_status))
+        .route("/api/setup/install", post(setup::handle_setup_install))
+        .route("/api/setup/select", post(setup::handle_setup_select))
+        .route("/api/setup/complete", post(setup::handle_setup_complete))
+        .route(
+            "/api/setup/ssh/configure",
+            post(setup::handle_setup_ssh_configure),
+        )
+        .route("/api/setup/ssh/auto", post(setup::handle_setup_ssh_auto))
+        .route(
+            "/api/setup/ssh/verify",
+            post(setup::handle_setup_ssh_verify),
         )
         .route("/api/ssh/hosts", get(ssh::handle_ssh_hosts_list))
         .route("/api/ssh/sessions", get(ssh::handle_ssh_sessions_list))

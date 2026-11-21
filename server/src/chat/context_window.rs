@@ -238,7 +238,7 @@ fn fetch_latest_generation(
 ) -> Result<Option<AgyContextUsage>, ()> {
     let (port, token) = discover_hub().ok_or(())?;
     let body = json!({ "cascadeId": conversation_id }).to_string();
-    let response = rpc_post(port, &token, &body)?;
+    let response = rpc_post(port, &token, RPC_PATH, &body)?;
     let generations = response
         .get("generatorMetadata")
         .and_then(Value::as_array)
@@ -294,7 +294,7 @@ fn json_u64(v: &Value) -> Option<u64> {
 
 /// Đọc file discovery `daemon/hub_<port>.json` của hub đang chạy (pid còn sống).
 /// Trả về (cổng HTTP, CSRF token).
-fn discover_hub() -> Option<(u16, String)> {
+pub(crate) fn discover_hub() -> Option<(u16, String)> {
     let home = PathBuf::from(std::env::var("HOME").ok()?);
     let dir = home.join(".gemini/antigravity/daemon");
     for entry in fs::read_dir(dir).ok()?.flatten() {
@@ -332,10 +332,11 @@ fn discover_hub() -> Option<(u16, String)> {
 }
 
 /// Gọi RPC bằng curl. Token và body đi qua stdin (`-K -`) để không lộ trên dòng lệnh.
-fn rpc_post(port: u16, token: &str, body: &str) -> Result<Value, ()> {
+/// `path` là đường dẫn RPC đầy đủ (`/exa.language_server_pb.LanguageServerService/<Method>`).
+pub(crate) fn rpc_post(port: u16, token: &str, path: &str, body: &str) -> Result<Value, ()> {
     let escaped_body = body.replace('\\', "\\\\").replace('"', "\\\"");
     let config = format!(
-        "url = \"http://127.0.0.1:{port}{RPC_PATH}\"\n\
+        "url = \"http://127.0.0.1:{port}{path}\"\n\
          header = \"Content-Type: application/json\"\n\
          header = \"x-codeium-csrf-token: {token}\"\n\
          data = \"{escaped_body}\"\n"

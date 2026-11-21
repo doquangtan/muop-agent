@@ -15,7 +15,8 @@ abstract class SessionRepository {
 
   Stream<ConversationSession> get sessionUpdateStream;
 
-  Stream<List<ModelQuotaGroup>> get quotasUpdateStream;
+  /// Có thay đổi quota trên server (`quotas:update`). Dữ liệu quota lấy qua REST theo màn hình.
+  Stream<void> get quotasChangedStream;
 
   Stream<ConversationSession> get filesChangeStream;
 

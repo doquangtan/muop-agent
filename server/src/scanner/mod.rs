@@ -1,7 +1,8 @@
 use crate::models::{
     AgentStep, ChatTurnStreamState, CommandExecutionRecord, ConversationSession, CustomAgentSpec,
     FileTouchRecord, GitSyncStatus, ModelQuotaBucket, ModelQuotaGroup, PlanArtifactInfo,
-    ProjectWorkspace, SessionStepsPageResponse, SubagentLane, ToolCallInfo,
+    ProjectWorkspace, QuotaReport, QuotaSnapshot, SessionStepsPageResponse, SubagentLane,
+    ToolCallInfo,
 };
 use chrono::{DateTime, Utc};
 use regex::Regex;

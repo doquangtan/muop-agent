@@ -20,6 +20,10 @@ pub fn claude_bin() -> String {
             return c.to_string_lossy().to_string();
         }
     }
+    // Dự phòng: cùng logic tìm của màn khởi tạo (PATH của shell user, kể cả nvm đổi version)
+    if let Some(found) = crate::setup::install::find_bin("claude") {
+        return found.to_string_lossy().to_string();
+    }
     "claude".to_string()
 }
 

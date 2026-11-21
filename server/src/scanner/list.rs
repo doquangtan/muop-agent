@@ -301,6 +301,7 @@ pub fn scan_all_sessions(
             },
             steps: final_steps,
             subagent_lanes: lanes,
+            lanes_loaded: should_load_full,
             files_touched: files,
             commands_run: commands,
             total_input_tokens: parsed.total_input_tokens,
