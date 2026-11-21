@@ -10,6 +10,7 @@ import 'package:muop_agent/features/agy_auth/presentation/agy_login_panel.dart';
 import 'package:muop_agent/features/claude_auth/domain/claude_auth_entities.dart';
 import 'package:muop_agent/features/claude_auth/domain/claude_auth_repository.dart';
 import 'package:muop_agent/features/ssh/presentation/ssh_terminal_panel.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 const _sid = 'sid-accounts-1';
 const _link = 'https://accounts.google.com/o/oauth2/auth?state=abc';
@@ -152,19 +153,16 @@ Future<void> _pump(
   bool settle = true,
 }) async {
   addTearDown(repo.dispose);
-  await tester.pumpWidget(
-    MaterialApp(
+  await tester.pumpWidget(ProviderScope(child: MaterialApp(
       theme: buildAppTheme(
         seedColor: const Color(0xFF00897B),
         brightness: Brightness.light,
       ),
       home: AccountsScreen(
-        serverAddress: 'http://127.0.0.1:8787',
         repository: repo,
         claudeRepository: _FakeClaudeRepo(loggedIn: claudeLoggedIn),
       ),
-    ),
-  );
+    ),));
   if (settle) {
     await tester.pumpAndSettle();
   } else {

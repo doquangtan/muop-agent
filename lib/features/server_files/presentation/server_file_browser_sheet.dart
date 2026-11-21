@@ -13,6 +13,8 @@ import 'package:muop_agent/features/projects/domain/project_entities.dart';
 import 'package:muop_agent/features/projects/presentation/project_git_history_sheet.dart';
 import 'package:muop_agent/features/server_files/domain/server_file_entities.dart';
 import 'package:muop_agent/features/sessions/domain/session_entities.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:muop_agent/core/state/server_address_provider.dart';
 
 /// Đại diện cho 1 tệp đã được nhóm (deduplicated) từ danh sách FileTouchRecord
 class GroupedFileChange {
@@ -150,24 +152,35 @@ class _MutableFileGroup {
 
 enum _SftpSortMode { nameAsc, sizeDesc, dateDesc }
 
-class ServerFileBrowserSheet extends StatefulWidget {
+/// Màn gắn với server đang kết nối: đổi địa chỉ (provider toàn cục) thì dựng lại và tải lại dữ liệu
+class ServerFileBrowserSheet extends ConsumerWidget {
   const ServerFileBrowserSheet({
     super.key,
-    required this.serverAddress,
     required this.initialPath,
     required this.projects,
     required this.sessionFiles,
     this.initialTab = 0,
   });
-  final String serverAddress;
+
   final String initialPath;
   final List<ProjectWorkspace> projects;
   final List<FileTouchRecord> sessionFiles;
   final int initialTab;
 
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final serverAddress = ref.watch(serverAddressProvider);
+    return ServerFileBrowserSheetView(
+      key: ValueKey(serverAddress),
+      serverAddress: serverAddress,
+      initialPath: initialPath,
+      projects: projects,
+      sessionFiles: sessionFiles,
+      initialTab: initialTab,
+    );
+  }
   static Future<void> show(
     BuildContext context, {
-    required String serverAddress,
     required String initialPath,
     required List<ProjectWorkspace> projects,
     required List<FileTouchRecord> sessionFiles,
@@ -185,7 +198,6 @@ class ServerFileBrowserSheet extends StatefulWidget {
       builder: (ctx) => FractionallySizedBox(
         heightFactor: 0.90,
         child: ServerFileBrowserSheet(
-          serverAddress: serverAddress,
           initialPath: initialPath,
           projects: projects,
           sessionFiles: sessionFiles,
@@ -198,7 +210,6 @@ class ServerFileBrowserSheet extends StatefulWidget {
   /// Mở hộp thoại xem chi tiết Change (Diff) & Nội dung tệp trên Server + Tải về
   static Future<void> showFilePreviewAndDiff(
     BuildContext context, {
-    required String serverAddress,
     required String filePath,
     GroupedFileChange? groupedChange,
     required ValueChanged<String> onDownloadFile,
@@ -214,21 +225,44 @@ class ServerFileBrowserSheet extends StatefulWidget {
       ),
       builder: (ctx) => FractionallySizedBox(
         heightFactor: 0.88,
-        child: FileDiffAndContentPane(
-          serverAddress: serverAddress,
-          filePath: filePath,
-          groupedChange: groupedChange,
-          onDownloadFile: onDownloadFile,
+        child: Consumer(
+          builder: (_, ref, _) {
+            final serverAddress = ref.watch(serverAddressProvider);
+            return FileDiffAndContentPane(
+              key: ValueKey(serverAddress),
+              serverAddress: serverAddress,
+              filePath: filePath,
+            groupedChange: groupedChange,
+            onDownloadFile: onDownloadFile,
+            );
+          },
         ),
       ),
     );
   }
 
-  @override
-  State<ServerFileBrowserSheet> createState() => _ServerFileBrowserSheetState();
 }
 
-class _ServerFileBrowserSheetState extends State<ServerFileBrowserSheet> {
+class ServerFileBrowserSheetView extends StatefulWidget {
+  const ServerFileBrowserSheetView({
+    super.key,
+    required this.serverAddress,
+    required this.initialPath,
+    required this.projects,
+    required this.sessionFiles,
+    this.initialTab = 0,
+  });
+  final String serverAddress;
+  final String initialPath;
+  final List<ProjectWorkspace> projects;
+  final List<FileTouchRecord> sessionFiles;
+  final int initialTab;
+
+  @override
+  State<ServerFileBrowserSheetView> createState() => _ServerFileBrowserSheetState();
+}
+
+class _ServerFileBrowserSheetState extends State<ServerFileBrowserSheetView> {
   late String _currentPath;
   String _parentPath = '';
   List<ServerFileEntry> _entries = [];
@@ -482,7 +516,6 @@ class _ServerFileBrowserSheetState extends State<ServerFileBrowserSheet> {
                 onPressed: () {
                   ProjectGitHistorySheet.show(
                     context,
-                    serverAddress: widget.serverAddress,
                     projectPath: _currentPath,
                   );
                 },
@@ -984,7 +1017,6 @@ class _ServerFileBrowserSheetState extends State<ServerFileBrowserSheet> {
                                   : () => ServerFileBrowserSheet
                                           .showFilePreviewAndDiff(
                                         context,
-                                        serverAddress: widget.serverAddress,
                                         filePath: entry.path,
                                         onDownloadFile: _downloadFile,
                                       ),
@@ -1115,7 +1147,6 @@ class _ServerFileBrowserSheetState extends State<ServerFileBrowserSheet> {
                                         onPressed: () => ServerFileBrowserSheet
                                             .showFilePreviewAndDiff(
                                           context,
-                                          serverAddress: widget.serverAddress,
                                           filePath: entry.path,
                                           onDownloadFile: _downloadFile,
                                         ),
@@ -1288,7 +1319,6 @@ class _ServerFileBrowserSheetState extends State<ServerFileBrowserSheet> {
                 borderRadius: BorderRadius.circular(10),
                 onTap: () => ServerFileBrowserSheet.showFilePreviewAndDiff(
                   context,
-                  serverAddress: widget.serverAddress,
                   filePath: f.path,
                   groupedChange: f,
                   onDownloadFile: _downloadFile,
@@ -1350,7 +1380,6 @@ class _ServerFileBrowserSheetState extends State<ServerFileBrowserSheet> {
                         onPressed: () =>
                             ServerFileBrowserSheet.showFilePreviewAndDiff(
                           context,
-                          serverAddress: widget.serverAddress,
                           filePath: f.path,
                           groupedChange: f,
                           onDownloadFile: _downloadFile,
@@ -2005,7 +2034,7 @@ class _FileDiffAndContentPaneState extends State<FileDiffAndContentPane> {
   void _openLspSettings() {
     openPanelPage(
       context,
-      LspSettingsScreen(serverAddress: widget.serverAddress),
+      LspSettingsScreen(),
     );
   }
 
@@ -3142,7 +3171,6 @@ class _FileDiffAndContentPaneState extends State<FileDiffAndContentPane> {
                       if (cleanUrl.contains('/') || cleanUrl.endsWith('.md')) {
                         ServerFileBrowserSheet.showFilePreviewAndDiff(
                           context,
-                          serverAddress: widget.serverAddress,
                           filePath: cleanUrl,
                           onDownloadFile: widget.onDownloadFile,
                         );

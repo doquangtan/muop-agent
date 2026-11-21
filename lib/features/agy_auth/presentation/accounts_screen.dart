@@ -9,12 +9,37 @@ import 'package:muop_agent/features/agy_auth/domain/agy_auth_repository.dart';
 import 'package:muop_agent/features/agy_auth/presentation/agy_login_panel.dart';
 import 'package:muop_agent/features/claude_auth/domain/claude_auth_repository.dart';
 import 'package:muop_agent/features/claude_auth/presentation/claude_auth_section.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:muop_agent/core/state/server_address_provider.dart';
 
 /// Màn hình Tài khoản: đăng nhập / đăng xuất agy trên máy server, và trạng thái Claude Code CLI.
 /// Đăng nhập: server mở terminal SSH chạy agy, người dùng tự đăng nhập trong terminal đó
 /// (khung đăng nhập dùng chung với wizard: [AgyLoginPanel]).
-class AccountsScreen extends StatefulWidget {
+/// Màn gắn với server đang kết nối: đổi địa chỉ (provider toàn cục) thì dựng lại và tải lại dữ liệu
+class AccountsScreen extends ConsumerWidget {
   const AccountsScreen({
+    super.key,
+    this.repository,
+    this.claudeRepository,
+  });
+
+  final AgyAuthRepository? repository;
+  final ClaudeAuthRepository? claudeRepository;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final serverAddress = ref.watch(serverAddressProvider);
+    return AccountsScreenView(
+      key: ValueKey(serverAddress),
+      serverAddress: serverAddress,
+      repository: repository,
+      claudeRepository: claudeRepository,
+    );
+  }
+}
+
+class AccountsScreenView extends StatefulWidget {
+  const AccountsScreenView({
     super.key,
     required this.serverAddress,
     this.repository,
@@ -30,10 +55,10 @@ class AccountsScreen extends StatefulWidget {
   final ClaudeAuthRepository? claudeRepository;
 
   @override
-  State<AccountsScreen> createState() => _AccountsScreenState();
+  State<AccountsScreenView> createState() => _AccountsScreenState();
 }
 
-class _AccountsScreenState extends State<AccountsScreen> {
+class _AccountsScreenState extends State<AccountsScreenView> {
   AgyAuthRepository get _repo => widget.repository ?? AppDependencies.agyAuth;
 
   AgyAuthState? _state;

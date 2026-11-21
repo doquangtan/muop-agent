@@ -4,24 +4,36 @@ import 'package:material_ui/material_ui.dart';
 import 'package:muop_agent/core/di/app_dependencies.dart';
 import 'package:muop_agent/core/theme/app_theme.dart';
 import 'package:muop_agent/features/projects/domain/project_entities.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:muop_agent/core/state/server_address_provider.dart';
 
 /// Modal / Bottom Sheet hiển thị trực quan Git Tree, Lịch sử Commit và Unified Diff của Dự án
-class ProjectGitHistorySheet extends StatefulWidget {
+/// Màn gắn với server đang kết nối: đổi địa chỉ (provider toàn cục) thì dựng lại và tải lại dữ liệu
+class ProjectGitHistorySheet extends ConsumerWidget {
   const ProjectGitHistorySheet({
     super.key,
-    required this.serverAddress,
     required this.projectPath,
     this.projectName,
     this.initialBranch,
   });
-  final String serverAddress;
+
   final String projectPath;
   final String? projectName;
   final String? initialBranch;
 
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final serverAddress = ref.watch(serverAddressProvider);
+    return ProjectGitHistorySheetView(
+      key: ValueKey(serverAddress),
+      serverAddress: serverAddress,
+      projectPath: projectPath,
+      projectName: projectName,
+      initialBranch: initialBranch,
+    );
+  }
   static Future<void> show(
     BuildContext context, {
-    required String serverAddress,
     required String projectPath,
     String? projectName,
     String? initialBranch,
@@ -40,7 +52,6 @@ class ProjectGitHistorySheet extends StatefulWidget {
               width: 1200,
               height: 850,
               child: ProjectGitHistorySheet(
-                serverAddress: serverAddress,
                 projectPath: projectPath,
                 projectName: projectName,
                 initialBranch: initialBranch,
@@ -62,7 +73,6 @@ class ProjectGitHistorySheet extends StatefulWidget {
         builder: (ctx, scrollController) => ClipRRect(
           borderRadius: const BorderRadius.vertical(top: Radius.circular(20)),
           child: ProjectGitHistorySheet(
-            serverAddress: serverAddress,
             projectPath: projectPath,
             projectName: projectName,
             initialBranch: initialBranch,
@@ -72,11 +82,26 @@ class ProjectGitHistorySheet extends StatefulWidget {
     );
   }
 
-  @override
-  State<ProjectGitHistorySheet> createState() => _ProjectGitHistorySheetState();
 }
 
-class _ProjectGitHistorySheetState extends State<ProjectGitHistorySheet> {
+class ProjectGitHistorySheetView extends StatefulWidget {
+  const ProjectGitHistorySheetView({
+    super.key,
+    required this.serverAddress,
+    required this.projectPath,
+    this.projectName,
+    this.initialBranch,
+  });
+  final String serverAddress;
+  final String projectPath;
+  final String? projectName;
+  final String? initialBranch;
+
+  @override
+  State<ProjectGitHistorySheetView> createState() => _ProjectGitHistorySheetState();
+}
+
+class _ProjectGitHistorySheetState extends State<ProjectGitHistorySheetView> {
   bool _isLoading = true;
   String? _errorMessage;
   GitHistoryResponse? _history;
@@ -1185,7 +1210,6 @@ class _ProjectGitHistorySheetState extends State<ProjectGitHistorySheet> {
       backgroundColor: Colors.transparent,
       builder: (ctx) => _MobileCommitDetailSheet(
         commit: commit,
-        serverAddress: widget.serverAddress,
         projectPath: widget.projectPath,
       ),
     );
@@ -1194,8 +1218,31 @@ class _ProjectGitHistorySheetState extends State<ProjectGitHistorySheet> {
 
 /// Modal Bottom Sheet độc lập hiển thị chi tiết Commit & Unified Diff trên Mobile
 /// Tự quản lý vòng đời tải chi tiết để tắt animation loading ngay lập tức khi API phản hồi.
-class _MobileCommitDetailSheet extends StatefulWidget {
+/// Màn gắn với server đang kết nối: đổi địa chỉ (provider toàn cục) thì dựng lại và tải lại dữ liệu
+class _MobileCommitDetailSheet extends ConsumerWidget {
   const _MobileCommitDetailSheet({
+    required this.commit,
+    required this.projectPath,
+  });
+
+  final GitCommitSummary commit;
+  final String projectPath;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final serverAddress = ref.watch(serverAddressProvider);
+    return _MobileCommitDetailSheetView(
+      key: ValueKey(serverAddress),
+      serverAddress: serverAddress,
+      commit: commit,
+      projectPath: projectPath,
+    );
+  }
+}
+
+class _MobileCommitDetailSheetView extends StatefulWidget {
+  const _MobileCommitDetailSheetView({
+    super.key,
     required this.commit,
     required this.serverAddress,
     required this.projectPath,
@@ -1206,11 +1253,11 @@ class _MobileCommitDetailSheet extends StatefulWidget {
   final String projectPath;
 
   @override
-  State<_MobileCommitDetailSheet> createState() =>
+  State<_MobileCommitDetailSheetView> createState() =>
       _MobileCommitDetailSheetState();
 }
 
-class _MobileCommitDetailSheetState extends State<_MobileCommitDetailSheet> {
+class _MobileCommitDetailSheetState extends State<_MobileCommitDetailSheetView> {
   bool _isLoading = true;
   GitCommitDetailResponse? _detail;
   String? _errorMessage;

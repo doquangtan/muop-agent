@@ -12,6 +12,7 @@ import 'package:muop_agent/features/setup/domain/setup_entities.dart';
 import 'package:muop_agent/features/setup/domain/setup_repository.dart';
 import 'package:muop_agent/features/setup/presentation/setup_wizard_screen.dart';
 import 'package:muop_agent/features/ssh/presentation/ssh_terminal_panel.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 const _sid = 'sid-wizard-1';
 const _link = 'https://accounts.google.com/o/oauth2/auth?state=wiz';
@@ -123,17 +124,14 @@ Future<void> _pump(WidgetTester tester, _FakeAgyRepository agy, {bool settle = t
   tester.view.devicePixelRatio = 1.0;
   tester.view.physicalSize = const Size(800, 1400);
   addTearDown(tester.view.resetPhysicalSize);
-  await tester.pumpWidget(
-    MaterialApp(
+  await tester.pumpWidget(ProviderScope(child: MaterialApp(
       theme: buildAppTheme(seedColor: const Color(0xFF00897B), brightness: Brightness.light),
       home: SetupWizardScreen(
-        serverAddress: 'http://127.0.0.1:8787',
         repository: _FakeSetupRepository(),
         agyRepository: agy,
         claudeRepository: _FakeClaudeRepo(),
       ),
-    ),
-  );
+    ),));
   if (settle) {
     await tester.pumpAndSettle();
   } else {

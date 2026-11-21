@@ -9,6 +9,8 @@ import 'package:muop_agent/features/claude_auth/domain/claude_auth_repository.da
 import 'package:muop_agent/features/setup/domain/setup_entities.dart';
 import 'package:muop_agent/features/setup/domain/setup_repository.dart';
 import 'package:muop_agent/features/setup/presentation/setup_accounts_section.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:muop_agent/core/state/server_address_provider.dart';
 
 /// Các CLI người dùng có thể chọn (khớp với `CLI_IDS` ở server)
 const _cliIds = ['agy', 'claude'];
@@ -28,8 +30,34 @@ enum _SetupStep { check, choose, login }
 /// Wizard khởi tạo muop-agent-server, mở khi server báo chưa khởi tạo.
 /// Mọi lệnh gửi cho server qua socket; server tự cài tool trên máy của mình.
 /// Trả về `true` khi người dùng vào màn hình chính.
-class SetupWizardScreen extends StatefulWidget {
+/// Màn gắn với server đang kết nối: đổi địa chỉ (provider toàn cục) thì dựng lại và tải lại dữ liệu
+class SetupWizardScreen extends ConsumerWidget {
   const SetupWizardScreen({
+    super.key,
+    this.repository,
+    this.agyRepository,
+    this.claudeRepository,
+  });
+
+  final SetupRepository? repository;
+  final AgyAuthRepository? agyRepository;
+  final ClaudeAuthRepository? claudeRepository;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final serverAddress = ref.watch(serverAddressProvider);
+    return SetupWizardScreenView(
+      key: ValueKey(serverAddress),
+      serverAddress: serverAddress,
+      repository: repository,
+      agyRepository: agyRepository,
+      claudeRepository: claudeRepository,
+    );
+  }
+}
+
+class SetupWizardScreenView extends StatefulWidget {
+  const SetupWizardScreenView({
     super.key,
     required this.serverAddress,
     this.repository,
@@ -45,10 +73,10 @@ class SetupWizardScreen extends StatefulWidget {
   final ClaudeAuthRepository? claudeRepository;
 
   @override
-  State<SetupWizardScreen> createState() => _SetupWizardScreenState();
+  State<SetupWizardScreenView> createState() => _SetupWizardScreenState();
 }
 
-class _SetupWizardScreenState extends State<SetupWizardScreen> {
+class _SetupWizardScreenState extends State<SetupWizardScreenView> {
   late final SetupRepository _repo =
       widget.repository ?? AppDependencies.setup;
   late final AgyAuthRepository _agyRepo =

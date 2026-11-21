@@ -6,6 +6,8 @@ import 'package:muop_agent/core/theme/app_theme.dart';
 import 'package:muop_agent/core/widgets/desktop_panel.dart';
 import 'package:muop_agent/features/docker/domain/docker_entities.dart';
 import 'package:muop_agent/features/ssh/domain/ssh_entities.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:muop_agent/core/state/server_address_provider.dart';
 
 /// Tự quét lại container khi màn hình đang mở
 const _autoRefresh = Duration(seconds: 10);
@@ -23,18 +25,35 @@ void _snack(BuildContext context, String text) {
 
 /// Màn hình Docker: chọn máy SSH đã lưu để mở phiên Docker của máy đó.
 /// Mỗi máy có một phiên Docker riêng (không dùng chung với phiên terminal SSH).
-class DockerHostsScreen extends StatefulWidget {
+/// Màn gắn với server đang kết nối: đổi địa chỉ (provider toàn cục) thì dựng lại và tải lại dữ liệu
+class DockerHostsScreen extends ConsumerWidget {
   const DockerHostsScreen({
+    super.key,
+  });
+
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final serverAddress = ref.watch(serverAddressProvider);
+    return DockerHostsScreenView(
+      key: ValueKey(serverAddress),
+      serverAddress: serverAddress,
+    );
+  }
+}
+
+class DockerHostsScreenView extends StatefulWidget {
+  const DockerHostsScreenView({
     super.key,
     required this.serverAddress,
   });
   final String serverAddress;
 
   @override
-  State<DockerHostsScreen> createState() => _DockerHostsScreenState();
+  State<DockerHostsScreenView> createState() => _DockerHostsScreenState();
 }
 
-class _DockerHostsScreenState extends State<DockerHostsScreen> {
+class _DockerHostsScreenState extends State<DockerHostsScreenView> {
   List<SshHost> _hosts = const [];
   /// Phiên Docker đang chạy trên server
   List<DockerSession> _sessions = const [];
@@ -98,7 +117,6 @@ class _DockerHostsScreenState extends State<DockerHostsScreen> {
     await openPanelPage(
       context,
       DockerSessionScreen(
-          serverAddress: widget.serverAddress,
           hostName: host.name,
           hostAddress: host.address,
           initial: session,
@@ -217,8 +235,34 @@ class _DockerHostsScreenState extends State<DockerHostsScreen> {
 
 /// Màn hình một phiên Docker: danh sách container đang chạy, nhóm theo compose project.
 /// Đóng màn hình không ngắt phiên trên server.
-class DockerSessionScreen extends StatefulWidget {
+/// Màn gắn với server đang kết nối: đổi địa chỉ (provider toàn cục) thì dựng lại và tải lại dữ liệu
+class DockerSessionScreen extends ConsumerWidget {
   const DockerSessionScreen({
+    super.key,
+    required this.hostName,
+    required this.hostAddress,
+    required this.initial,
+  });
+
+  final String hostName;
+  final String hostAddress;
+  final DockerSession initial;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final serverAddress = ref.watch(serverAddressProvider);
+    return DockerSessionScreenView(
+      key: ValueKey(serverAddress),
+      serverAddress: serverAddress,
+      hostName: hostName,
+      hostAddress: hostAddress,
+      initial: initial,
+    );
+  }
+}
+
+class DockerSessionScreenView extends StatefulWidget {
+  const DockerSessionScreenView({
     super.key,
     required this.serverAddress,
     required this.hostName,
@@ -232,10 +276,10 @@ class DockerSessionScreen extends StatefulWidget {
   final DockerSession initial;
 
   @override
-  State<DockerSessionScreen> createState() => _DockerSessionScreenState();
+  State<DockerSessionScreenView> createState() => _DockerSessionScreenState();
 }
 
-class _DockerSessionScreenState extends State<DockerSessionScreen> {
+class _DockerSessionScreenState extends State<DockerSessionScreenView> {
   late DockerSession _session;
   Timer? _timer;
   /// Đang có thao tác hoặc quét thủ công

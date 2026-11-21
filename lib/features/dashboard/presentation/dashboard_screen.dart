@@ -34,8 +34,11 @@ import 'package:muop_agent/features/sessions/presentation/desktop_conversation_r
 import 'package:muop_agent/features/setup/presentation/setup_splash_screen.dart';
 import 'package:muop_agent/features/setup/presentation/setup_wizard_screen.dart';
 import 'package:muop_agent/features/ssh/presentation/ssh_hosts_screen.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:muop_agent/core/state/server_address_provider.dart';
 
-class DashboardScreen extends StatefulWidget {
+/// Màn gắn với server đang kết nối: đổi địa chỉ (provider toàn cục) thì dựng lại và tải lại dữ liệu
+class DashboardScreen extends ConsumerWidget {
   const DashboardScreen({
     super.key,
     required this.isDarkMode,
@@ -50,10 +53,40 @@ class DashboardScreen extends StatefulWidget {
   final ValueChanged<Color> onSeedColorChanged;
 
   @override
-  State<DashboardScreen> createState() => _DashboardScreenState();
+  Widget build(BuildContext context, WidgetRef ref) {
+    final serverAddress = ref.watch(serverAddressProvider);
+    return DashboardScreenView(
+      key: ValueKey(serverAddress),
+      serverAddress: serverAddress,
+      isDarkMode: isDarkMode,
+      onToggleTheme: onToggleTheme,
+      seedColor: seedColor,
+      onSeedColorChanged: onSeedColorChanged,
+    );
+  }
 }
 
-class _DashboardScreenState extends State<DashboardScreen> {
+class DashboardScreenView extends ConsumerStatefulWidget {
+  const DashboardScreenView({
+    super.key,
+    required this.serverAddress,
+    required this.isDarkMode,
+    required this.onToggleTheme,
+    required this.seedColor,
+    required this.onSeedColorChanged,
+  });
+
+  final String serverAddress;
+  final bool isDarkMode;
+  final VoidCallback onToggleTheme;
+  final Color seedColor;
+  final ValueChanged<Color> onSeedColorChanged;
+
+  @override
+  ConsumerState<DashboardScreenView> createState() => _DashboardScreenState();
+}
+
+class _DashboardScreenState extends ConsumerState<DashboardScreenView> {
   final GlobalKey<ScaffoldState> _scaffoldKey = GlobalKey<ScaffoldState>();
   /// Trang SSH / Docker / log đang mở trong vùng chính (desktop), xếp chồng lên màn hình chính
   final List<_PanelEntry> _panelPages = [];
@@ -66,7 +99,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
   final SessionRepository _sessionsRepo = AppDependencies.sessions;
   final TextEditingController _searchController = TextEditingController();
 
-  String _serverAddress = defaultHostAddress;
+  String get _serverAddress => widget.serverAddress;
   bool _isRemoteConnected = false;
   bool _isSocketLive = false;
   String _remoteHostName = '';
@@ -138,7 +171,10 @@ class _DashboardScreenState extends State<DashboardScreen> {
   void initState() {
     super.initState();
     _bindRealtimeSocketStreams();
-    _initEnvironmentAndLoad();
+    // Sau khung hình đầu: tải dữ liệu và mở màn kiểm tra cài đặt không chạy trong pha build
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) unawaited(_initEnvironmentAndLoad());
+    });
     _fallbackTimer = Timer.periodic(const Duration(seconds: 6), (_) {
       if (!_isSocketLive) {
         _refreshSessions(silent: true);
@@ -311,7 +347,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
       if (!mounted || needsSetup != true) return;
       await Navigator.of(context).push<bool>(
         MaterialPageRoute<bool>(
-          builder: (_) => SetupWizardScreen(serverAddress: _serverAddress),
+          builder: (_) => SetupWizardScreen(),
         ),
       );
     } finally {
@@ -639,12 +675,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
   Future<void> _initEnvironmentAndLoad() async {
     setState(() => _isLoading = true);
-    final savedAddress = await _connectionRepo.loadSavedServerAddress();
-    if (!mounted) return;
-    setState(() {
-      _serverAddress = savedAddress;
-    });
-
     _connectionRepo.connectSocket(_serverAddress);
     unawaited(_refreshQuota());
     unawaited(_runSetupCheck());
@@ -1235,7 +1265,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
     ServerFileBrowserSheet.show(
       context,
-      serverAddress: _serverAddress,
       initialPath: initialDir,
       projects: _projects,
       sessionFiles: activeSession?.filesTouched ?? const [],
@@ -1246,7 +1275,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
   void _inspectFileChange(String filePath, GroupedFileChange? change) {
     ServerFileBrowserSheet.showFilePreviewAndDiff(
       context,
-      serverAddress: _serverAddress,
       filePath: filePath,
       groupedChange: change,
       onDownloadFile: _downloadFileDirectly,
@@ -1262,7 +1290,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
     ProjectGitHistorySheet.show(
       context,
-      serverAddress: _serverAddress,
       projectPath: path,
       projectName: name,
     );
@@ -1271,7 +1298,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
   void _openGitHistorySheet(ProjectWorkspace project) {
     ProjectGitHistorySheet.show(
       context,
-      serverAddress: _serverAddress,
       projectPath: project.path,
       projectName: project.name,
     );
@@ -1606,14 +1632,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
   Future<void> _connectToServer(String addr) async {
     await _connectionRepo.saveServerAddress(addr);
     if (!mounted) return;
-    setState(() {
-      _serverAddress = addr;
-    });
-    _connectionRepo.connectSocket(addr);
-    unawaited(_refreshQuota());
-    // Đổi IP: kiểm tra cài đặt trên server mới (sau khi dialog đã đóng)
-    unawaited(_runSetupCheck());
-    await _refreshSessions(silent: false);
+    // Đổi địa chỉ toàn cục: dashboard và mọi màn đang mount được dựng lại và tải lại dữ liệu
+    ref.read(serverAddressProvider.notifier).change(addr);
   }
 
   Future<void> _showServerConfigDialog() async {
@@ -2728,7 +2748,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                   if (Navigator.of(context).canPop() && isMobileDrawer) {
                     Navigator.of(context).pop();
                   }
-                  _openFromSidebar(context, SshHostsScreen(serverAddress: _serverAddress));
+                  _openFromSidebar(context, SshHostsScreen());
                 },
                 icon: Icon(Icons.terminal_rounded,
                     size: 16, color: colorScheme.primary),
@@ -2749,7 +2769,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                   if (Navigator.of(context).canPop() && isMobileDrawer) {
                     Navigator.of(context).pop();
                   }
-                  _openFromSidebar(context, DockerHostsScreen(serverAddress: _serverAddress));
+                  _openFromSidebar(context, DockerHostsScreen());
                 },
                 icon: Icon(Icons.view_in_ar_rounded,
                     size: 16, color: colorScheme.primary),
@@ -2772,7 +2792,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                   }
                   _openFromSidebar(
                     context,
-                    LspSettingsScreen(serverAddress: _serverAddress),
+                    LspSettingsScreen(),
                   );
                 },
                 icon: Icon(Icons.settings_suggest_rounded,
@@ -2796,7 +2816,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                   }
                   _openFromSidebar(
                     context,
-                    AccountsScreen(serverAddress: _serverAddress),
+                    AccountsScreen(),
                   );
                 },
                 icon: Icon(Icons.manage_accounts_rounded,
@@ -2841,7 +2861,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                   }
                   _openFromSidebar(
                     context,
-                    SetupWizardScreen(serverAddress: _serverAddress),
+                    SetupWizardScreen(),
                   );
                 },
                 icon: Icon(Icons.rocket_launch_rounded,
