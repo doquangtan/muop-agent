@@ -14,6 +14,7 @@ import 'package:muop_agent/features/interactions/domain/interaction_entities.dar
 import 'package:muop_agent/features/interactions/presentation/interaction_dialogs.dart';
 import 'package:muop_agent/features/interactions/presentation/interaction_widgets.dart';
 import 'package:muop_agent/features/interactions/presentation/rate_retry_widgets.dart';
+import 'package:muop_agent/features/quota/domain/quota_entities.dart';
 import 'package:muop_agent/features/projects/domain/project_entities.dart';
 import 'package:muop_agent/features/server_files/presentation/server_file_browser_sheet.dart';
 import 'package:muop_agent/features/sessions/domain/session_entities.dart';
@@ -48,7 +49,8 @@ class ChatCanvasView extends StatefulWidget {
     this.modelLabels = const {},
     this.effortLevels = const [],
     this.modelContextLimits = const {},
-    required this.modelQuotas,
+    required this.quotaScope,
+    required this.quotaReports,
     required this.selectedAgent,
     required this.selectedModel,
     required this.isNewConversationMode,
@@ -96,7 +98,10 @@ class ChatCanvasView extends StatefulWidget {
 
   /// Giới hạn context theo model id, dùng để hiển thị mức đã dùng trên chip context
   final Map<String, int> modelContextLimits;
-  final List<ModelQuotaGroup> modelQuotas;
+  /// Provider của màn chat (`claude` / `agy`); rỗng ở màn chung (hiện cả hai)
+  final String quotaScope;
+  /// Quota theo provider (`agy`, `claude`), lấy từ `/api/quota/<provider>` hoặc `/api/quota`
+  final Map<String, QuotaReport> quotaReports;
   final String selectedAgent;
   final String selectedModel;
   final bool isNewConversationMode;

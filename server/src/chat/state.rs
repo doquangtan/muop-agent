@@ -160,10 +160,10 @@ impl AppState {
     }
 
     /// Lấy quota/limit mới nhất (Antigravity + Claude Code) và chỉ phát `quotas:update` nếu thay đổi.
-    /// Hàm có I/O đồng bộ (daemon TCP, curl) nên phải được gọi trong `spawn_blocking`.
+    /// Payload giống `GET /api/quota`. Hàm có I/O đồng bộ (daemon TCP, curl) nên phải được gọi trong `spawn_blocking`.
     /// Trả về `true` nếu đã phát event.
     pub fn broadcast_quotas_update(&self, force: bool) -> bool {
-        let quotas = scanner::fetch_all_model_quotas();
+        let quotas = scanner::quota_snapshot();
         let val = match serde_json::to_value(&quotas) {
             Ok(v) => v,
             Err(_) => return false,

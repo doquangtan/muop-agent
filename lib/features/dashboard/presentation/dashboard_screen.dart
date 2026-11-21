@@ -20,9 +20,11 @@ import 'package:muop_agent/features/interactions/domain/interactions_repository.
 import 'package:muop_agent/features/interactions/presentation/ai_question_dialog.dart';
 import 'package:muop_agent/features/interactions/presentation/rate_retry_widgets.dart';
 import 'package:muop_agent/features/lsp/presentation/lsp_settings_screen.dart';
+import 'package:muop_agent/features/agy_auth/presentation/accounts_screen.dart';
 import 'package:muop_agent/features/agent_map/presentation/agent_map_screen.dart';
 import 'package:muop_agent/features/projects/domain/project_entities.dart';
 import 'package:muop_agent/features/projects/domain/projects_repository.dart';
+import 'package:muop_agent/features/quota/domain/quota_entities.dart';
 import 'package:muop_agent/features/projects/presentation/project_git_history_sheet.dart';
 import 'package:muop_agent/features/projects/presentation/project_tree_explorer.dart';
 import 'package:muop_agent/features/server_files/domain/server_files_repository.dart';
@@ -30,6 +32,8 @@ import 'package:muop_agent/features/server_files/presentation/server_file_browse
 import 'package:muop_agent/features/sessions/domain/session_entities.dart';
 import 'package:muop_agent/features/sessions/domain/session_repository.dart';
 import 'package:muop_agent/features/sessions/presentation/desktop_conversation_rail.dart';
+import 'package:muop_agent/features/setup/presentation/setup_splash_screen.dart';
+import 'package:muop_agent/features/setup/presentation/setup_wizard_screen.dart';
 import 'package:muop_agent/features/ssh/presentation/ssh_hosts_screen.dart';
 
 class DashboardScreen extends StatefulWidget {
@@ -77,7 +81,12 @@ class _DashboardScreenState extends State<DashboardScreen> {
   List<String> _effortLevels = const [];
   Map<String, int> _modelContextLimits = {};
   final List<String> _availableAgents = defaultAgents;
-  List<ModelQuotaGroup> _modelQuotas = [];
+  // Quota theo provider, lấy qua REST đúng màn hình đang mở (xem `_refreshQuota`)
+  final Map<String, QuotaReport> _quotaReports = {};
+  // Yêu cầu quota mới nhất: kết quả của yêu cầu cũ hơn bị bỏ qua
+  int _quotaRequestSeq = 0;
+  // Phạm vi đã yêu cầu lần gần nhất (null: chưa yêu cầu)
+  String? _quotaFetchedScope;
   Map<String, ChatTurnStreamState> _activeStreams = {};
   // Provider (claude-cli / agy) của các cuộc chat vừa gửi, dùng khi session chưa có trong snapshot
   final Map<String, String> _sourceByConversation = {};
@@ -112,7 +121,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
   StreamSubscription<bool>? _socketStatusSub;
   StreamSubscription<ConversationSession>? _sessionUpdateSub;
   StreamSubscription<List<ProjectWorkspace>>? _projectsSub;
-  StreamSubscription<List<ModelQuotaGroup>>? _quotasSub;
+  StreamSubscription<void>? _quotasSub;
   StreamSubscription<ConversationSession>? _filesChangeSub;
   StreamSubscription<List<PendingRetry>>? _retrySub;
   /// Danh sách lịch tự gửi lại hiện tại (cập nhật theo event `retry:update`)
@@ -287,6 +296,31 @@ class _DashboardScreenState extends State<DashboardScreen> {
     });
   }
 
+  /// Đang chạy splash/wizard kiểm tra cài đặt (tránh mở chồng nhiều lần)
+  bool _setupFlowRunning = false;
+
+  /// Splash kiểm tra cài đặt trên server đang chọn; thiếu mục nào thì mở wizard cài đặt.
+  /// Gọi khi mở app và mỗi khi đổi IP server (không gọi lại khi socket tự kết nối lại).
+  Future<void> _runSetupCheck() async {
+    if (_setupFlowRunning || !mounted) return;
+    _setupFlowRunning = true;
+    try {
+      final needsSetup = await Navigator.of(context).push<bool>(
+        MaterialPageRoute<bool>(
+          builder: (_) => SetupSplashScreen(serverAddress: _serverAddress),
+        ),
+      );
+      if (!mounted || needsSetup != true) return;
+      await Navigator.of(context).push<bool>(
+        MaterialPageRoute<bool>(
+          builder: (_) => SetupWizardScreen(serverAddress: _serverAddress),
+        ),
+      );
+    } finally {
+      _setupFlowRunning = false;
+    }
+  }
+
   void _bindRealtimeSocketStreams() {
     _socketStatusSub = _connectionRepo.socketConnectionStream.listen((connected) {
       if (!mounted) return;
@@ -322,11 +356,10 @@ class _DashboardScreenState extends State<DashboardScreen> {
     });
 
     // Lắng nghe cập nhật Model Quotas độc lập
-    _quotasSub = _sessionsRepo.quotasUpdateStream.listen((quotas) {
+    // Server báo quota đổi: tải lại quota của màn đang mở
+    _quotasSub = _sessionsRepo.quotasChangedStream.listen((_) {
       if (!mounted) return;
-      setState(() {
-        _modelQuotas = quotas;
-      });
+      unawaited(_refreshQuota());
     });
 
     _retrySub = _interactionsRepo.retryUpdateStream.listen((retries) {
@@ -448,10 +481,13 @@ class _DashboardScreenState extends State<DashboardScreen> {
     });
   }
 
-  /// Lane của session: lấy từ server nếu có; nếu không thì giữ lane cũ, nhưng khi session đã dừng
-  /// thì không giữ trạng thái đang chạy của lane cũ (danh sách session không mang lane).
+  /// Lane của session: khi server đã dựng đầy đủ (`lanesLoaded`) thì lấy đúng danh sách đó, kể cả
+  /// rỗng (lượt không gọi subagent). Snapshot gọn không mang lane: giữ lane cũ, nhưng khi session đã
+  /// dừng thì không giữ trạng thái đang chạy của lane cũ.
   List<SubagentLane> _carryLanes(List<SubagentLane> existing, ConversationSession incoming) {
-    if (incoming.subagentLanes.isNotEmpty) return incoming.subagentLanes;
+    if (incoming.lanesLoaded || incoming.subagentLanes.isNotEmpty) {
+      return incoming.subagentLanes;
+    }
     if (incoming.status == AgentStatus.running) return existing;
     return [for (final lane in existing) lane.settledFor(incoming.status)];
   }
@@ -613,6 +649,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
     });
 
     _connectionRepo.connectSocket(_serverAddress);
+    unawaited(_refreshQuota());
+    unawaited(_runSetupCheck());
     await _refreshSessions(silent: false);
   }
 
@@ -1789,9 +1827,12 @@ class _DashboardScreenState extends State<DashboardScreen> {
                       _serverAddress = newAddr;
                     });
                     _connectionRepo.connectSocket(newAddr);
+                    unawaited(_refreshQuota());
                     if (ctx.mounted) {
                       Navigator.of(ctx).pop();
                     }
+                    // Đổi IP: kiểm tra cài đặt trên server mới (sau khi dialog đã đóng)
+                    unawaited(_runSetupCheck());
                     await _refreshSessions(silent: false);
                   },
                   child: const Text('Kết nối'),
@@ -1890,8 +1931,52 @@ class _DashboardScreenState extends State<DashboardScreen> {
     );
   }
 
+  /// Phạm vi quota của màn đang mở: `claude` / `agy` khi đang ở một cuộc chat (hoặc cuộc chat mới),
+  /// rỗng ở màn chung (chưa chọn cuộc chat).
+  String get _quotaScope {
+    if (!_isNewConversationMode && _activeSession == null) return '';
+    return _activeSource == 'claude-cli' ? kQuotaProviderClaude : kQuotaProviderAgy;
+  }
+
+  /// Lấy quota đúng cho màn đang mở: chat Claude → `/api/quota/claude`, chat agy → `/api/quota/agy`,
+  /// màn chung → `/api/quota` (cả hai). Không kết nối được thì báo "không có dữ liệu", không giữ số cũ.
+  Future<void> _refreshQuota() async {
+    final scope = _quotaScope;
+    final seq = ++_quotaRequestSeq;
+    final address = _serverAddress;
+    if (scope.isEmpty) {
+      final snapshot = await AppDependencies.quota.fetchAll(address);
+      if (!mounted || seq != _quotaRequestSeq) return;
+      setState(() {
+        _quotaReports[kQuotaProviderAgy] = snapshot?.agy ??
+            QuotaReport.missing(kQuotaProviderAgy, 'Không kết nối được server');
+        _quotaReports[kQuotaProviderClaude] = snapshot?.claude ??
+            QuotaReport.missing(kQuotaProviderClaude, 'Không kết nối được server');
+      });
+    } else {
+      final report = await AppDependencies.quota.fetchProvider(address, scope);
+      if (!mounted || seq != _quotaRequestSeq) return;
+      setState(() {
+        _quotaReports[scope] = report ??
+            QuotaReport.missing(scope, 'Không kết nối được server');
+      });
+    }
+  }
+
+  /// Đổi màn (chọn cuộc chat, cuộc chat mới, đổi provider) thì tải lại quota đúng phạm vi.
+  /// Gọi trong build vì nhiều chỗ đổi session; việc tải được đẩy sang sau khung hình.
+  void _ensureQuotaForScope() {
+    final scope = _quotaScope;
+    if (scope == _quotaFetchedScope) return;
+    _quotaFetchedScope = scope;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) unawaited(_refreshQuota());
+    });
+  }
+
   @override
   Widget build(BuildContext context) {
+    _ensureQuotaForScope();
     final colorScheme = Theme.of(context).colorScheme;
     final width = MediaQuery.sizeOf(context).width;
     final isMobile = width < 760;
@@ -2207,7 +2292,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 modelLabels: _modelLabels,
                 effortLevels: _effortLevels,
                 modelContextLimits: _modelContextLimits,
-                modelQuotas: _modelQuotas,
+                quotaScope: _quotaScope,
+                quotaReports: Map.of(_quotaReports),
                 selectedAgent: _selectedAgent,
                 selectedModel: _selectedModel,
                 isNewConversationMode: _isNewConversationMode,
@@ -2704,12 +2790,60 @@ class _DashboardScreenState extends State<DashboardScreen> {
                   if (Navigator.of(context).canPop() && isMobileDrawer) {
                     Navigator.of(context).pop();
                   }
+                  _openFromSidebar(
+                    context,
+                    AccountsScreen(serverAddress: _serverAddress),
+                  );
+                },
+                icon: Icon(Icons.manage_accounts_rounded,
+                    size: 16, color: colorScheme.primary),
+                label: Text(
+                  'Tài khoản',
+                  style: textTheme.labelMedium?.copyWith(
+                    color: colorScheme.primary,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ),
+              TextButton.icon(
+                style: TextButton.styleFrom(
+                  visualDensity: VisualDensity.compact,
+                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                ),
+                onPressed: () {
+                  if (Navigator.of(context).canPop() && isMobileDrawer) {
+                    Navigator.of(context).pop();
+                  }
                   _openFromSidebar(context, const ScreenStreamScreen());
                 },
                 icon: Icon(Icons.cast_rounded,
                     size: 16, color: colorScheme.primary),
                 label: Text(
                   'Màn hình',
+                  style: textTheme.labelMedium?.copyWith(
+                    color: colorScheme.primary,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ),
+              TextButton.icon(
+                style: TextButton.styleFrom(
+                  visualDensity: VisualDensity.compact,
+                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                ),
+                onPressed: () {
+                  if (Navigator.of(context).canPop() && isMobileDrawer) {
+                    Navigator.of(context).pop();
+                  }
+                  _openFromSidebar(
+                    context,
+                    SetupWizardScreen(serverAddress: _serverAddress),
+                  );
+                },
+                icon: Icon(Icons.rocket_launch_rounded,
+                    size: 16, color: colorScheme.primary),
+                label: Text(
+                  'Khởi tạo',
                   style: textTheme.labelMedium?.copyWith(
                     color: colorScheme.primary,
                     fontWeight: FontWeight.w600,

@@ -81,6 +81,11 @@ fn open() -> Option<Connection> {
              conversation_id TEXT PRIMARY KEY,
              first_seen_at TEXT NOT NULL
          );
+         CREATE TABLE IF NOT EXISTS app_settings (
+             key TEXT PRIMARY KEY,
+             value TEXT NOT NULL,
+             updated_at TEXT NOT NULL
+         );
          CREATE TABLE IF NOT EXISTS model_context_limits (
              model_id TEXT PRIMARY KEY,
              limit_tokens INTEGER NOT NULL,
@@ -478,6 +483,30 @@ pub struct SshHostRow {
     pub username: String,
     pub password: String,
     pub private_key: String,
+}
+
+/// Giá trị cấu hình chung của server (trạng thái khởi tạo, CLI đã chọn...)
+pub fn get_app_setting(key: &str) -> Option<String> {
+    with_db(|c| {
+        c.query_row(
+            "SELECT value FROM app_settings WHERE key = ?1",
+            params![key],
+            |r| r.get::<_, String>(0),
+        )
+        .ok()
+    })
+}
+
+pub fn set_app_setting(key: &str, value: &str) -> bool {
+    with_db(|c| {
+        c.execute(
+            "INSERT INTO app_settings (key, value, updated_at) VALUES (?1, ?2, ?3)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
+            params![key, value, chrono::Utc::now().to_rfc3339()],
+        )
+        .ok()
+    })
+    .is_some()
 }
 
 pub fn list_ssh_hosts() -> Vec<SshHostRow> {

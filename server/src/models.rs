@@ -156,6 +156,11 @@ pub struct ConversationSession {
     pub current_phase: String,
     pub steps: Vec<AgentStep>,
     pub subagent_lanes: Vec<SubagentLane>,
+    /// `true`: `subagent_lanes` đã được dựng đầy đủ cho lượt hiện tại (kể cả khi rỗng, nghĩa là
+    /// lượt này không gọi subagent). `false`: snapshot gọn của session không hoạt động, chưa biết
+    /// lane; client giữ lane đã nạp trước đó.
+    #[serde(default)]
+    pub lanes_loaded: bool,
     pub files_touched: Vec<FileTouchRecord>,
     pub commands_run: Vec<CommandExecutionRecord>,
     pub total_input_tokens: u64,
@@ -241,6 +246,26 @@ pub struct ModelQuotaGroup {
     #[serde(default)]
     pub description: String,
     pub buckets: Vec<ModelQuotaBucket>,
+}
+
+/// Quota của một provider (`agy` hoặc `claude`): `GET /api/quota/<provider>`.
+/// Khi không lấy được dữ liệu thì `groups` rỗng và `error` ghi lý do.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct QuotaReport {
+    pub provider: String,
+    #[serde(default)]
+    pub groups: Vec<ModelQuotaGroup>,
+    #[serde(default)]
+    pub error: String,
+}
+
+/// Quota của mọi provider: `GET /api/quota` và socket `quotas:update`
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct QuotaSnapshot {
+    pub agy: QuotaReport,
+    pub claude: QuotaReport,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -855,4 +880,85 @@ pub struct MetaPayload {
     pub lan_ips: Vec<String>,
     pub port: u16,
     pub timestamp: String,
+}
+
+/// Trạng thái đăng nhập agy (`/api/agy/auth/*`)
+
+/// Trạng thái đăng nhập claude (`/api/claude/auth/*`)
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClaudeAuthResponse {
+    pub ok: bool,
+    pub logged_in: bool,
+    pub email: String,
+    pub subscription_type: String,
+    /// Link đăng nhập Anthropic đang chờ mã xác thực (rỗng nếu không có phiên đăng nhập)
+    pub login_url: String,
+    pub error: String,
+}
+
+/// Mã xác thực (hoặc URL trang callback) người dùng dán sau khi đăng nhập Anthropic
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClaudeLoginSubmitRequest {
+    pub code: String,
+}
+
+/// Mã xác thực (hoặc URL trang callback) người dùng dán vào app (`agy:auth:submit`, `/api/agy/auth/login/submit`)
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgyLoginSubmitRequest {
+    pub code: String,
+}
+
+/// Trạng thái đăng nhập agy đẩy qua Socket.IO (`agy:auth:update`) và trả cho `agy:auth:*` (ack).
+/// `phase`: idle | logged_out | unknown | login_terminal | logged_in | failed | cancelled | expired
+/// `login_terminal`: đang có terminal SSH chạy `agy` để người dùng tự đăng nhập (kèm `ssh_session_id`)
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgyAuthEvent {
+    pub ok: bool,
+    pub phase: String,
+    pub logged_in: bool,
+    /// URL Google OAuth đầy đủ lấy từ terminal đăng nhập (rỗng nếu chưa có)
+    #[serde(default)]
+    pub login_url: String,
+    /// Bước đăng nhập trong terminal: waiting_link | awaiting_token | verifying | awaiting_terms (rỗng ngoài luồng)
+    #[serde(default)]
+    pub login_stage: String,
+    pub error: String,
+    /// Phiên SSH đang chạy `agy` (chỉ có khi có terminal đăng nhập đang mở)
+    #[serde(default)]
+    pub ssh_session_id: String,
+    /// Id máy SSH đã lưu của máy này (cùng lúc với `ssh_session_id`)
+    #[serde(default)]
+    pub ssh_host_id: i64,
+}
+
+/// Trạng thái đăng nhập claude đẩy qua Socket.IO (`claude:auth:update`) và trả cho `claude:auth:*` (ack).
+/// `phase`: idle | logged_out | waiting_code | verifying | logged_in | failed | cancelled | expired
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClaudeAuthEvent {
+    pub ok: bool,
+    pub phase: String,
+    pub logged_in: bool,
+    pub email: String,
+    pub subscription_type: String,
+    /// Link đăng nhập Anthropic đang chờ mã (rỗng nếu không có phiên)
+    pub login_url: String,
+    pub error: String,
+}
+
+/// Trạng thái tài khoản hai bên (socket `accounts:status`): agy và Claude Code CLI
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AccountsStatus {
+    pub agy_logged_in: bool,
+    pub agy_email: String,
+    /// Gói của tài khoản agy, ví dụ "Pro" (lấy từ hub)
+    pub agy_plan: String,
+    pub claude_logged_in: bool,
+    /// Gói của tài khoản Claude, ví dụ "pro" (từ credentials)
+    pub claude_plan: String,
 }

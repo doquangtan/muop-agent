@@ -69,24 +69,11 @@ class SessionRepositoryImpl implements SessionRepository {
         }
       } catch (_) {}
     });
+    // Payload là quota của mọi provider, nhưng màn hình tự gọi REST theo provider của nó:
+    // event chỉ báo "có thay đổi", không mang dữ liệu.
     _gateway.on('quotas:update').listen((data) {
-      if (_quotasUpdateController.isClosed || data == null) return;
-      try {
-        List? list;
-        if (data is List) {
-          list = data;
-        } else if (data is String) {
-          list = jsonDecode(data) as List?;
-        }
-        if (list != null) {
-          final quotas = list
-              .map((item) => ModelQuotaGroup.fromJson(item is Map<String, dynamic>
-                  ? item
-                  : Map<String, dynamic>.from(item as Map)))
-              .toList();
-          _quotasUpdateController.add(quotas);
-        }
-      } catch (_) {}
+      if (_quotasChangedController.isClosed || data == null) return;
+      _quotasChangedController.add(null);
     });
     _gateway.on('fileschange').listen((data) {
       if (_filesChangeController.isClosed || data == null) return;
@@ -121,8 +108,8 @@ class SessionRepositoryImpl implements SessionRepository {
   final StreamController<ConversationSession> _sessionUpdateController =
       StreamController<ConversationSession>.broadcast();
 
-  final StreamController<List<ModelQuotaGroup>> _quotasUpdateController =
-      StreamController<List<ModelQuotaGroup>>.broadcast();
+  final StreamController<void> _quotasChangedController =
+      StreamController<void>.broadcast();
 
   final StreamController<ConversationSession> _filesChangeController =
       StreamController<ConversationSession>.broadcast();
@@ -148,8 +135,7 @@ class SessionRepositoryImpl implements SessionRepository {
       _sessionUpdateController.stream;
 
   @override
-  Stream<List<ModelQuotaGroup>> get quotasUpdateStream =>
-      _quotasUpdateController.stream;
+  Stream<void> get quotasChangedStream => _quotasChangedController.stream;
 
   @override
   Stream<ConversationSession> get filesChangeStream => _filesChangeController.stream;

@@ -471,6 +471,7 @@ class ConversationSession {
     this.contextTokens = 0,
     this.contextModel = '',
     this.selectedModel = '',
+    this.lanesLoaded = false,
   });
 
   final String id;
@@ -481,6 +482,10 @@ class ConversationSession {
   final AgentWorkflowPhase currentPhase;
   final List<AgentStep> steps;
   final List<SubagentLane> subagentLanes;
+
+  /// Server đã dựng đầy đủ lane cho lượt này (kể cả khi rỗng). `false` nghĩa là snapshot gọn,
+  /// lane chưa biết, client giữ lane đã nạp trước đó.
+  final bool lanesLoaded;
   final List<FileTouchRecord> filesTouched;
   final List<CommandExecutionRecord> commandsRun;
   final int totalInputTokens;
@@ -515,6 +520,7 @@ class ConversationSession {
     AgentWorkflowPhase? currentPhase,
     List<AgentStep>? steps,
     List<SubagentLane>? subagentLanes,
+    bool? lanesLoaded,
     List<FileTouchRecord>? filesTouched,
     List<CommandExecutionRecord>? commandsRun,
     int? totalInputTokens,
@@ -544,6 +550,7 @@ class ConversationSession {
       currentPhase: currentPhase ?? this.currentPhase,
       steps: steps ?? this.steps,
       subagentLanes: subagentLanes ?? this.subagentLanes,
+      lanesLoaded: lanesLoaded ?? this.lanesLoaded,
       filesTouched: filesTouched ?? this.filesTouched,
       commandsRun: commandsRun ?? this.commandsRun,
       totalInputTokens: totalInputTokens ?? this.totalInputTokens,
@@ -575,6 +582,7 @@ class ConversationSession {
         'currentPhase': currentPhase.name,
         'steps': steps.map((e) => e.toJson()).toList(),
         'subagentLanes': subagentLanes.map((e) => e.toJson()).toList(),
+        'lanesLoaded': lanesLoaded,
         'filesTouched': filesTouched.map((e) => e.toJson()).toList(),
         'commandsRun': commandsRun.map((e) => e.toJson()).toList(),
         'totalInputTokens': totalInputTokens,
@@ -664,6 +672,7 @@ class ConversationSession {
           AgentWorkflowPhase.fromName(json['currentPhase'] as String?),
       steps: steps,
       subagentLanes: lanes,
+      lanesLoaded: json['lanesLoaded'] == true,
       filesTouched: files,
       commandsRun: commands,
       totalInputTokens: (json['totalInputTokens'] as num?)?.toInt() ?? 0,

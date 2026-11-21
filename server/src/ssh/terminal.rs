@@ -11,6 +11,7 @@ use crate::infra::store::SshHostRow;
 use base64::{engine::general_purpose::STANDARD as B64, Engine};
 use serde::Serialize;
 use serde_json::json;
+use socketioxide::SocketIo;
 use std::collections::{HashMap, VecDeque};
 use std::fs::{self, File};
 use std::io::{Read, Write};
@@ -150,13 +151,25 @@ fn winsize(cols: u16, rows: u16) -> libc::winsize {
     }
 }
 
-/// Mở phiên `ssh -tt` trên PTY và bắt đầu chuyển tiếp dữ liệu tới room của phiên.
+/// Mở phiên `ssh -tt` chạy shell tương tác của user và chuyển tiếp dữ liệu tới room của phiên.
 pub fn open(
     state: &AppState,
     session_id: &str,
     row: &SshHostRow,
     cols: u16,
     rows: u16,
+) -> Result<(), String> {
+    open_with(state.io.clone(), session_id, row, cols, rows, None)
+}
+
+/// Như [`open`], nhưng chạy `remote_command` trên máy đích thay cho shell (ví dụ `exec '/path/agy'`).
+pub fn open_with(
+    io: SocketIo,
+    session_id: &str,
+    row: &SshHostRow,
+    cols: u16,
+    rows: u16,
+    remote_command: Option<String>,
 ) -> Result<(), String> {
     if row.username.is_empty() || row.host.is_empty() {
         return Err("Thiếu host hoặc username".into());
@@ -221,7 +234,7 @@ pub fn open(
     }
     // Shell tương tác của user (đọc .bashrc) thay cho shell đăng nhập (chỉ đọc .bash_profile)
     cmd.arg(format!("{}@{}", row.username, row.host))
-        .arg("exec \"${SHELL:-/bin/sh}\" -i")
+        .arg(remote_command.unwrap_or_else(|| "exec \"${SHELL:-/bin/sh}\" -i".to_string()))
         .env("TERM", "xterm-256color");
 
     // PTY: master giữ ở server, slave làm stdio của ssh
@@ -308,11 +321,11 @@ pub fn open(
     let sid_for_thread = session_id.to_string();
     std::thread::spawn(move || read_loop(sid_for_thread, reader, child, tx));
 
-    let io_state = state.clone();
+    let io_task = io;
     let sid = session_id.to_string();
     tokio::spawn(async move {
         while let Some(ev) = rx.recv().await {
-            let Some(ns) = io_state.io.of("/") else {
+            let Some(ns) = io_task.of("/") else {
                 continue;
             };
             match ev {

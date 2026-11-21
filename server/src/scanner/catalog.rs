@@ -70,9 +70,71 @@ pub(super) fn run_agy_models() -> Option<Vec<AgyModel>> {
     (!models.is_empty()).then_some(models)
 }
 
+/// Cập nhật danh sách model từ output của `agy models` vừa chạy (mỗi lần kiểm tra đăng nhập).
+/// Output không có dòng model (chưa đăng nhập, lỗi) thì giữ danh sách cũ. Trả về true nếu đã cập nhật.
+pub fn refresh_agy_models(output: &str) -> bool {
+    let models = parse_agy_models(output);
+    if models.is_empty() {
+        return false;
+    }
+    match agy_models_cache().lock() {
+        Ok(mut cache) => {
+            cache.models = models;
+            cache.fetched_at = Some(Instant::now());
+            cache.retry_at = None;
+            true
+        }
+        Err(_) => false,
+    }
+}
+
+/// Chờ lần lấy đầu tiên, hoặc tự lấy ngay nếu chưa có ai lấy. Nếu không có cái này, `meta` gửi ngay sau khi
+/// server khởi động sẽ thiếu model agy (cache còn rỗng, lần lấy chỉ chạy nền): app nhận danh sách thiếu và
+/// không hỏi lại. Giới hạn 15 giây chờ; lỗi thì đợi `retry_at` (1 phút) như đường nền.
+fn wait_or_fetch_first() {
+    let started = Instant::now();
+    loop {
+        let claimed = match agy_models_cache().lock() {
+            Ok(mut cache) => {
+                if cache.fetched_at.is_some() || cache.retry_at.is_some_and(|t| Instant::now() < t)
+                {
+                    return;
+                }
+                if cache.refreshing {
+                    false
+                } else {
+                    cache.refreshing = true;
+                    true
+                }
+            }
+            Err(_) => return,
+        };
+        if claimed {
+            let fetched = run_agy_models();
+            if let Ok(mut cache) = agy_models_cache().lock() {
+                match fetched {
+                    Some(models) => {
+                        cache.models = models;
+                        cache.fetched_at = Some(Instant::now());
+                        cache.retry_at = None;
+                    }
+                    None => cache.retry_at = Some(Instant::now() + Duration::from_secs(60)),
+                }
+                cache.refreshing = false;
+            }
+            return;
+        }
+        if started.elapsed() >= Duration::from_secs(15) {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
 /// Danh sách model Antigravity lấy từ `agy models`. Trả về ngay bản đã cache (rỗng nếu chưa lấy được),
 /// và làm mới nền khi cache quá 10 phút, để không chặn snapshot khi CLI chậm.
 pub(super) fn agy_models() -> Vec<AgyModel> {
+    wait_or_fetch_first();
     let Ok(mut cache) = agy_models_cache().lock() else {
         return Vec::new();
     };
@@ -130,4 +192,19 @@ pub fn model_labels() -> HashMap<String, String> {
 
 pub fn default_agents() -> Vec<String> {
     vec!["Coordinator".to_string()]
+}
+
+#[cfg(test)]
+mod refresh_tests {
+    use super::*;
+
+    #[test]
+    fn refresh_replaces_cached_models_and_ignores_output_without_models() {
+        assert!(!refresh_agy_models(
+            "Please sign in to view available models."
+        ));
+        assert!(refresh_agy_models("gemini-test-x\tGemini Test X\n"));
+        let ids: Vec<String> = agy_models().into_iter().map(|m| m.id).collect();
+        assert_eq!(ids, vec!["agy:gemini-test-x".to_string()]);
+    }
 }

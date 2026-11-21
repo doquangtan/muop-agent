@@ -1,6 +1,7 @@
 import 'package:material_ui/material_ui.dart';
 
 import 'package:muop_agent/core/theme/app_theme.dart';
+import 'package:muop_agent/features/quota/domain/quota_entities.dart';
 import 'package:muop_agent/features/sessions/domain/session_entities.dart';
 
 /// Màu theo phần còn lại của quota: đỏ khi ≤15%, vàng khi ≤45%, còn lại xanh
@@ -60,10 +61,10 @@ String? formatQuotaResetCompact(String raw, {DateTime? now}) {
   return sameDay ? clock : '${_two(resetAt.day)}/${_two(resetAt.month)} $clock';
 }
 
-/// Mở bảng chi tiết quota dạng bottom sheet
+/// Mở bảng chi tiết quota dạng bottom sheet. Mỗi báo cáo là một provider (agy / Claude).
 Future<void> showQuotaDetailSheet(
   BuildContext context,
-  List<ModelQuotaGroup> groups,
+  List<QuotaReport> reports,
 ) {
   final colorScheme = Theme.of(context).colorScheme;
   return showModalBottomSheet<void>(
@@ -75,7 +76,7 @@ Future<void> showQuotaDetailSheet(
       borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
     ),
     builder: (ctx) => QuotaDetailSheet(
-      groups: groups,
+      reports: reports,
       onClose: () => Navigator.of(ctx).pop(),
     ),
   );
@@ -84,9 +85,9 @@ Future<void> showQuotaDetailSheet(
 /// Nội dung bảng quota. Header cố định, danh sách nhóm cuộn được và không vượt
 /// 80% chiều cao màn hình, nên vẫn xem đủ trên điện thoại màn hình nhỏ.
 class QuotaDetailSheet extends StatelessWidget {
-  const QuotaDetailSheet({super.key, required this.groups, this.onClose});
+  const QuotaDetailSheet({super.key, required this.reports, this.onClose});
 
-  final List<ModelQuotaGroup> groups;
+  final List<QuotaReport> reports;
   final VoidCallback? onClose;
 
   @override
@@ -125,29 +126,60 @@ class QuotaDetailSheet extends StatelessWidget {
             ),
             const Divider(height: 10),
             Flexible(
-              child: groups.isEmpty
-                  ? Center(
-                      child: Padding(
-                        padding: const EdgeInsets.all(16),
-                        child: Text(
-                          'Chưa có dữ liệu quota',
-                          style: textTheme.bodySmall?.copyWith(
-                            color: colorScheme.onSurfaceVariant,
-                          ),
-                        ),
-                      ),
-                    )
-                  : ListView(
-                      padding: const EdgeInsets.only(right: 8, bottom: 4),
-                      children: [
-                        for (final group in groups)
-                          _QuotaGroupCard(group: group),
-                      ],
-                    ),
+              child: ListView(
+                shrinkWrap: true,
+                padding: const EdgeInsets.only(right: 8, bottom: 4),
+                children: [
+                  for (final report in reports)
+                    _QuotaReportSection(report: report),
+                ],
+              ),
             ),
           ],
         ),
       ),
+    );
+  }
+}
+
+/// Một provider trong bảng: tiêu đề, rồi các nhóm quota, hoặc thông báo không có dữ liệu kèm lý do
+class _QuotaReportSection extends StatelessWidget {
+  const _QuotaReportSection({required this.report});
+
+  final QuotaReport report;
+
+  @override
+  Widget build(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+    final textTheme = Theme.of(context).textTheme;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Padding(
+          padding: const EdgeInsets.only(top: 8, bottom: 4),
+          child: Text(
+            report.providerLabel,
+            style: textTheme.labelLarge?.copyWith(
+              fontWeight: FontWeight.w800,
+              color: colorScheme.onSurfaceVariant,
+            ),
+          ),
+        ),
+        if (!report.hasData)
+          Padding(
+            padding: const EdgeInsets.symmetric(vertical: 8),
+            child: Text(
+              report.error.isEmpty
+                  ? 'Không có dữ liệu quota'
+                  : 'Không có dữ liệu quota: ${report.error}',
+              style: textTheme.bodySmall?.copyWith(
+                color: colorScheme.onSurfaceVariant,
+              ),
+            ),
+          )
+        else
+          for (final group in report.groups) _QuotaGroupCard(group: group),
+      ],
     );
   }
 }

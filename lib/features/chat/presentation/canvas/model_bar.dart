@@ -245,20 +245,36 @@ extension _CanvasExtModelBar on _ChatCanvasViewState {
     }
   }
 
-  /// Tìm nhóm Quota Antigravity khớp với Model đang chọn
-  ({ModelQuotaGroup? primaryGroup, ModelQuotaGroup? geminiGroup})
+  /// Provider của thanh quota. Thanh ở màn chat dùng provider của cuộc chat (`quotaScope`);
+  /// màn chung thì theo model đang chọn.
+  String get _quotaProvider {
+    if (widget.quotaScope.isNotEmpty) return widget.quotaScope;
+    return _isClaudeCliModel(widget.selectedModel)
+        ? kQuotaProviderClaude
+        : kQuotaProviderAgy;
+  }
+
+  /// Nhóm quota của provider đang hiển thị, chọn theo model đang chọn (agy có nhiều nhóm).
+  /// Thiếu dữ liệu thì [primaryGroup] là null và [error] ghi lý do.
+  ({ModelQuotaGroup? primaryGroup, ModelQuotaGroup? geminiGroup, String error})
   _resolveQuotaForSelectedModel() {
+    final report = widget.quotaReports[_quotaProvider];
+    final error = report == null
+        ? 'Chưa lấy được dữ liệu quota'
+        : (report.error.isEmpty ? 'Không có dữ liệu quota' : report.error);
+    final groups = (report?.groups ?? const <ModelQuotaGroup>[])
+        .where((g) => g.buckets.isNotEmpty)
+        .toList();
+    if (_quotaProvider == kQuotaProviderClaude) {
+      return (primaryGroup: groups.firstOrNull, geminiGroup: null, error: error);
+    }
+
     ModelQuotaGroup? gemini;
     ModelQuotaGroup? claudeGpt;
     ModelQuotaGroup? argon;
-
-    ModelQuotaGroup? claudeCode;
-    for (final g in widget.modelQuotas) {
+    for (final g in groups) {
       final lower = g.displayName.toLowerCase();
-      if (lower.contains('claude code')) {
-        // Limit tài khoản của Claude Code CLI: chỉ dùng cho model claude-cli
-        claudeCode = g;
-      } else if (lower.contains('argon')) {
+      if (lower.contains('argon')) {
         argon = g;
       } else if (lower.contains('claude') || lower.contains('gpt')) {
         claudeGpt = g;
@@ -267,18 +283,18 @@ extension _CanvasExtModelBar on _ChatCanvasViewState {
       }
     }
 
-    if (_isClaudeCliModel(widget.selectedModel)) {
-      return (primaryGroup: claudeCode, geminiGroup: null);
-    }
-
     final m = widget.selectedModel.toLowerCase();
     if (m.contains('claude') || m.contains('gpt')) {
-      return (primaryGroup: claudeGpt ?? gemini, geminiGroup: gemini);
+      return (primaryGroup: claudeGpt ?? gemini, geminiGroup: gemini, error: error);
     }
     if (m.contains('argon')) {
-      return (primaryGroup: argon ?? gemini, geminiGroup: gemini);
+      return (primaryGroup: argon ?? gemini, geminiGroup: gemini, error: error);
     }
-    return (primaryGroup: gemini ?? argon ?? claudeGpt, geminiGroup: gemini);
+    return (
+      primaryGroup: gemini ?? argon ?? claudeGpt,
+      geminiGroup: gemini,
+      error: error,
+    );
   }
 
   Color _quotaStatusColor(double remainingPct) =>
@@ -388,9 +404,9 @@ extension _CanvasExtModelBar on _ChatCanvasViewState {
     );
   }
 
-  /// [2] THANH % USAGE CỦA MODEL AI — Nằm ở giữa phần Task Running và Khung Chat
-  /// Hiển thị chính xác Limit Tuần (Weekly Limit Remaining) & Limit Giờ / 5h (Five Hour Limit Remaining)
-  /// lấy trực tiếp từ Antigravity LanguageServer (`RetrieveUserQuotaSummary`).
+  /// [2] THANH % USAGE CỦA MODEL AI — Nằm ở giữa phần Task Running và Khung Chat.
+  /// Limit Tuần và Limit Giờ (5h) của provider đang hiển thị (xem `_quotaProvider`).
+  /// Không có dữ liệu thì hiện "Không có dữ liệu quota" kèm lý do, không hiện số mặc định.
   Widget _buildModelUsageMiddleBar(BuildContext context, bool isMobile) {
     final colorScheme = Theme.of(context).colorScheme;
     final textTheme = Theme.of(context).textTheme;
@@ -402,26 +418,6 @@ extension _CanvasExtModelBar on _ChatCanvasViewState {
     final weeklyBucket = primaryGroup?.weeklyBucket;
     final fiveHourBucket =
         primaryGroup?.fiveHourBucket ?? geminiGroup?.fiveHourBucket;
-
-    final double weeklyPct = weeklyBucket?.remainingPercent ?? 70.0;
-    final double hourlyPct = fiveHourBucket?.remainingPercent ?? 95.0;
-
-    final Color weeklyColor = _quotaStatusColor(weeklyPct);
-    final Color hourlyColor = _quotaStatusColor(hourlyPct);
-
-    // Thời gian reset của từng cột: ngắn dưới thanh %, đầy đủ trong tooltip
-    final String? weeklyReset = weeklyBucket == null
-        ? null
-        : formatQuotaResetCompact(weeklyBucket.resetTime);
-    final String? weeklyResetFull = weeklyBucket == null
-        ? null
-        : formatQuotaReset(weeklyBucket.resetTime);
-    final String? hourlyReset = fiveHourBucket == null
-        ? null
-        : formatQuotaResetCompact(fiveHourBucket.resetTime);
-    final String? hourlyResetFull = fiveHourBucket == null
-        ? null
-        : formatQuotaReset(fiveHourBucket.resetTime);
 
     return Container(
       padding: EdgeInsets.symmetric(
@@ -442,138 +438,48 @@ extension _CanvasExtModelBar on _ChatCanvasViewState {
 
           _buildContextChip(colorScheme, textTheme, compact: isMobile),
 
-          // Hiển thị 2 cột Limit Tuần & Limit Giờ (5h) chuẩn Antigravity (bấm vào để mở bảng chi tiết tất cả Model)
+          // Limit Tuần & Limit Giờ (5h), bấm để mở bảng chi tiết
           Expanded(
             child: InkWell(
               borderRadius: BorderRadius.circular(6),
-              onTap: () => _showAntigravityQuotaSheet(context),
+              onTap: () => _showQuotaSheet(context),
               child: Row(
                 children: [
-                  // 1. Limit Tuần (Weekly Limit Remaining)
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.stretch,
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Row(
-                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                          children: [
-                            Flexible(
-                              child: Text(
-                                isMobile ? 'Tuần' : 'Limit Tuần',
-                                maxLines: 1,
-                                overflow: TextOverflow.ellipsis,
-                                style: textTheme.labelSmall?.copyWith(
-                                  fontSize: 10,
-                                  color: colorScheme.onSurfaceVariant,
-                                  fontWeight: FontWeight.w600,
-                                ),
-                              ),
-                            ),
-                            Text(
-                              '${weeklyPct.round()}%',
-                              style: textTheme.labelSmall?.copyWith(
-                                fontFamily: 'monospace',
-                                fontSize: 10.5,
-                                fontWeight: FontWeight.w800,
-                                color: weeklyColor,
-                              ),
-                            ),
-                          ],
-                        ),
-                        const SizedBox(height: 2.5),
-                        ClipRRect(
-                          borderRadius: BorderRadius.circular(4),
-                          child: LinearProgressIndicator(
-                            minHeight: 4.5,
-                            value: (weeklyPct / 100.0).clamp(0.0, 1.0),
-                            backgroundColor:
-                                colorScheme.surfaceContainerHighest,
-                            valueColor: AlwaysStoppedAnimation<Color>(
-                              weeklyColor,
-                            ),
+                  if (primaryGroup == null)
+                    Expanded(
+                      child: Tooltip(
+                        message: resolved.error,
+                        child: Text(
+                          'Không có dữ liệu quota',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: textTheme.labelSmall?.copyWith(
+                            fontSize: 10.5,
+                            color: colorScheme.onSurfaceVariant,
+                            fontWeight: FontWeight.w600,
                           ),
                         ),
-                        if (weeklyReset != null)
-                          Tooltip(
-                            message: weeklyResetFull ?? '',
-                            child: Text(
-                              '↻ $weeklyReset',
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                              style: textTheme.labelSmall?.copyWith(
-                                fontSize: 9,
-                                color: colorScheme.onSurfaceVariant,
-                              ),
-                            ),
-                          ),
-                      ],
+                      ),
+                    )
+                  else ...[
+                    Expanded(
+                      child: _buildQuotaColumn(
+                        colorScheme,
+                        textTheme,
+                        label: isMobile ? 'Tuần' : 'Limit Tuần',
+                        bucket: weeklyBucket,
+                      ),
                     ),
-                  ),
-
-                  const SizedBox(width: 10),
-
-                  // 2. Limit Giờ / 5h (Five Hour Limit Remaining)
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.stretch,
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Row(
-                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                          children: [
-                            Flexible(
-                              child: Text(
-                                isMobile ? '5h' : 'Limit Giờ (5h)',
-                                maxLines: 1,
-                                overflow: TextOverflow.ellipsis,
-                                style: textTheme.labelSmall?.copyWith(
-                                  fontSize: 10,
-                                  color: colorScheme.onSurfaceVariant,
-                                  fontWeight: FontWeight.w600,
-                                ),
-                              ),
-                            ),
-                            Text(
-                              '${hourlyPct.round()}%',
-                              style: textTheme.labelSmall?.copyWith(
-                                fontFamily: 'monospace',
-                                fontSize: 10.5,
-                                fontWeight: FontWeight.w800,
-                                color: hourlyColor,
-                              ),
-                            ),
-                          ],
-                        ),
-                        const SizedBox(height: 2.5),
-                        ClipRRect(
-                          borderRadius: BorderRadius.circular(4),
-                          child: LinearProgressIndicator(
-                            minHeight: 4.5,
-                            value: (hourlyPct / 100.0).clamp(0.0, 1.0),
-                            backgroundColor:
-                                colorScheme.surfaceContainerHighest,
-                            valueColor: AlwaysStoppedAnimation<Color>(
-                              hourlyColor,
-                            ),
-                          ),
-                        ),
-                        if (hourlyReset != null)
-                          Tooltip(
-                            message: hourlyResetFull ?? '',
-                            child: Text(
-                              '↻ $hourlyReset',
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                              style: textTheme.labelSmall?.copyWith(
-                                fontSize: 9,
-                                color: colorScheme.onSurfaceVariant,
-                              ),
-                            ),
-                          ),
-                      ],
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: _buildQuotaColumn(
+                        colorScheme,
+                        textTheme,
+                        label: isMobile ? '5h' : 'Limit Giờ (5h)',
+                        bucket: fiveHourBucket,
+                      ),
                     ),
-                  ),
+                  ],
 
                   if (!isMobile) ...[
                     const SizedBox(width: 4),
@@ -592,8 +498,89 @@ extension _CanvasExtModelBar on _ChatCanvasViewState {
     );
   }
 
-  /// Bảng chi tiết toàn bộ các nhóm Quota AI (Antigravity + Claude Code CLI)
-  void _showAntigravityQuotaSheet(BuildContext context) {
-    showQuotaDetailSheet(context, widget.modelQuotas);
+  /// Một cột của thanh quota: nhãn, % còn lại, thanh tiến trình và thời gian reset.
+  /// Thiếu cửa sổ ([bucket] null) thì hiện "—" và thanh rỗng.
+  Widget _buildQuotaColumn(
+    ColorScheme colorScheme,
+    TextTheme textTheme, {
+    required String label,
+    required ModelQuotaBucket? bucket,
+  }) {
+    final pct = bucket?.remainingPercent;
+    final color = pct == null
+        ? colorScheme.onSurfaceVariant
+        : _quotaStatusColor(pct);
+    // Thời gian reset của cột: ngắn dưới thanh %, đầy đủ trong tooltip
+    final reset =
+        bucket == null ? null : formatQuotaResetCompact(bucket.resetTime);
+    final resetFull = bucket == null ? null : formatQuotaReset(bucket.resetTime);
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Row(
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          children: [
+            Flexible(
+              child: Text(
+                label,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: textTheme.labelSmall?.copyWith(
+                  fontSize: 10,
+                  color: colorScheme.onSurfaceVariant,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ),
+            Text(
+              pct == null ? '—' : '${pct.round()}%',
+              style: textTheme.labelSmall?.copyWith(
+                fontFamily: 'monospace',
+                fontSize: 10.5,
+                fontWeight: FontWeight.w800,
+                color: color,
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 2.5),
+        ClipRRect(
+          borderRadius: BorderRadius.circular(4),
+          child: LinearProgressIndicator(
+            minHeight: 4.5,
+            value: pct == null ? 0 : (pct / 100.0).clamp(0.0, 1.0),
+            backgroundColor: colorScheme.surfaceContainerHighest,
+            valueColor: AlwaysStoppedAnimation<Color>(color),
+          ),
+        ),
+        if (reset != null)
+          Tooltip(
+            message: resetFull ?? '',
+            child: Text(
+              '↻ $reset',
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: textTheme.labelSmall?.copyWith(
+                fontSize: 9,
+                color: colorScheme.onSurfaceVariant,
+              ),
+            ),
+          ),
+      ],
+    );
+  }
+
+  /// Bảng chi tiết quota. Chat Claude chỉ có Claude, chat agy chỉ có agy;
+  /// màn chung có cả hai. Provider chưa có dữ liệu vẫn hiện mục với lý do.
+  void _showQuotaSheet(BuildContext context) {
+    final providers = widget.quotaScope.isEmpty
+        ? const [kQuotaProviderAgy, kQuotaProviderClaude]
+        : [widget.quotaScope];
+    showQuotaDetailSheet(context, [
+      for (final p in providers)
+        widget.quotaReports[p] ?? QuotaReport.missing(p),
+    ]);
   }
 }

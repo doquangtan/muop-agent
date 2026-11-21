@@ -388,6 +388,17 @@ pub fn build_limit_group(
     }
 }
 
+/// Claude Code CLI đã đăng nhập chưa, và gói (ví dụ "pro") từ `~/.claude/.credentials.json`
+pub fn claude_account() -> (bool, String) {
+    if !home_dir().join(".claude/.credentials.json").exists() {
+        return (false, String::new());
+    }
+    match read_oauth_credentials() {
+        Ok((_, plan)) => (true, plan),
+        Err(_) => (false, String::new()),
+    }
+}
+
 /// Limit Claude Code CLI dưới dạng `ModelQuotaGroup` để dùng chung luồng quota với Antigravity.
 /// Dữ liệu gộp từ hai nguồn: sự kiện `rate_limit_event` của các lượt chat và endpoint usage
 /// (gọi tối đa mỗi `LIMITS_CACHE_TTL`). Trả về `None` nếu chưa từng đăng nhập Claude Code CLI.

@@ -9,8 +9,16 @@ use socketioxide::{
 
 pub fn setup_socket_handlers(io: &SocketIo, state: AppState) {
     let connect_state = state.clone();
+    crate::agy_auth::init(io.clone());
+    crate::claude_auth::init(io.clone());
+    crate::setup::init(io.clone());
     io.ns("/", move |socket: SocketRef| {
         tracing::info!("⚡ Socket.IO Client connected: {}", socket.id);
+        // Đăng nhập agy / claude: đẩy trạng thái hiện tại và nhận lệnh `*:auth:*`
+        crate::agy_auth::socket::register(&socket);
+        crate::claude_auth::socket::register(&socket);
+        // Khởi tạo server: trạng thái tool/CLI và lệnh `setup:*`
+        crate::setup::register(&socket);
 
         // Không gửi snapshot đầy đủ khi kết nối: client tự yêu cầu các event nhỏ
         // (`request-sessions`, `request-meta`, `request-streams`) hoặc `request-snapshot` (client cũ)

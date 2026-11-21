@@ -170,6 +170,7 @@ pub(super) fn get_single_session_inner(
         },
         steps: final_steps,
         subagent_lanes: lanes,
+        lanes_loaded: true,
         files_touched: files,
         commands_run: commands,
         total_input_tokens: parsed.total_input_tokens,

@@ -35,6 +35,8 @@ pub(super) struct ParsedTranscript {
     pub files_touched: Vec<FileTouchRecord>,
     pub commands_run: Vec<CommandExecutionRecord>,
     pub spawned_subagents: Vec<SpawnedSubagentMeta>,
+    /// Chỉ số đầu tiên trong `spawned_subagents` thuộc lượt hiện tại; các lượt trước chỉ là lịch sử
+    pub turn_spawn_start: usize,
     pub total_input_tokens: u64,
     pub total_output_tokens: u64,
     pub total_cache_tokens: u64,

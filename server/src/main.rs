@@ -1,6 +1,8 @@
+mod agy_auth;
 mod api;
 mod chat;
 mod claude;
+mod claude_auth;
 mod docker;
 mod files;
 mod git;
@@ -9,6 +11,7 @@ mod lsp;
 mod models;
 mod scanner;
 mod screen;
+mod setup;
 mod socket;
 mod ssh;
 

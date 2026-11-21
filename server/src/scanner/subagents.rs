@@ -109,7 +109,14 @@ fn push_spawned_lanes(
     is_session_actually_running: bool,
     depth: usize,
 ) {
-    for spawned in &parent.spawned_subagents {
+    // Chỉ các lần gọi của lượt hiện tại mới thành lane; lần gọi của lượt trước đã xong nằm trong lịch sử.
+    // Agent cháu (depth > 1) thuộc về sub đang chạy nên giữ đủ.
+    let scope_start = if depth == 1 {
+        parent.turn_spawn_start.min(parent.spawned_subagents.len())
+    } else {
+        0
+    };
+    for spawned in &parent.spawned_subagents[scope_start..] {
         let child_transcript = if !spawned.id.is_empty() {
             all_parsed.get(&spawned.id)
         } else {
