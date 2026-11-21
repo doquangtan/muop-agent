@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'package:flutter/services.dart';
 import 'package:material_ui/material_ui.dart';
 
 import 'package:muop_agent/core/config/server_config.dart';
@@ -67,7 +66,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
   final SessionRepository _sessionsRepo = AppDependencies.sessions;
   final TextEditingController _searchController = TextEditingController();
 
-  List<String> _hostLanIps = const ['192.168.31.96', '100.121.158.198'];
   String _serverAddress = defaultHostAddress;
   bool _isRemoteConnected = false;
   bool _isSocketLive = false;
@@ -555,7 +553,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
       _isRemoteConnected = true;
       _remoteHostName = meta.hostname;
       if (meta.lanIps.isNotEmpty) {
-        _hostLanIps = meta.lanIps;
       }
       _projects = meta.projects;
       if (_activeChatProject != null) {
@@ -1708,38 +1705,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
                               ),
                             ],
                           ),
-                          const SizedBox(height: 8),
-                          Wrap(
-                            spacing: 8,
-                            runSpacing: 6,
-                            children: [
-                              for (final ip in _hostLanIps)
-                                ActionChip(
-                                  avatar: const Icon(
-                                    Icons.copy_rounded,
-                                    size: 13,
-                                  ),
-                                  label: Text(
-                                    '$ip:$defaultBridgePort',
-                                    style: const TextStyle(
-                                      fontFamily: 'monospace',
-                                      fontSize: 11.5,
-                                      fontWeight: FontWeight.w700,
-                                    ),
-                                  ),
-                                  onPressed: () {
-                                    final addr =
-                                        '$ip:$defaultBridgePort';
-                                    Clipboard.setData(
-                                      ClipboardData(text: addr),
-                                    );
-                                    setModalState(() {
-                                      ipController.text = addr;
-                                    });
-                                  },
-                                ),
-                            ],
-                          ),
                         ],
                       ),
                     ),
@@ -1814,37 +1779,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
                           borderRadius: BorderRadius.circular(12),
                         ),
                       ),
-                    ),
-                    const SizedBox(height: 10),
-                    Wrap(
-                      spacing: 8,
-                      runSpacing: 6,
-                      children: [
-                        ActionChip(
-                          label: const Text('192.168.31.96:8787 (LAN)'),
-                          onPressed: () {
-                            setModalState(() {
-                              ipController.text = '192.168.31.96:8787';
-                            });
-                          },
-                        ),
-                        ActionChip(
-                          label: const Text('100.121.158.198:8787 (VPN)'),
-                          onPressed: () {
-                            setModalState(() {
-                              ipController.text = '100.121.158.198:8787';
-                            });
-                          },
-                        ),
-                        ActionChip(
-                          label: const Text('127.0.0.1:8787 (Local)'),
-                          onPressed: () {
-                            setModalState(() {
-                              ipController.text = '127.0.0.1:8787';
-                            });
-                          },
-                        ),
-                      ],
                     ),
                     const SizedBox(height: 12),
                     SizedBox(
