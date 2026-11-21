@@ -16,21 +16,30 @@ use tokio::process::Command;
 
 const MAX_OUTPUT_BYTES: usize = 200 * 1024;
 
+/// "Máy này" là mục mặc định: luôn có, không sửa hay xóa được (xem `setup::ssh::ensure_local_host`)
+pub fn is_builtin(row: &SshHostRow) -> bool {
+    crate::setup::ssh::local_host_id() == Some(row.id)
+}
+
 pub fn to_dto(row: &SshHostRow) -> SshHostDto {
+    let builtin = is_builtin(row);
     SshHostDto {
         id: row.id,
         name: row.name.clone(),
         host: row.host.clone(),
         port: row.port,
         username: row.username.clone(),
-        // Khớp với `exec`: có mật khẩu thì dùng mật khẩu, không thì dùng key
-        auth_type: if row.password.is_empty() && !row.private_key.is_empty() {
+        // Mục mặc định không dùng mật khẩu/khóa; các máy khác: có mật khẩu thì dùng mật khẩu, không thì key
+        auth_type: if builtin {
+            "local".into()
+        } else if row.password.is_empty() && !row.private_key.is_empty() {
             "key".into()
         } else {
             "password".into()
         },
-        has_password: !row.password.is_empty(),
-        has_key: !row.private_key.is_empty(),
+        has_password: !builtin && !row.password.is_empty(),
+        has_key: !builtin && !row.private_key.is_empty(),
+        builtin,
     }
 }
 

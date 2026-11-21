@@ -219,9 +219,11 @@ class _SshHostsScreenState extends State<SshHostsScreen> {
                             leading: CircleAvatar(
                               backgroundColor: scheme.primaryContainer,
                               child: Icon(
-                                isKey
-                                    ? Icons.vpn_key_rounded
-                                    : Icons.password_rounded,
+                                host.builtin
+                                    ? Icons.computer_rounded
+                                    : isKey
+                                        ? Icons.vpn_key_rounded
+                                        : Icons.password_rounded,
                                 size: 18,
                                 color: scheme.onPrimaryContainer,
                               ),
@@ -230,7 +232,9 @@ class _SshHostsScreenState extends State<SshHostsScreen> {
                                 style: textTheme.titleSmall
                                     ?.copyWith(fontWeight: FontWeight.w600)),
                             subtitle: Text(
-                              '${host.address} · ${isKey ? 'SSH key' : 'mật khẩu'}'
+                              host.builtin
+                                  ? 'Máy chủ này · mở shell trực tiếp'
+                                  : '${host.address} · ${isKey ? 'SSH key' : 'mật khẩu'}'
                               '${_runningSessionFor(host) != null ? ' · đang có phiên chạy' : ''}',
                               style: textTheme.bodySmall?.copyWith(
                                 color: scheme.onSurfaceVariant,
@@ -244,17 +248,20 @@ class _SshHostsScreenState extends State<SshHostsScreen> {
                                   icon: const Icon(Icons.bolt_rounded),
                                   onPressed: () => _openExec(host),
                                 ),
-                                IconButton(
-                                  tooltip: 'Sửa',
-                                  icon: const Icon(Icons.edit_outlined),
-                                  onPressed: () => _openForm(host),
-                                ),
-                                IconButton(
-                                  tooltip: 'Xóa',
-                                  icon: Icon(Icons.delete_outline_rounded,
-                                      color: scheme.error),
-                                  onPressed: () => _confirmDelete(host),
-                                ),
+                                // Máy mặc định: không sửa, không xóa
+                                if (!host.builtin) ...[
+                                  IconButton(
+                                    tooltip: 'Sửa',
+                                    icon: const Icon(Icons.edit_outlined),
+                                    onPressed: () => _openForm(host),
+                                  ),
+                                  IconButton(
+                                    tooltip: 'Xóa',
+                                    icon: Icon(Icons.delete_outline_rounded,
+                                        color: scheme.error),
+                                    onPressed: () => _confirmDelete(host),
+                                  ),
+                                ],
                               ],
                             ),
                           ),

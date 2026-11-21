@@ -273,26 +273,25 @@ pub fn verify_pasted(pasted: &str) -> Result<(), String> {
 }
 
 /// Lưu máy này vào danh sách máy SSH để mở terminal. Trả về id máy đã lưu.
-/// Lưu "Máy này" vào `ssh_hosts` (không cần khóa: mở terminal và chạy lệnh trên máy này không qua ssh).
-/// Gọi khi server khởi động, để máy này có sẵn trong màn SSH.
+/// Id của "Máy này" (mục mặc định, không sửa/xóa được), nếu đã lưu
+pub fn local_host_id() -> Option<i64> {
+    store::get_app_setting(KEY_HOST_ID).and_then(|s| s.parse::<i64>().ok())
+}
+
+/// Đảm bảo "Máy này" luôn có trong `ssh_hosts`: loopback, đúng user đang chạy server, không khóa.
+/// Mục mặc định của màn SSH: gọi khi khởi động và mỗi lần liệt kê máy.
 pub fn ensure_local_host() -> Option<i64> {
-    let existing_id = store::get_app_setting(KEY_HOST_ID)
-        .and_then(|s| s.parse::<i64>().ok())
+    let existing_id = local_host_id()
         .filter(|id| store::get_ssh_host(*id).is_some())
         .unwrap_or(0);
-    // Giữ khóa đã lưu nếu có (khóa từ luồng thiết lập SSH trước đây)
-    let private_key = fs::read_to_string(key_path())
-        .ok()
-        .or_else(|| store::get_ssh_host(existing_id).map(|r| r.private_key))
-        .unwrap_or_default();
     let row = store::SshHostRow {
         id: existing_id,
         name: HOST_NAME.into(),
         host: LOCAL_HOST.into(),
         port: LOCAL_PORT,
-        username: username(),
+        username: crate::ssh::hosts::server_user(),
         password: String::new(),
-        private_key,
+        private_key: String::new(),
     };
     let id = store::save_ssh_host(&row)?;
     store::set_app_setting(KEY_HOST_ID, &id.to_string());

@@ -10,6 +10,7 @@ class SshHost {
     required this.authType,
     required this.hasPassword,
     required this.hasKey,
+    this.builtin = false,
   });
 
   final int id;
@@ -21,6 +22,8 @@ class SshHost {
   final String authType;
   final bool hasPassword;
   final bool hasKey;
+  /// Mục mặc định "Máy này" của server: chỉ dùng được, không sửa hay xóa
+  final bool builtin;
 
   String get address => '$username@$host:$port';
 
@@ -34,6 +37,7 @@ class SshHost {
       authType: '${json['authType'] ?? 'password'}',
       hasPassword: json['hasPassword'] == true,
       hasKey: json['hasKey'] == true,
+      builtin: json['builtin'] == true,
     );
   }
 }
