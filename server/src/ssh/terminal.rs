@@ -237,6 +237,34 @@ pub fn open_with(
         .arg(remote_command.unwrap_or_else(|| "exec \"${SHELL:-/bin/sh}\" -i".to_string()))
         .env("TERM", "xterm-256color");
 
+    spawn_pty(
+        io,
+        session_id,
+        cmd,
+        cols,
+        rows,
+        tmp_dir,
+        row.id,
+        row.name.clone(),
+    )
+}
+
+/// PTY, tiến trình con, đăng ký phiên và luồng đẩy dữ liệu tới client.
+/// Dùng chung cho `ssh` (máy đích) và chương trình chạy trực tiếp trên server ([`open_local`]).
+#[allow(clippy::too_many_arguments)]
+fn spawn_pty(
+    io: SocketIo,
+    session_id: &str,
+    mut cmd: Command,
+    cols: u16,
+    rows: u16,
+    tmp_dir: PathBuf,
+    host_id: i64,
+    host_name: String,
+) -> Result<(), String> {
+    let cleanup = |dir: &PathBuf| {
+        let _ = fs::remove_dir_all(dir);
+    };
     // PTY: master giữ ở server, slave làm stdio của ssh
     let (cols, rows) = clamp_size(cols, rows);
     let mut ws = winsize(cols, rows);
@@ -307,8 +335,8 @@ pub fn open_with(
                 master,
                 pid,
                 tmp_dir: tmp_dir.clone(),
-                host_id: row.id,
-                host_name: row.name.clone(),
+                host_id,
+                host_name,
                 started_at: chrono::Utc::now().to_rfc3339(),
                 last_active: Instant::now(),
                 scrollback: VecDeque::new(),
@@ -346,6 +374,50 @@ pub fn open_with(
     });
 
     Ok(())
+}
+
+/// "SSH ảo": chạy `program` trực tiếp trong PTY của server, không qua `ssh`.
+/// Tiến trình kế thừa môi trường của server (cùng keyring với các lệnh agy khác). Biến `SSH_*`
+/// bị gỡ để agy không chuyển sang lưu token vào file ("file-based token storage because SSH session
+/// detected"), nên token đăng nhập nằm đúng chỗ server đọc.
+pub fn open_local(
+    io: SocketIo,
+    session_id: &str,
+    program: &std::path::Path,
+    args: &[&str],
+    cols: u16,
+    rows: u16,
+    host_name: &str,
+) -> Result<(), String> {
+    {
+        let map = sessions().lock().map_err(|_| "Lỗi khóa phiên")?;
+        if map.len() >= MAX_SESSIONS {
+            return Err("Đã đạt số phiên SSH tối đa".into());
+        }
+    }
+    let tmp_dir = make_private_dir().ok_or("Không tạo được thư mục tạm")?;
+    let mut cmd = Command::new(program);
+    cmd.args(args)
+        .env("TERM", "xterm-256color")
+        .env_remove("SSH_CLIENT")
+        .env_remove("SSH_CONNECTION")
+        .env_remove("SSH_TTY");
+    if let Some(home) = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .filter(|p| p.is_dir())
+    {
+        cmd.current_dir(home);
+    }
+    spawn_pty(
+        io,
+        session_id,
+        cmd,
+        cols,
+        rows,
+        tmp_dir,
+        0,
+        host_name.to_string(),
+    )
 }
 
 /// Đọc master cho tới khi PTY đóng, rồi thu hồi tiến trình và dọn phiên

@@ -298,29 +298,13 @@ fn sync_local_host() -> Option<i64> {
 /// Mở terminal SSH tới máy này chạy `agy` (đăng nhập, hoặc đồng ý điều khoản) trong màn hình SSH của app.
 /// Trả về (id phiên, id máy đã lưu).
 pub fn open_agy_terminal() -> Result<(String, i64), String> {
-    let st = status();
-    if !st.client {
-        return Err("chưa có OpenSSH client (lệnh ssh)".into());
-    }
-    if !st.sshd_running {
-        return Err(
-            "OpenSSH server (sshd) chưa chạy trên máy này, hãy bật sshd trong màn cài đặt".into(),
-        );
-    }
-    if !st.ready {
-        return Err("SSH của máy này chưa sẵn sàng, hãy thiết lập SSH trong màn cài đặt".into());
-    }
-    let host_id = sync_local_host().ok_or("không lưu được máy SSH của server")?;
-    let row = store::get_ssh_host(host_id).ok_or("không đọc được máy SSH vừa lưu")?;
+    // Không qua ssh: agy chạy trực tiếp trong PTY của server ("SSH ảo"), nên không cần sshd,
+    // khóa SSH hay máy SSH đã lưu. Cùng môi trường với các lệnh agy khác của server.
     let agy = crate::setup::install::find_bin("agy").ok_or("không tìm thấy lệnh agy")?;
     let io = crate::setup::io().ok_or("server chưa sẵn sàng")?;
     let sid = crate::ssh::terminal::new_session_id();
-    let remote = format!(
-        "exec {}",
-        crate::ssh::hosts::shell_quote(&agy.display().to_string())
-    );
-    crate::ssh::terminal::open_with(io, &sid, &row, 120, 40, Some(remote))?;
-    Ok((sid, host_id))
+    crate::ssh::terminal::open_local(io, &sid, &agy, &[], 120, 40, "Agy (máy chủ)")?;
+    Ok((sid, 0))
 }
 
 #[cfg(test)]
