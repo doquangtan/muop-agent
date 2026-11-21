@@ -6,7 +6,14 @@ import 'package:muop_agent/features/connection/domain/connection_entities.dart';
 abstract class ConnectionRepository {
   Future<String> loadSavedServerAddress();
 
+  /// Ghi nhận địa chỉ đang dùng (đưa lên đầu danh sách đã lưu)
   Future<void> saveServerAddress(String address);
+
+  /// Các server đã kết nối trước đây, mới nhất đứng đầu
+  Future<List<String>> loadSavedServers();
+
+  /// Xóa một server khỏi danh sách đã lưu
+  Future<void> removeSavedServer(String address);
 
   Future<RemotePingResult> pingRemoteServer(String address);
 

@@ -276,7 +276,7 @@ lsof -i :8787
 - Server dùng một DB SQLite duy nhất: `~/.local/share/muop-agent/muop-agent.db` (WAL), mở qua `server/src/store.rs` bằng `rusqlite`.
 - Bảng `agy_turn_models(conversation_id, started_at, model)`: model đã dùng cho từng lượt agy (transcript của agy không lưu model). Thay cho file `agy-turn-models.jsonl`, file cũ được import một lần rồi xóa.
 - Bảng `conversation_models(conversation_id, model, updated_at)`: model người dùng chọn theo conversation. API: `GET /api/conversation/model?id=<cid>` và `POST /api/conversation/model` với body `{conversationId, model}`.
-- **Chưa làm (chờ quyết định)**: địa chỉ server phía Flutter vẫn lưu ở `muop_agent_remote_config.json` trong thư mục temp (`brain_scanner_service.dart`). Client chưa nối với API `conversation/model`, nên lựa chọn model hiện chỉ nằm trong bộ nhớ app.
+- **Địa chỉ server phía client**: file `muop_agent_remote_config.json` trong thư mục temp (`ConnectionRepositoryImpl`) lưu `serverAddress` (đang dùng) và `servers` (đã kết nối, mới nhất đứng đầu, tối đa 10, `domain/saved_servers.dart`). Hộp thoại IP trên dashboard hiện danh sách: bấm để kết nối luôn (`_connectToServer`), nút thùng rác để xóa. **Chưa làm (chờ quyết định)**: client chưa nối với API `conversation/model`, nên lựa chọn model hiện chỉ nằm trong bộ nhớ app.
 
 ### 8.2. Provider, source và model
 - Session có trường `source`: `claude-cli` (từ transcript Claude) hoặc `agy`. Server trả `source` trong phản hồi `chat:send` (`ChatSendResponse.source`).

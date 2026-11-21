@@ -1605,10 +1605,27 @@ class _DashboardScreenState extends State<DashboardScreen> {
     );
   }
 
+  /// Kết nối tới [addr]: ghi nhận vào danh sách đã lưu, nối socket và tải lại dữ liệu
+  Future<void> _connectToServer(String addr) async {
+    await _connectionRepo.saveServerAddress(addr);
+    if (!mounted) return;
+    setState(() {
+      _serverAddress = addr;
+    });
+    _connectionRepo.connectSocket(addr);
+    unawaited(_refreshQuota());
+    // Đổi IP: kiểm tra cài đặt trên server mới (sau khi dialog đã đóng)
+    unawaited(_runSetupCheck());
+    await _refreshSessions(silent: false);
+  }
+
   Future<void> _showServerConfigDialog() async {
     final ipController = TextEditingController(text: _serverAddress);
     RemotePingResult? pingResult;
     bool isPinging = false;
+    // Các server đã kết nối trước đây (mới nhất đứng đầu)
+    final saved = List<String>.of(await _connectionRepo.loadSavedServers());
+    if (!mounted) return;
 
     await showDialog<void>(
       context: context,
@@ -1726,7 +1743,61 @@ class _DashboardScreenState extends State<DashboardScreen> {
                         ],
                       ),
                     ),
-                    const SizedBox(height: 14),
+                    if (saved.isNotEmpty) ...[
+                      const SizedBox(height: 14),
+                      Text(
+                        'Đã kết nối trước đây',
+                        style: textTheme.labelLarge?.copyWith(
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                      const SizedBox(height: 4),
+                      for (final addr in saved)
+                        ListTile(
+                          dense: true,
+                          contentPadding: const EdgeInsets.symmetric(horizontal: 4),
+                          leading: Icon(
+                            addr == _serverAddress
+                                ? Icons.check_circle_rounded
+                                : Icons.dns_outlined,
+                            size: 20,
+                            color: addr == _serverAddress
+                                ? context.status.success
+                                : colorScheme.onSurfaceVariant,
+                          ),
+                          title: Text(
+                            addr,
+                            style: const TextStyle(
+                              fontFamily: 'monospace',
+                              fontSize: 13,
+                              fontWeight: FontWeight.w700,
+                            ),
+                          ),
+                          subtitle: addr == _serverAddress
+                              ? const Text('Đang dùng')
+                              : null,
+                          onTap: () {
+                            Navigator.of(ctx).pop();
+                            unawaited(_connectToServer(addr));
+                          },
+                          trailing: IconButton(
+                            tooltip: 'Xóa khỏi danh sách',
+                            icon: Icon(
+                              Icons.delete_outline_rounded,
+                              size: 18,
+                              color: colorScheme.error,
+                            ),
+                            onPressed: () async {
+                              await _connectionRepo.removeSavedServer(addr);
+                              setModalState(() {
+                                saved.remove(addr);
+                              });
+                            },
+                          ),
+                        ),
+                      const Divider(height: 20),
+                    ] else
+                      const SizedBox(height: 14),
                     TextField(
                       controller: ipController,
                       keyboardType: TextInputType.url,
@@ -1817,23 +1888,12 @@ class _DashboardScreenState extends State<DashboardScreen> {
                   child: const Text('Hủy'),
                 ),
                 FilledButton(
-                  onPressed: () async {
+                  onPressed: () {
                     final newAddr = ipController.text.trim().isEmpty
                         ? defaultHostAddress
                         : ipController.text.trim();
-                    await _connectionRepo.saveServerAddress(newAddr);
-                    if (!mounted) return;
-                    setState(() {
-                      _serverAddress = newAddr;
-                    });
-                    _connectionRepo.connectSocket(newAddr);
-                    unawaited(_refreshQuota());
-                    if (ctx.mounted) {
-                      Navigator.of(ctx).pop();
-                    }
-                    // Đổi IP: kiểm tra cài đặt trên server mới (sau khi dialog đã đóng)
-                    unawaited(_runSetupCheck());
-                    await _refreshSessions(silent: false);
+                    Navigator.of(ctx).pop();
+                    unawaited(_connectToServer(newAddr));
                   },
                   child: const Text('Kết nối'),
                 ),
