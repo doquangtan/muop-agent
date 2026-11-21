@@ -159,6 +159,19 @@ pub fn open(
     cols: u16,
     rows: u16,
 ) -> Result<(), String> {
+    // Máy này: shell của server trong PTY, không qua ssh
+    if crate::ssh::hosts::is_local(row) {
+        return open_local(
+            state.io.clone(),
+            session_id,
+            &crate::ssh::hosts::local_shell(),
+            &["-i"],
+            cols,
+            rows,
+            row.id,
+            &row.name,
+        );
+    }
     open_with(state.io.clone(), session_id, row, cols, rows, None)
 }
 
@@ -387,6 +400,7 @@ pub fn open_local(
     args: &[&str],
     cols: u16,
     rows: u16,
+    host_id: i64,
     host_name: &str,
 ) -> Result<(), String> {
     {
@@ -415,7 +429,7 @@ pub fn open_local(
         cols,
         rows,
         tmp_dir,
-        0,
+        host_id,
         host_name.to_string(),
     )
 }

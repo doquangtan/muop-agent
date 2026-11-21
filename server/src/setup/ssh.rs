@@ -239,7 +239,7 @@ pub fn auto_setup() -> Result<(), String> {
     let ok = test_login();
     store::set_app_setting(KEY_LOGIN_OK, if ok { "1" } else { "0" });
     if ok {
-        sync_local_host();
+        ensure_local_host();
     }
     Ok(())
 }
@@ -268,19 +268,25 @@ pub fn verify_pasted(pasted: &str) -> Result<(), String> {
     if !ok {
         return Err("Đã có khóa nhưng chưa đăng nhập được bằng khóa. Kiểm tra sshd cho phép đăng nhập bằng public key.".into());
     }
-    sync_local_host();
+    ensure_local_host();
     Ok(())
 }
 
 /// Lưu máy này vào danh sách máy SSH để mở terminal. Trả về id máy đã lưu.
-fn sync_local_host() -> Option<i64> {
-    let private_key = fs::read_to_string(key_path()).ok()?;
-    let existing = store::get_app_setting(KEY_HOST_ID)
+/// Lưu "Máy này" vào `ssh_hosts` (không cần khóa: mở terminal và chạy lệnh trên máy này không qua ssh).
+/// Gọi khi server khởi động, để máy này có sẵn trong màn SSH.
+pub fn ensure_local_host() -> Option<i64> {
+    let existing_id = store::get_app_setting(KEY_HOST_ID)
         .and_then(|s| s.parse::<i64>().ok())
         .filter(|id| store::get_ssh_host(*id).is_some())
         .unwrap_or(0);
+    // Giữ khóa đã lưu nếu có (khóa từ luồng thiết lập SSH trước đây)
+    let private_key = fs::read_to_string(key_path())
+        .ok()
+        .or_else(|| store::get_ssh_host(existing_id).map(|r| r.private_key))
+        .unwrap_or_default();
     let row = store::SshHostRow {
-        id: existing,
+        id: existing_id,
         name: HOST_NAME.into(),
         host: LOCAL_HOST.into(),
         port: LOCAL_PORT,
@@ -303,7 +309,7 @@ pub fn open_agy_terminal() -> Result<(String, i64), String> {
     let agy = crate::setup::install::find_bin("agy").ok_or("không tìm thấy lệnh agy")?;
     let io = crate::setup::io().ok_or("server chưa sẵn sàng")?;
     let sid = crate::ssh::terminal::new_session_id();
-    crate::ssh::terminal::open_local(io, &sid, &agy, &[], 120, 40, "Agy (máy chủ)")?;
+    crate::ssh::terminal::open_local(io, &sid, &agy, &[], 120, 40, 0, "Agy (máy chủ)")?;
     Ok((sid, 0))
 }
 

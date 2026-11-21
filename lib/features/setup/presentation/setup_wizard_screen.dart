@@ -9,7 +9,6 @@ import 'package:muop_agent/features/claude_auth/domain/claude_auth_repository.da
 import 'package:muop_agent/features/setup/domain/setup_entities.dart';
 import 'package:muop_agent/features/setup/domain/setup_repository.dart';
 import 'package:muop_agent/features/setup/presentation/setup_accounts_section.dart';
-import 'package:muop_agent/features/setup/presentation/setup_ssh_section.dart';
 
 /// Các CLI người dùng có thể chọn (khớp với `CLI_IDS` ở server)
 const _cliIds = ['agy', 'claude'];
@@ -101,10 +100,9 @@ class _SetupWizardScreenState extends State<SetupWizardScreen> {
 
   bool _firstCheckDone = false;
 
-  /// Setup đã đủ (khởi tạo, CLI đã cài, SSH sẵn sàng); chỉ còn việc đăng nhập
+  /// Setup đã đủ (khởi tạo, CLI đã cài); chỉ còn việc đăng nhập
   bool _onlyLoginLeft(SetupStatus s) =>
       s.completed &&
-      s.ssh.ready &&
       s.selectedClis.isNotEmpty &&
       s.selectedClis.every(s.isInstalled) &&
       !s.tools.any((t) => t.group == 'base' && !t.installed);
@@ -219,20 +217,6 @@ class _SetupWizardScreenState extends State<SetupWizardScreen> {
   }
 
   /// Chạy một lệnh SSH của server rồi cập nhật trạng thái (kể cả khi lệnh báo lỗi: server vẫn trả trạng thái SSH)
-  Future<void> _runSsh(Future<SetupStatus> Function() action) async {
-    setState(() {
-      _busy = true;
-      _message = '';
-    });
-    final s = await action();
-    if (!mounted) return;
-    setState(() {
-      _busy = false;
-      if (s.tools.isNotEmpty) _status = s;
-      if (!s.ok) _message = s.error;
-    });
-  }
-
   Widget _buildCheck(TextTheme textTheme) {
     final hasTools = _status.tools.isNotEmpty;
     final missing = _missingRequired;
@@ -259,17 +243,6 @@ class _SetupWizardScreenState extends State<SetupWizardScreen> {
             style: textTheme.bodySmall?.copyWith(color: context.status.warning),
           ),
         ],
-        if (hasTools) ...[
-          const SizedBox(height: 20),
-          SetupSshSection(
-            key: ValueKey(_status.ssh.username + _status.ssh.ready.toString()),
-            ssh: _status.ssh,
-            busy: _busy,
-            onConfigure: (user) => _runSsh(() => _repo.configureSsh(user)),
-            onAuto: () => _runSsh(_repo.autoSetupSsh),
-            onVerify: (key) => _runSsh(() => _repo.verifySsh(key)),
-          ),
-        ],
         const SizedBox(height: 20),
         Row(
           children: [
@@ -286,9 +259,8 @@ class _SetupWizardScreenState extends State<SetupWizardScreen> {
                 label: const Text('Kiểm tra lại'),
               ),
               const Spacer(),
-              // SSH là điều kiện bắt buộc: chưa sẵn sàng thì chưa cho đi tiếp
               FilledButton(
-                onPressed: _busy || !_status.ssh.ready
+                onPressed: _busy
                     ? null
                     : () => setState(() => _step = _SetupStep.choose),
                 child: const Text('Tiếp tục'),

@@ -58,7 +58,7 @@ void main() {
     expect(status.error, 'Không gọi được server');
   });
 
-  test('ssh not ready keeps the setup wizard open', () {
+  test('ssh not ready does not keep the setup wizard open', () {
     Map<String, dynamic> payload(bool sshReady) => {
           'ok': true,
           'error': '',
@@ -89,7 +89,7 @@ void main() {
     final notReady = SetupStatus.fromJson(payload(false));
     expect(notReady.ssh.sshdRunning, isFalse);
     expect(notReady.ssh.publicKey, 'ssh-ed25519 AAAA');
-    expect(notReady.needsSetup, isTrue);
+    expect(notReady.needsSetup, isFalse);
   });
 
   test('finished job is not running', () {

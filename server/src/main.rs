@@ -183,6 +183,7 @@ async fn main() {
 
     // Phiên Docker của lần chạy trước (ControlMaster còn sót) đã mất theo tiến trình cũ: dọn đi
     crate::docker::sessions::cleanup_stale();
+    crate::setup::ssh::ensure_local_host();
 
     let listener = tokio::net::TcpListener::bind(addr)
         .await
