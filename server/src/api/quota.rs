@@ -13,9 +13,10 @@ fn unavailable(provider: &str) -> QuotaReport {
 
 /// Quota của cả hai provider: `GET /api/quota`.
 /// Hai nguồn lấy song song; nguồn nào lỗi thì báo lỗi riêng, nguồn còn lại vẫn có dữ liệu.
+/// Quota agy được phép mở TUI agy để đọc màn `/usage` khi không có hub (xem `agy_quota_report`).
 pub async fn handle_quota_all() -> impl IntoResponse {
     let (agy, claude) = tokio::join!(
-        tokio::task::spawn_blocking(scanner::agy_quota_report),
+        tokio::task::spawn_blocking(|| scanner::agy_quota_report(true)),
         tokio::task::spawn_blocking(scanner::claude_quota_report),
     );
     Json(QuotaSnapshot {
@@ -24,10 +25,10 @@ pub async fn handle_quota_all() -> impl IntoResponse {
     })
 }
 
-/// Quota Antigravity: `GET /api/quota/agy`
+/// Quota Antigravity: `GET /api/quota/agy` (có thể mở TUI agy để đọc `/usage`, lần đầu mất ~30 giây)
 pub async fn handle_quota_agy() -> impl IntoResponse {
     Json(
-        tokio::task::spawn_blocking(scanner::agy_quota_report)
+        tokio::task::spawn_blocking(|| scanner::agy_quota_report(true))
             .await
             .unwrap_or_else(|_| unavailable("agy")),
     )

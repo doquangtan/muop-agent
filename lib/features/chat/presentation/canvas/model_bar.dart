@@ -412,6 +412,7 @@ extension _CanvasExtModelBar on _ChatCanvasViewState {
     final textTheme = Theme.of(context).textTheme;
 
     final resolved = _resolveQuotaForSelectedModel();
+    final quotaLoading = widget.quotaReports[_quotaProvider]?.loading ?? false;
     final primaryGroup = resolved.primaryGroup;
     final geminiGroup = resolved.geminiGroup;
 
@@ -450,7 +451,9 @@ extension _CanvasExtModelBar on _ChatCanvasViewState {
                       child: Tooltip(
                         message: resolved.error,
                         child: Text(
-                          'Không có dữ liệu quota',
+                          quotaLoading
+                              ? 'Đang tải quota…'
+                              : 'Không có dữ liệu quota',
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
                           style: textTheme.labelSmall?.copyWith(

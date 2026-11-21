@@ -1,21 +1,41 @@
 use super::*;
 
-/// Kết quả lấy quota Antigravity gần nhất: thời điểm lấy và nhóm hoặc lý do lỗi
-pub(super) static QUOTA_CACHE: OnceLock<Mutex<(Instant, Result<Vec<ModelQuotaGroup>, String>)>> =
-    OnceLock::new();
+/// Kết quả lấy quota Antigravity gần nhất, kèm thời gian giữ.
+/// Từ hub: 10 giây. Từ màn `/usage` (phải mở TUI): 5 phút. Lỗi: 10 giây.
+pub(super) struct QuotaCache {
+    pub(super) at: Instant,
+    pub(super) ttl: Duration,
+    pub(super) result: Result<Vec<ModelQuotaGroup>, String>,
+}
 
-/// Quota của mọi provider (`GET /api/quota`, socket `quotas:update`).
-/// Hai nguồn độc lập: một nguồn lỗi không ảnh hưởng nguồn kia.
-pub fn quota_snapshot() -> QuotaSnapshot {
+pub(super) static QUOTA_CACHE: OnceLock<Mutex<QuotaCache>> = OnceLock::new();
+
+/// Giữ quota đọc từ màn `/usage`: mở TUI tốn khoảng 30 giây nên không hỏi lại liên tục
+const USAGE_TTL: Duration = Duration::from_secs(300);
+/// Giữ kết quả từ hub và kết quả lỗi
+const SHORT_TTL: Duration = Duration::from_secs(10);
+
+/// Mục cache đã hết hạn (lần hỏi kế tiếp sẽ tính lại)
+fn expired_entry() -> QuotaCache {
+    QuotaCache {
+        at: Instant::now() - Duration::from_secs(3600),
+        ttl: Duration::ZERO,
+        result: Ok(Vec::new()),
+    }
+}
+
+/// Quota của mọi provider. `allow_host` = true cho phép mở TUI agy để đọc màn `/usage` khi không có hub.
+/// Socket `quotas:update` và watcher định kỳ dùng `false` để không bao giờ mở TUI.
+pub fn quota_snapshot(allow_host: bool) -> QuotaSnapshot {
     QuotaSnapshot {
-        agy: agy_quota_report(),
+        agy: agy_quota_report(allow_host),
         claude: claude_quota_report(),
     }
 }
 
-/// Quota Antigravity (`GET /api/quota/agy`)
-pub fn agy_quota_report() -> QuotaReport {
-    agy_report_from(fetch_antigravity_model_quotas())
+/// Quota Antigravity (`GET /api/quota/agy` dùng `allow_host` = true)
+pub fn agy_quota_report(allow_host: bool) -> QuotaReport {
+    agy_report_from(fetch_antigravity_model_quotas(allow_host))
 }
 
 /// Quota Claude Code CLI (`GET /api/quota/claude`)
@@ -27,7 +47,7 @@ pub fn claude_quota_report() -> QuotaReport {
 pub(super) fn agy_report_from(result: Result<Vec<ModelQuotaGroup>, String>) -> QuotaReport {
     let (groups, error) = match result {
         Ok(groups) if !groups.is_empty() => (groups, String::new()),
-        Ok(_) => (Vec::new(), "Hub agy chưa trả về quota nào".to_string()),
+        Ok(_) => (Vec::new(), "Chưa có quota agy nào".to_string()),
         Err(msg) => (Vec::new(), msg),
     };
     QuotaReport {
@@ -56,23 +76,14 @@ pub(super) fn claude_report_from(group: Option<ModelQuotaGroup>) -> QuotaReport 
 pub fn clear_antigravity_quota_cache() {
     if let Some(cache) = QUOTA_CACHE.get() {
         if let Ok(mut guard) = cache.lock() {
-            *guard = (Instant::now() - Duration::from_secs(60), Ok(Vec::new()));
+            *guard = expired_entry();
         }
     }
 }
 
-/// Quota Antigravity lấy từ hub. Chỉ dữ liệu thật: hub không trả lời, chưa đăng nhập hoặc
-/// không có tiến trình agy thì lỗi (không dùng số cũ hay số mặc định).
-pub(super) fn fetch_antigravity_model_quotas() -> Result<Vec<ModelQuotaGroup>, String> {
-    let cache = QUOTA_CACHE
-        .get_or_init(|| Mutex::new((Instant::now() - Duration::from_secs(60), Ok(Vec::new()))));
-    if let Ok(guard) = cache.lock() {
-        if guard.0.elapsed() < Duration::from_secs(10) {
-            return guard.1.clone();
-        }
-    }
-    // Hub có thể còn giữ quota cũ sau khi đăng xuất: chỉ lấy quota khi hub báo đã đăng nhập
-    let result = match crate::agy_auth::hub_logged_in(crate::agy_auth::host::Need::Background) {
+/// Quota Antigravity từ hub đang chạy (RPC). Không mở TUI.
+fn fetch_from_hub() -> Result<Vec<ModelQuotaGroup>, String> {
+    match crate::agy_auth::hub_logged_in(crate::agy_auth::host::Need::Background) {
         Ok(true) => match query_daemon_quota_summary() {
             Some(mut groups) if !groups.is_empty() => {
                 // Gắn gói của tài khoản vào tên nhóm, giống nhãn "(pro)" của Claude
@@ -89,10 +100,52 @@ pub(super) fn fetch_antigravity_model_quotas() -> Result<Vec<ModelQuotaGroup>, S
         },
         Ok(false) => Err("Chưa đăng nhập agy".to_string()),
         Err(msg) => Err(msg),
-    };
-    if let Ok(mut guard) = cache.lock() {
-        *guard = (Instant::now(), result.clone());
     }
+}
+
+/// Tính quota agy và thời gian giữ kết quả. Ưu tiên hub đang chạy; không có hub thì đọc màn `/usage`
+/// của TUI agy khi `allow_host`, còn không thì lỗi (không mở gì).
+fn compute_antigravity(allow_host: bool) -> (Result<Vec<ModelQuotaGroup>, String>, Duration) {
+    if crate::chat::context_window::discover_hub().is_some() {
+        return (fetch_from_hub(), SHORT_TTL);
+    }
+    if !allow_host {
+        return (
+            Err("Chưa có tiến trình agy đang chạy để đọc quota".to_string()),
+            SHORT_TTL,
+        );
+    }
+    let result = crate::agy_auth::host::read_usage_screen()
+        .and_then(|screen| crate::agy_auth::usage::parse_usage_screen(&screen, chrono::Utc::now()));
+    let ttl = if result.is_ok() { USAGE_TTL } else { SHORT_TTL };
+    (result, ttl)
+}
+
+/// Quota Antigravity, có cache. Chỉ dữ liệu thật: không dùng số cũ hay số mặc định.
+/// Lỗi trong cache chỉ được trả lại khi không được phép mở TUI; khi được phép thì hỏi lại.
+pub(super) fn fetch_antigravity_model_quotas(
+    allow_host: bool,
+) -> Result<Vec<ModelQuotaGroup>, String> {
+    let cache = QUOTA_CACHE.get_or_init(|| Mutex::new(expired_entry()));
+    if let Ok(guard) = cache.lock() {
+        let usable = guard.result.is_ok() || !allow_host;
+        if guard.at.elapsed() < guard.ttl && usable {
+            return guard.result.clone();
+        }
+    }
+    let (result, ttl) = compute_antigravity(allow_host);
+    let Ok(mut guard) = cache.lock() else {
+        return result;
+    };
+    // Lần hỏi không mở TUI (watcher định kỳ) không ghi đè kết quả thành công còn hạn bằng lỗi
+    if result.is_err() && !allow_host && guard.result.is_ok() && guard.at.elapsed() < guard.ttl {
+        return guard.result.clone();
+    }
+    *guard = QuotaCache {
+        at: Instant::now(),
+        ttl,
+        result: result.clone(),
+    };
     result
 }
 
@@ -162,7 +215,7 @@ mod quota_report_tests {
 /// Email và gói (ví dụ "Pro") của tài khoản agy đang đăng nhập, lấy từ hub (`GetUserStatus`).
 /// Trả về `None` khi hub không trả lời hoặc chưa đăng nhập.
 pub fn query_agy_account() -> Option<(String, String)> {
-    let (port, token) = crate::agy_auth::host::ensure_hub(crate::agy_auth::host::Need::Background)?;
+    let (port, token) = crate::chat::context_window::discover_hub()?;
     let value = crate::chat::context_window::rpc_post(
         port,
         &token,

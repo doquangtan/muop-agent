@@ -10,11 +10,16 @@ class QuotaReport {
     required this.provider,
     required this.groups,
     this.error = '',
+    this.loading = false,
   });
 
   /// Báo cáo khi chưa có dữ liệu (chưa tải, không kết nối được server...)
   factory QuotaReport.missing(String provider, [String error = 'Chưa lấy được dữ liệu quota']) =>
       QuotaReport(provider: provider, groups: const [], error: error);
+
+  /// Đang chờ server đọc quota (chưa có dữ liệu cũ để hiển thị)
+  factory QuotaReport.loading(String provider) =>
+      QuotaReport(provider: provider, groups: const [], loading: true);
 
   factory QuotaReport.fromJson(String provider, Map<String, dynamic> json) {
     final groups = <ModelQuotaGroup>[];
@@ -35,6 +40,7 @@ class QuotaReport {
   final String provider;
   final List<ModelQuotaGroup> groups;
   final String error;
+  final bool loading;
 
   /// Có ít nhất một cửa sổ quota để hiển thị
   bool get hasData => groups.any((g) => g.buckets.isNotEmpty);

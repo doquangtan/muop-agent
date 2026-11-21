@@ -163,7 +163,7 @@ impl AppState {
     /// Payload giống `GET /api/quota`. Hàm có I/O đồng bộ (daemon TCP, curl) nên phải được gọi trong `spawn_blocking`.
     /// Trả về `true` nếu đã phát event.
     pub fn broadcast_quotas_update(&self, force: bool) -> bool {
-        let quotas = scanner::quota_snapshot();
+        let quotas = scanner::quota_snapshot(false);
         let val = match serde_json::to_value(&quotas) {
             Ok(v) => v,
             Err(_) => return false,

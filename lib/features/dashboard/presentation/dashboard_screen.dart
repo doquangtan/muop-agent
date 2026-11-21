@@ -1944,6 +1944,16 @@ class _DashboardScreenState extends State<DashboardScreen> {
     final scope = _quotaScope;
     final seq = ++_quotaRequestSeq;
     final address = _serverAddress;
+    // Chưa có dữ liệu thì hiện trạng thái đang tải (đọc quota agy có thể mất khoảng 30 giây)
+    if (mounted) {
+      setState(() {
+        for (final p in scope.isEmpty
+            ? const [kQuotaProviderAgy, kQuotaProviderClaude]
+            : [scope]) {
+          _quotaReports.putIfAbsent(p, () => QuotaReport.loading(p));
+        }
+      });
+    }
     if (scope.isEmpty) {
       final snapshot = await AppDependencies.quota.fetchAll(address);
       if (!mounted || seq != _quotaRequestSeq) return;
