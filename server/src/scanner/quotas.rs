@@ -81,37 +81,25 @@ pub fn clear_antigravity_quota_cache() {
     }
 }
 
-/// Quota Antigravity từ hub đang chạy (RPC). Không mở TUI.
-fn fetch_from_hub() -> Result<Vec<ModelQuotaGroup>, String> {
-    match crate::agy_auth::hub_logged_in(crate::agy_auth::host::Need::Background) {
-        Ok(true) => match query_daemon_quota_summary() {
-            Some(mut groups) if !groups.is_empty() => {
-                // Gắn gói của tài khoản vào tên nhóm, giống nhãn "(pro)" của Claude
-                if let Some((_, plan)) = query_agy_account() {
-                    if !plan.is_empty() {
-                        for g in &mut groups {
-                            g.display_name = format!("{} ({})", g.display_name, plan);
-                        }
-                    }
-                }
-                Ok(groups)
-            }
-            _ => Err("Hub agy không trả về quota".to_string()),
-        },
-        Ok(false) => Err("Chưa đăng nhập agy".to_string()),
-        Err(msg) => Err(msg),
-    }
-}
-
 /// Tính quota agy và thời gian giữ kết quả. Ưu tiên hub đang chạy; không có hub thì đọc màn `/usage`
 /// của TUI agy khi `allow_host`, còn không thì lỗi (không mở gì).
 fn compute_antigravity(allow_host: bool) -> (Result<Vec<ModelQuotaGroup>, String>, Duration) {
-    if crate::chat::context_window::discover_hub().is_some() {
-        return (fetch_from_hub(), SHORT_TTL);
+    // Quota do watcher của agy_account lấy từ hub của server và lưu trong DB
+    if let Some(snap) = crate::agy_account::snapshot() {
+        if !snap.quota.is_empty() {
+            let mut groups = snap.quota;
+            // Gắn gói của tài khoản vào tên nhóm, giống nhãn "(pro)" của Claude
+            if !snap.plan.is_empty() {
+                for g in &mut groups {
+                    g.display_name = format!("{} ({})", g.display_name, snap.plan);
+                }
+            }
+            return (Ok(groups), SHORT_TTL);
+        }
     }
     if !allow_host {
         return (
-            Err("Chưa có tiến trình agy đang chạy để đọc quota".to_string()),
+            Err("Chưa có quota agy (đang chờ server lấy từ hub)".to_string()),
             SHORT_TTL,
         );
     }
@@ -212,59 +200,7 @@ mod quota_report_tests {
     }
 }
 
-/// Email và gói (ví dụ "Pro") của tài khoản agy đang đăng nhập, lấy từ hub (`GetUserStatus`).
-/// Trả về `None` khi hub không trả lời hoặc chưa đăng nhập.
-pub fn query_agy_account() -> Option<(String, String)> {
-    let (port, token) = crate::chat::context_window::discover_hub()?;
-    let value = crate::chat::context_window::rpc_post(
-        port,
-        &token,
-        "/exa.language_server_pb.LanguageServerService/GetUserStatus",
-        "{}",
-    )
-    .ok()?;
-    let status = value.get("userStatus")?;
-    let email = status
-        .get("email")
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .to_string();
-    let plan = status
-        .pointer("/planStatus/planInfo/planName")
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .to_string();
-    Some((email, plan))
-}
-
-pub(super) fn query_daemon_quota_summary() -> Option<Vec<ModelQuotaGroup>> {
-    let entries = fs::read_dir(DAEMON_DIR_PATH).ok()?;
-    for entry in entries.flatten() {
-        let name = entry.file_name().to_string_lossy().to_string();
-        if !name.starts_with("hub_") || !name.ends_with(".json") {
-            continue;
-        }
-        let raw = fs::read_to_string(entry.path()).ok()?;
-        let val: Value = serde_json::from_str(&raw).ok()?;
-        let port = val.get("httpPort").and_then(|v| v.as_u64())? as u16;
-        let csrf = val
-            .get("csrfToken")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string();
-        if port == 0 || csrf.is_empty() {
-            continue;
-        }
-        if let Some(groups) = call_retrieve_user_quota_summary(port, &csrf) {
-            if !groups.is_empty() {
-                return Some(groups);
-            }
-        }
-    }
-    None
-}
-
-pub(super) fn call_retrieve_user_quota_summary(
+pub(crate) fn call_retrieve_user_quota_summary(
     port: u16,
     csrf_token: &str,
 ) -> Option<Vec<ModelQuotaGroup>> {

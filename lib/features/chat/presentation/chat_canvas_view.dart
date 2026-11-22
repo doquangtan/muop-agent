@@ -48,6 +48,7 @@ class ChatCanvasView extends StatefulWidget {
     required this.availableAgents,
     required this.availableModels,
     this.modelLabels = const {},
+    this.blockedReason,
     this.effortLevels = const [],
     this.modelContextLimits = const {},
     required this.quotaScope,
@@ -67,6 +68,7 @@ class ChatCanvasView extends StatefulWidget {
     required this.onStartNewConversation,
     required this.onSendMessage,
     this.serverBaseUrl = '',
+    this.workspaceRoot = '',
     required this.onStopTurn,
     required this.onOpenFileBrowser,
     required this.onOpenChangesTab,
@@ -93,6 +95,9 @@ class ChatCanvasView extends StatefulWidget {
 
   /// Nhãn hiển thị theo id model (lấy từ `agy models`)
   final Map<String, String> modelLabels;
+
+  /// Lý do khóa khung chat (ví dụ máy phụ mất kết nối). Null = được phép gửi.
+  final String? blockedReason;
 
   /// Mức suy nghĩ (effort) mà CLI của server hỗ trợ; rỗng thì dùng mức dự phòng
   final List<String> effortLevels;
@@ -128,6 +133,8 @@ class ChatCanvasView extends StatefulWidget {
 
   /// Địa chỉ gốc của Rust server (vd. `http://192.168.1.10:8787`), dùng để tải ảnh đính kèm trong lịch sử
   final String serverBaseUrl;
+  /// Thư mục project gốc do server cấu hình (fallback khi chưa có project được chọn)
+  final String workspaceRoot;
   final VoidCallback onStopTurn;
 
   /// Lịch tự gửi lại sau rate limit của conversation đang mở (null nếu không có)

@@ -28,6 +28,12 @@ class _FakeSetupRepository implements SetupRepository {
   Future<SetupStatus> complete() async => _status;
 
   @override
+  Future<SetupStatus> setWorkspace(String path) async => _status;
+
+  @override
+  Future<SetupStatus> setToolPath(String tool, String path) async => _status;
+
+  @override
   Future<SetupStatus> configureSsh(String username) async => _status;
 
   @override
@@ -45,6 +51,7 @@ SetupStatus _status({
     'ok': true,
     'error': '',
     'completed': false,
+    'workspaceRoot': '/home/tester/project',
     'selectedClis': selectedClis,
     'tools': [
       for (final id in ['git', 'ssh', 'curl'])
@@ -100,5 +107,15 @@ void main() {
     );
     expect(find.widgetWithText(FilledButton, 'Cài & tiếp tục'), findsOneWidget);
     expect(find.widgetWithText(FilledButton, 'Tiếp tục'), findsNothing);
+  });
+
+  testWidgets('chưa có CLI nào cài: chỉ có Cài đã chọn, không có Tiếp tục', (tester) async {
+    await _gotoChooseStep(
+      tester,
+      _status(selectedClis: ['agy'], installed: []),
+    );
+    expect(find.widgetWithText(FilledButton, 'Cài đã chọn'), findsOneWidget);
+    expect(find.widgetWithText(FilledButton, 'Tiếp tục'), findsNothing);
+    expect(find.widgetWithText(FilledButton, 'Cài & tiếp tục'), findsNothing);
   });
 }

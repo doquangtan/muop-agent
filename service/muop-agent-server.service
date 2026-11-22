@@ -4,9 +4,9 @@ After=network.target graphical-session.target
 
 [Service]
 Type=simple
-WorkingDirectory=/home/john/Documents/muop-ecosystem/muop-agent/server
-ExecStart=/home/john/Documents/muop-ecosystem/muop-agent/server/target/release/muop-agent-server
-Restart=always
+WorkingDirectory=@REPO@/server
+ExecStart=@REPO@/server/target/release/muop-agent-server
+Restart=on-failure
 RestartSec=2s
 KillMode=process
 Environment=RUST_LOG=info

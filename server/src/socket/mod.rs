@@ -12,6 +12,7 @@ pub fn setup_socket_handlers(io: &SocketIo, state: AppState) {
     crate::agy_auth::init(io.clone());
     crate::claude_auth::init(io.clone());
     crate::setup::init(io.clone());
+    crate::explore::init(io.clone());
     io.ns("/", move |socket: SocketRef| {
         tracing::info!("⚡ Socket.IO Client connected: {}", socket.id);
         // Đăng nhập agy / claude: đẩy trạng thái hiện tại và nhận lệnh `*:auth:*`
@@ -19,6 +20,40 @@ pub fn setup_socket_handlers(io: &SocketIo, state: AppState) {
         crate::claude_auth::socket::register(&socket);
         // Khởi tạo server: trạng thái tool/CLI và lệnh `setup:*`
         crate::setup::register(&socket);
+
+        // Explorer: thư mục đang mở được theo dõi theo room `explore:<khóa>`; hết người xem thì dừng watcher
+        socket.on(
+            "explore:watch",
+            move |s: SocketRef, Data::<crate::explore::WatchRequest>(req), ack: AckSender| async move {
+                let res = match crate::explore::watch(&s, &req.path) {
+                    Ok(room) => crate::explore::ExploreAck {
+                        ok: true,
+                        room,
+                        error: String::new(),
+                    },
+                    Err(error) => crate::explore::ExploreAck {
+                        ok: false,
+                        room: String::new(),
+                        error,
+                    },
+                };
+                let _ = ack.send(&res);
+            },
+        );
+        socket.on(
+            "explore:unwatch",
+            move |s: SocketRef, Data::<crate::explore::UnwatchRequest>(req), ack: AckSender| async move {
+                crate::explore::unwatch(&s, &req.room);
+                let _ = ack.send(&crate::explore::ExploreAck {
+                    ok: true,
+                    room: req.room,
+                    error: String::new(),
+                });
+            },
+        );
+        socket.on_disconnect(move |s: SocketRef| {
+            crate::explore::release_socket(&s.id.to_string());
+        });
 
         // Không gửi snapshot đầy đủ khi kết nối: client tự yêu cầu các event nhỏ
         // (`request-sessions`, `request-meta`, `request-streams`) hoặc `request-snapshot` (client cũ)

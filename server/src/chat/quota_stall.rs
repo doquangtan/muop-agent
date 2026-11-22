@@ -25,8 +25,10 @@ pub const STALL_AFTER: Duration = Duration::from_secs(5 * 60);
 /// Lỗi quota được coi là liên quan nếu nằm trong khoảng này quanh lần ghi cuối của transcript
 const ERROR_MARGIN: Duration = Duration::from_secs(60);
 
-const BRAIN_DIR: &str = crate::scanner::BRAIN_DIR_PATH;
-const LOG_DIR: &str = "/home/john/.gemini/antigravity/log";
+/// Thư mục log CLI của Antigravity
+fn log_dir() -> PathBuf {
+    crate::infra::paths::antigravity_dir().join("log")
+}
 
 /// Một lỗi quota tìm thấy trong log CLI
 struct QuotaError {
@@ -48,7 +50,7 @@ pub fn check(state: &AppState) -> Vec<String> {
         if !is_agy_process(pid) {
             continue;
         }
-        let transcript = Path::new(BRAIN_DIR)
+        let transcript = crate::scanner::brain_root()
             .join(&cid)
             .join(".system_generated/logs/transcript.jsonl");
         let Some(last_write) = mtime(&transcript) else {
@@ -76,6 +78,7 @@ pub fn check(state: &AppState) -> Vec<String> {
             agent_name: String::new(),
             model: store::conversation_model(&cid).unwrap_or_default(),
             images: Vec::new(),
+            remote_project: None,
         };
         stop_stalled(state, &cid, pid, &err.message);
         if remaining > 0 && !request.prompt.is_empty() {
@@ -149,7 +152,7 @@ fn find_quota_error(cid: &str, since: SystemTime) -> Option<QuotaError> {
     let file_re = Regex::new(r"^cli-(\d{8})_\d{6}\.log$").ok()?;
 
     let mut best: Option<(DateTime<Local>, QuotaError)> = None;
-    for entry in fs::read_dir(LOG_DIR).ok()?.flatten() {
+    for entry in fs::read_dir(log_dir()).ok()?.flatten() {
         let name = entry.file_name().to_string_lossy().to_string();
         let Some(caps) = file_re.captures(&name) else {
             continue;

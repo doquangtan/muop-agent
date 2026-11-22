@@ -3,7 +3,7 @@ use super::*;
 /// Quét các Artifact / Kế hoạch (Plan) đang yêu cầu phê duyệt trong thư mục brain của phiên hội thoại
 pub fn scan_pending_plans(session_id: &str) -> Vec<PlanArtifactInfo> {
     let mut plans = Vec::new();
-    let brain_dir = Path::new(BRAIN_DIR_PATH).join(session_id);
+    let brain_dir = brain_root().join(session_id);
     if !brain_dir.exists() || !brain_dir.is_dir() {
         return plans;
     }

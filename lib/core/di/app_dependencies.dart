@@ -1,8 +1,12 @@
 import 'package:muop_agent/core/network/socket_gateway.dart';
+import 'package:muop_agent/features/explore/data/explore_repository_impl.dart';
+import 'package:muop_agent/features/explore/domain/explore_repository.dart';
 import 'package:muop_agent/features/agy_auth/data/agy_auth_repository_impl.dart';
 import 'package:muop_agent/features/agy_auth/domain/agy_auth_repository.dart';
 import 'package:muop_agent/features/claude_auth/data/claude_auth_repository_impl.dart';
 import 'package:muop_agent/features/claude_auth/domain/claude_auth_repository.dart';
+import 'package:muop_agent/features/bridge/data/bridge_repository_impl.dart';
+import 'package:muop_agent/features/bridge/domain/bridge_repository.dart';
 import 'package:muop_agent/features/chat/data/chat_repository_impl.dart';
 import 'package:muop_agent/features/chat/domain/chat_repository.dart';
 import 'package:muop_agent/features/connection/data/connection_repository_impl.dart';
@@ -42,11 +46,13 @@ class AppDependencies {
   static final InteractionsRepository interactions =
       InteractionsRepositoryImpl(socket);
   static final ProjectsRepository projects = ProjectsRepositoryImpl(socket);
+  static final ExploreRepository explore = ExploreRepositoryImpl(socket);
   static final ServerFilesRepository serverFiles =
       ServerFilesRepositoryImpl();
   static final SshRepository ssh = SshRepositoryImpl(socket);
   static final DockerRepository docker = DockerRepositoryImpl(socket);
   static final LspRepository lsp = LspRepositoryImpl();
+  static final BridgeRepository bridge = BridgeRepositoryImpl(socket);
   static final QuotaRepository quota = QuotaRepositoryImpl();
   static final ScreenRepository screen = ScreenRepositoryImpl(socket);
   static final AgyAuthRepository agyAuth = AgyAuthRepositoryImpl(socket);

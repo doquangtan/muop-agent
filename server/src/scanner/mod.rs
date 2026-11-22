@@ -18,13 +18,23 @@ use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime};
 
 pub const DEFAULT_PORT: u16 = 8787;
-pub const BRAIN_DIR_PATH: &str = "/home/john/.gemini/antigravity/brain";
-pub const DAEMON_DIR_PATH: &str = "/home/john/.gemini/antigravity/daemon";
-pub const SUMMARY_DB_PATH: &str = "/home/john/.gemini/antigravity/conversation_summaries.db";
-pub const ECOSYSTEM_DIR_PATH: &str = "/home/john/Documents/muop-ecosystem";
-#[allow(dead_code)]
-pub const AGENTS_CONFIG_DIR_PATH: &str =
-    "/home/john/Documents/muop-ecosystem/muop-erp-server/.agents";
+
+/// Cổng server đang lắng nghe: biến `PORT` nếu hợp lệ, không thì `DEFAULT_PORT`
+pub fn listen_port() -> u16 {
+    std::env::var("PORT")
+        .ok()
+        .and_then(|s| s.parse::<u16>().ok())
+        .unwrap_or(DEFAULT_PORT)
+}
+/// Thư mục brain của Antigravity (theo HOME của user đang chạy server)
+pub fn brain_root() -> PathBuf {
+    crate::infra::paths::antigravity_dir().join("brain")
+}
+
+/// SQLite tóm tắt conversation của Antigravity
+pub fn summary_db_path() -> PathBuf {
+    crate::infra::paths::antigravity_dir().join("conversation_summaries.db")
+}
 
 mod agy_turns;
 mod catalog;

@@ -321,7 +321,7 @@ extension _CanvasExtTaskPanel on _ChatCanvasViewState {
         ? widget.selectedProject!.path
         : (session != null && session.projectPath.isNotEmpty)
         ? session.projectPath
-        : '/home/john/Documents/muop-ecosystem/muop-erp-server';
+        : widget.workspaceRoot;
 
     return Container(
       margin: const EdgeInsets.only(bottom: 6),

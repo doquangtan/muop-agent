@@ -67,6 +67,12 @@ class _FakeSetupRepository implements SetupRepository {
   Future<SetupStatus> complete() async => SetupStatus.empty;
 
   @override
+  Future<SetupStatus> setWorkspace(String path) async => SetupStatus.empty;
+
+  @override
+  Future<SetupStatus> setToolPath(String tool, String path) async => SetupStatus.empty;
+
+  @override
   Future<SetupStatus> configureSsh(String username) async => SetupStatus.empty;
 
   @override
@@ -86,6 +92,7 @@ SetupStatus _status({
     'ok': true,
     'error': '',
     'completed': completed,
+    'workspaceRoot': '/home/tester/project',
     'selectedClis': clis,
     'tools': [
       for (final id in baseIds)

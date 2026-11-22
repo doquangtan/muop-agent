@@ -5,6 +5,8 @@ pub mod claude;
 pub mod claude_auth;
 pub mod docker;
 pub mod files;
+pub mod fsmount;
+pub mod fsops;
 pub mod git;
 pub mod lsp;
 pub mod meta;
@@ -18,7 +20,7 @@ pub mod ssh;
 
 use crate::chat::AppState;
 use axum::{
-    routing::{get, post},
+    routing::{get, post, put},
     Router,
 };
 
@@ -100,6 +102,8 @@ pub fn router() -> Router<AppState> {
         .route("/api/setup/status", get(setup::handle_setup_status))
         .route("/api/setup/install", post(setup::handle_setup_install))
         .route("/api/setup/select", post(setup::handle_setup_select))
+        .route("/api/setup/workspace", post(setup::handle_setup_workspace))
+        .route("/api/setup/tool-path", post(setup::handle_setup_tool_path))
         .route("/api/setup/complete", post(setup::handle_setup_complete))
         .route(
             "/api/setup/ssh/configure",
@@ -168,6 +172,15 @@ pub fn router() -> Router<AppState> {
         )
         .route("/api/plan/pending", get(plans::handle_plan_pending))
         .route("/api/plan/action", post(plans::handle_plan_action))
+        .route("/api/fs/stat", get(fsops::handle_stat))
+        .route("/api/fs/list", get(fsops::handle_list))
+        .route("/api/fs/read", get(fsops::handle_read))
+        .route("/api/fs/write", put(fsops::handle_write))
+        .route("/api/fs/mkdir", post(fsops::handle_mkdir))
+        .route("/api/fs/delete", post(fsops::handle_delete))
+        .route("/api/fs/rename", post(fsops::handle_rename))
+        .route("/api/fsmount/ensure", post(fsmount::handle_ensure))
+        .route("/api/fsmount/register", post(fsmount::handle_register))
         .route("/api/files/list", get(files::handle_files_list))
         .route("/api/files/read", get(files::handle_file_read))
         .route("/api/files/download", get(files::handle_file_download))
@@ -187,4 +200,8 @@ pub fn router() -> Router<AppState> {
         .route("/api/bridge/send", post(bridge::handle_send))
         .route("/api/bridge/stop", post(bridge::handle_stop))
         .route("/api/bridge/respond", post(bridge::handle_respond))
+        .route("/api/bridge/pending", get(bridge::handle_pending))
+        .route("/api/bridge/meta", get(bridge::handle_peer_meta))
+        .route("/api/bridge/sessions", get(bridge::handle_peer_sessions))
+        .route("/api/bridge/session", get(bridge::handle_peer_session))
 }

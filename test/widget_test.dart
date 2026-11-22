@@ -17,5 +17,7 @@ void main() {
     // Dashboard mở socket tới server thật: dựng lại cây (hủy timer) và ngắt socket trước khi kết thúc test
     await tester.pumpWidget(const SizedBox());
     AppDependencies.socket.disconnect();
+    // Bơm thời gian ảo để timer kết nối còn lại (lookup/ping) kết thúc trước khi test đóng
+    await tester.pump(const Duration(seconds: 1));
   });
 }

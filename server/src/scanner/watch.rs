@@ -11,7 +11,7 @@ pub struct SessionChangeTracker {
 
 pub fn init_session_change_tracker() -> SessionChangeTracker {
     let mut tracker = SessionChangeTracker::default();
-    let brain_dir = Path::new(BRAIN_DIR_PATH);
+    let brain_dir = brain_root();
     if let Ok(entries) = fs::read_dir(brain_dir) {
         for entry in entries.flatten() {
             let path = entry.path();
@@ -37,7 +37,7 @@ pub fn init_session_change_tracker() -> SessionChangeTracker {
         }
     }
 
-    if let Ok(meta) = fs::metadata(SUMMARY_DB_PATH) {
+    if let Ok(meta) = fs::metadata(summary_db_path()) {
         tracker.sqlite_mtime = meta
             .modified()
             .unwrap_or(SystemTime::UNIX_EPOCH)
@@ -76,7 +76,7 @@ pub fn detect_changed_sessions(tracker: &mut SessionChangeTracker) -> DetectedCh
     let mut projects_changed = false;
     let mut seen_ids: HashSet<String> = HashSet::new();
 
-    let brain_dir = Path::new(BRAIN_DIR_PATH);
+    let brain_dir = brain_root();
     if !brain_dir.exists() {
         return DetectedChanges::default();
     }
@@ -168,7 +168,7 @@ pub fn detect_changed_sessions(tracker: &mut SessionChangeTracker) -> DetectedCh
     }
 
     // 2. Kiểm tra SQLite db mtime
-    let db_path = Path::new(SUMMARY_DB_PATH);
+    let db_path = summary_db_path();
     if let Ok(meta) = fs::metadata(db_path) {
         let db_mtime = meta
             .modified()

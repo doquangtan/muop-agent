@@ -3,7 +3,7 @@
 //! - Đăng nhập: server mở terminal SSH tới máy này chạy `agy` ([`open_login_terminal`]). Người dùng tự
 //!   đăng nhập trong terminal đó (chọn Google OAuth, mở link, dán mã). Server theo dõi: hub báo đã có
 //!   token thì thành công; agy thoát mà chưa có token thì thất bại ([`watch_login`]).
-//! - Đăng xuất: mở TUI `agy`, gõ `/logout` rồi Enter, chờ menu đăng nhập hiện ra ([`host::logout_tui`]).
+//! - Đăng xuất: gọi RPC `AuthLogout` của hub do server mở (`agy_account::logout_via_hub`), chờ `agy models` báo chưa đăng nhập.
 //! - Trạng thái giữ trong [`CURRENT`] và đẩy cho client qua Socket.IO `agy:auth:update` mỗi khi đổi
 //!   (xem [`socket`]). Client không cần hỏi lại theo chu kỳ.
 //!
@@ -12,27 +12,26 @@
 mod flow;
 pub(crate) mod host;
 pub mod socket;
-mod tui;
+pub(crate) mod tui;
 pub(crate) mod usage;
 
-use crate::chat::context_window::rpc_post;
 use crate::models::{AccountsStatus, AgyAuthEvent};
 use base64::Engine;
-use host::Need;
-use serde_json::Value;
 use socketioxide::SocketIo;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, MutexGuard, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
 
-const RPC_PREFIX: &str = "/exa.language_server_pb.LanguageServerService/";
 /// Độ dài tối đa của mã xác thực (hoặc URL callback) người dùng dán vào
 const MAX_CODE_LEN: usize = 4096;
 /// Thời gian tối đa cho một lần đăng nhập trong terminal
 const LOGIN_TTL: Duration = Duration::from_secs(20 * 60);
 /// Khoảng cách kiểm tra trạng thái khi terminal đăng nhập đang chạy
 const LOGIN_POLL: Duration = Duration::from_secs(1);
+/// Số lần tối đa tự chọn Google OAuth ở menu đăng nhập, và khoảng cách giữa các lần
+const PICK_MAX: u32 = 3;
+const PICK_GAP: Duration = Duration::from_secs(3);
 /// Khoảng cách kiểm tra đăng nhập nền (không cần client hỏi): báo khi đăng nhập đổi.
 /// Mỗi lần chạy `agy models` (một tiến trình, có gọi mạng) nên để thưa hơn kiểm tra qua hub.
 const STATUS_WATCH_EVERY: Duration = Duration::from_secs(30);
@@ -73,6 +72,7 @@ enum Outcome {
 /// Gắn Socket.IO để phát event. Gọi một lần khi khởi tạo socket.
 pub fn init(io: SocketIo) {
     let _ = IO.set(io);
+    crate::agy_account::start();
     // TUI của lần chạy trước (server đã thoát) còn sót thì tắt đi
     host::cleanup_stale();
     // Tắt host agy (TUI mở để có hub) khi người dùng không còn dùng màn tài khoản
@@ -181,6 +181,8 @@ pub(crate) fn open_login_terminal() -> Result<(String, i64), String> {
 
 /// Theo dõi terminal đăng nhập: hub báo đã có token thì thành công; agy thoát thì kiểm tra token rồi kết luận.
 fn watch_login(sid: &str, started: Instant) {
+    let mut picks: u32 = 0;
+    let mut last_pick: Option<Instant> = None;
     loop {
         thread::sleep(LOGIN_POLL);
         if !is_login_session(sid) {
@@ -209,6 +211,18 @@ fn watch_login(sid: &str, started: Instant) {
             publish("login_terminal", false, "");
         }
         let submitted = *submitted_slot();
+        // Đang ở menu đăng nhập, chưa có link: chọn Google OAuth (Enter, mục đang trỏ là mục đầu) thay người dùng.
+        // Tối đa PICK_MAX lần, mỗi lần cách PICK_GAP, để không nhấn lặp khi menu vẫn còn sau một lần nhấn.
+        if screen_url.is_empty()
+            && submitted.is_none()
+            && tui::google_menu_on_screen(&text)
+            && picks < PICK_MAX
+            && last_pick.is_none_or(|t| t.elapsed() >= PICK_GAP)
+        {
+            pick_google_oauth(sid);
+            picks += 1;
+            last_pick = Some(Instant::now());
+        }
         // Tính trước: guard của `login_url_slot()` trong scrutinee của `match` sống tới hết `match`,
         // mà nhánh `Failed`/`Done` gọi `end_login` → `reset_login_state` lock lại cùng mutex → treo vĩnh viễn.
         let has_url = !login_url_slot().is_empty();
@@ -225,6 +239,12 @@ fn watch_login(sid: &str, started: Instant) {
             return end_login(sid, Outcome::Expired);
         }
     }
+}
+
+/// Nhấn Enter để chọn Google OAuth ở menu đăng nhập. Lỗi ghi thì để vòng sau thử lại.
+fn pick_google_oauth(sid: &str) {
+    let data = base64::engine::general_purpose::STANDARD.encode("\r");
+    let _ = crate::ssh::terminal::write_input(sid, &data);
 }
 
 /// Đặt link đang hiện trên màn hình. Trả về true nếu đổi.
@@ -378,6 +398,16 @@ fn publish_if_changed(phase: &str, logged_in: bool, error: &str) -> bool {
 
 /// Ghi trạng thái, nhớ nội dung đã phát và gửi cho mọi client
 fn emit(ev: &AgyAuthEvent) {
+    emit_quiet(ev);
+    if ev.phase == "logged_in" || ev.phase == "logged_out" {
+        // Tài khoản đổi: watcher của agy_account xóa hoặc lấy lại thông tin, rồi đẩy model và quota mới
+        crate::agy_account::on_login_changed(ev.logged_in);
+        push_models_after_account_change();
+    }
+}
+
+/// Phát `agy:auth:update` không kéo theo việc đổi tài khoản (dùng khi chỉ thông tin tài khoản đổi)
+fn emit_quiet(ev: &AgyAuthEvent) {
     store(ev);
     if let Ok(mut last) = LAST_EMITTED.lock() {
         *last = serde_json::to_string(ev).ok();
@@ -387,6 +417,42 @@ fn emit(ev: &AgyAuthEvent) {
             let _ = ns.emit("agy:auth:update", ev);
         }
     }
+}
+
+/// Phát lại trạng thái đã đăng nhập để client tải lại thông tin tài khoản (email, gói)
+pub(crate) fn republish_logged_in() {
+    let ev = current();
+    if ev.logged_in {
+        emit_quiet(&ev);
+    }
+}
+
+/// Đẩy quota agy hiện tại cho mọi client (`quotas:update`), không mở host
+pub(crate) fn push_quotas() {
+    let Some(io) = IO.get() else { return };
+    let snapshot = crate::scanner::quota_snapshot(false);
+    if let (Ok(val), Some(ns)) = (serde_json::to_value(&snapshot), io.of("/")) {
+        let _ = ns.emit("quotas:update", &val);
+    }
+}
+
+/// Sau khi đăng nhập hoặc đăng xuất agy, tài khoản (và danh sách model) có thể đã đổi. Lấy lại `agy models`
+/// rồi phát `meta:update` cho mọi client. Nếu không, app chỉ nhận meta lúc kết nối và phải thoát mở lại mới thấy model mới.
+fn push_models_after_account_change() {
+    thread::spawn(|| {
+        crate::scanner::reload_agy_models();
+        let sessions =
+            crate::scanner::scan_all_sessions(&std::collections::HashMap::new(), None, 500);
+        let meta = crate::scanner::build_meta(&sessions);
+        let Ok(val) = serde_json::to_value(&meta) else {
+            return;
+        };
+        if let Some(io) = IO.get() {
+            if let Some(ns) = io.of("/") {
+                let _ = ns.emit("meta:update", &val);
+            }
+        }
+    });
 }
 
 /// Kiểm tra đăng nhập nền (vòng lặp trong [`init`]): phát `agy:auth:update` khi `agy models` cho thấy đã
@@ -403,30 +469,6 @@ fn watch_status() {
     if publish_if_changed("logged_in", true, "") {
         // Vừa đăng nhập: tải lại quota của tài khoản mới
         sync_quotas();
-    }
-}
-
-/// Hub chỉ chạy khi có tiến trình agy đang sống (terminal đăng nhập, hoặc lượt chat). Không có thì không hỏi được trạng thái.
-pub(crate) const HUB_NOT_FOUND: &str = "Không tìm thấy hub agy đang chạy";
-
-/// Hub báo đã có token hợp lệ hay chưa
-pub(crate) fn hub_logged_in(need: Need) -> Result<bool, String> {
-    match host::probe(need) {
-        // Màn chat của agy đang hiện: đã đăng nhập, không cần hỏi hub
-        host::Probe::LoggedIn => Ok(true),
-        host::Probe::SignedOut => Ok(false),
-        host::Probe::Unknown => Err(HUB_NOT_FOUND.to_string()),
-        host::Probe::Hub(port, token) => {
-            let value = rpc_post(port, &token, &format!("{RPC_PREFIX}GetAuthStatus"), "{}")
-                .map_err(|_| "Không gọi được hub agy".to_string())?;
-            if let Some(message) = value.get("message").and_then(Value::as_str) {
-                return Err(message.to_string());
-            }
-            Ok(value
-                .pointer("/authResult/hasValidAuth")
-                .and_then(Value::as_bool)
-                .unwrap_or(false))
-        }
     }
 }
 
@@ -471,7 +513,8 @@ fn signed_in_by_models() -> Result<bool, String> {
 
 /// Chạy `agy models` (stdout vào `out`, stderr bỏ) và chờ tối đa [`MODELS_TIMEOUT`]
 fn wait_agy_models(out: std::fs::File) -> Result<(), String> {
-    let mut child = std::process::Command::new(crate::chat::agy_bin())
+    let agy = crate::chat::agy_bin()?;
+    let mut child = std::process::Command::new(agy)
         .arg("models")
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::from(out))
@@ -566,7 +609,7 @@ pub fn check() -> AgyAuthEvent {
 pub fn logout() -> Result<(), String> {
     host::note_user_activity();
     cancel_login();
-    let res = host::logout_tui();
+    let res = logout_inner();
     match &res {
         Ok(()) => {
             SIGNED_OUT_BY_APP.store(true, Ordering::SeqCst);
@@ -576,6 +619,28 @@ pub fn logout() -> Result<(), String> {
         Err(e) => publish("failed", matches!(signed_in_by_models(), Ok(true)), e),
     }
     res
+}
+
+/// Thời gian tối đa chờ agy xóa token sau `AuthLogout`, và khoảng cách giữa hai lần kiểm tra
+const LOGOUT_WAIT: Duration = Duration::from_secs(60);
+const LOGOUT_CHECK_EVERY: Duration = Duration::from_secs(2);
+
+/// Gọi `AuthLogout` của hub rồi chờ `agy models` báo chưa đăng nhập
+fn logout_inner() -> Result<(), String> {
+    if matches!(signed_in_by_models(), Ok(false)) {
+        return Ok(());
+    }
+    crate::agy_account::logout_via_hub()?;
+    let deadline = Instant::now() + LOGOUT_WAIT;
+    loop {
+        if matches!(signed_in_by_models(), Ok(false)) {
+            return Ok(());
+        }
+        if Instant::now() >= deadline {
+            return Err("agy vẫn báo đã đăng nhập sau khi đăng xuất".into());
+        }
+        thread::sleep(LOGOUT_CHECK_EVERY);
+    }
 }
 
 /// Bắt đầu đăng nhập: mở terminal SSH chạy `agy` để người dùng tự đăng nhập trong đó.
@@ -602,21 +667,17 @@ pub(crate) fn sync_quotas() {
     // Tài khoản vừa đổi: host cũ có thể còn token cũ, mở lại host để đọc trạng thái mới
     host::restart();
     crate::scanner::clear_antigravity_quota_cache();
-    let Some(io) = IO.get() else { return };
-    let snapshot = crate::scanner::quota_snapshot(false);
-    if let (Ok(val), Some(ns)) = (serde_json::to_value(&snapshot), io.of("/")) {
-        let _ = ns.emit("quotas:update", &val);
-    }
+    push_quotas();
 }
 
 /// Trạng thái hai tài khoản (agy và Claude Code CLI) cho màn hình Tài khoản.
 /// Gọi trong blocking thread (có curl tới hub).
 pub fn accounts_status() -> AccountsStatus {
     let agy_logged_in = matches!(status(), Ok(true));
-    let (agy_email, agy_plan) = if agy_logged_in {
-        crate::scanner::query_agy_account().unwrap_or_default()
-    } else {
-        (String::new(), String::new())
+    // Email và gói lấy từ DB (watcher của agy_account lấy từ hub), không hỏi hub trong lúc trả lời client
+    let (agy_email, agy_plan) = match (agy_logged_in, crate::agy_account::snapshot()) {
+        (true, Some(snap)) => (snap.email, snap.plan),
+        _ => (String::new(), String::new()),
     };
     let (claude_logged_in, claude_plan) = crate::claude::code::claude_account();
     AccountsStatus {

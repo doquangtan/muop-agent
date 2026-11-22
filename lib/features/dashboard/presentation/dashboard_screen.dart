@@ -6,13 +6,15 @@ import 'package:muop_agent/core/di/app_dependencies.dart';
 import 'package:muop_agent/core/theme/app_theme.dart';
 import 'package:muop_agent/core/widgets/desktop_panel.dart';
 import 'package:muop_agent/core/widgets/resizable_split.dart';
+import 'package:muop_agent/features/bridge/domain/bridge_entities.dart';
+import 'package:muop_agent/features/bridge/domain/bridge_repository.dart';
+import 'package:muop_agent/features/bridge/domain/peer_models.dart';
+import 'package:muop_agent/features/settings/presentation/settings_screen.dart';
 import 'package:muop_agent/features/chat/domain/chat_entities.dart';
 import 'package:muop_agent/features/chat/domain/chat_repository.dart';
 import 'package:muop_agent/features/chat/domain/model_groups.dart';
 import 'package:muop_agent/features/chat/presentation/chat_canvas_view.dart';
-import 'package:muop_agent/features/connection/domain/connection_entities.dart';
 import 'package:muop_agent/features/connection/domain/connection_repository.dart';
-import 'package:muop_agent/features/connection/domain/lan_scan.dart';
 import 'package:muop_agent/features/docker/presentation/docker_screen.dart';
 import 'package:muop_agent/features/screen/presentation/screen_stream_screen.dart';
 import 'package:muop_agent/features/interactions/domain/interaction_entities.dart';
@@ -20,7 +22,7 @@ import 'package:muop_agent/features/interactions/domain/interactions_repository.
 import 'package:muop_agent/features/interactions/presentation/ai_question_dialog.dart';
 import 'package:muop_agent/features/interactions/presentation/rate_retry_widgets.dart';
 import 'package:muop_agent/features/lsp/presentation/lsp_settings_screen.dart';
-import 'package:muop_agent/features/agy_auth/presentation/accounts_screen.dart';
+import 'package:muop_agent/core/config/server_paths.dart';
 import 'package:muop_agent/features/agent_map/presentation/agent_map_screen.dart';
 import 'package:muop_agent/features/projects/domain/project_entities.dart';
 import 'package:muop_agent/features/projects/domain/projects_repository.dart';
@@ -104,11 +106,27 @@ class _DashboardScreenState extends ConsumerState<DashboardScreenView> {
   bool _isRemoteConnected = false;
   bool _isSocketLive = false;
   String _remoteHostName = '';
+  // Thư mục gốc lấy từ server (meta), không đoán đường dẫn trên client
+  String _serverWorkspaceRoot = '';
+  String _serverHomeDir = '';
 
   List<ConversationSession> _sessions = [];
   List<ProjectWorkspace> _projects = [];
   List<String> _availableModels = defaultModels;
   Map<String, String> _modelLabels = {};
+  // Model và nhãn của máy đang kết nối; `_availableModels` / `_modelLabels` là hợp của cả hai nguồn
+  List<String> _localModels = defaultModels;
+  Map<String, String> _localLabels = {};
+
+  // Máy phụ qua cầu nối (xem features/bridge). Model máy phụ có tiền tố `peer:`.
+  final BridgeRepository _bridgeRepo = AppDependencies.bridge;
+  StreamSubscription<BridgeEvent>? _bridgeEventSub;
+  bool _peerConnected = false;
+  String _peerHost = '';
+  List<String> _peerModels = const [];
+  Map<String, String> _peerLabels = const {};
+  // Conversation chạy trên máy phụ: không nằm trong danh sách của máy đang kết nối
+  final Set<String> _peerSessionIds = {};
   /// Mức suy nghĩ (effort) do CLI của server hỗ trợ; rỗng cho tới khi có meta
   List<String> _effortLevels = const [];
   Map<String, int> _modelContextLimits = {};
@@ -172,9 +190,13 @@ class _DashboardScreenState extends ConsumerState<DashboardScreenView> {
   void initState() {
     super.initState();
     _bindRealtimeSocketStreams();
+    _bindPeerStreams();
     // Sau khung hình đầu: tải dữ liệu và mở màn kiểm tra cài đặt không chạy trong pha build
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (mounted) unawaited(_initEnvironmentAndLoad());
+      if (mounted) {
+        unawaited(_initEnvironmentAndLoad());
+        unawaited(_refreshPeer());
+      }
     });
     _fallbackTimer = Timer.periodic(const Duration(seconds: 6), (_) {
       if (!_isSocketLive) {
@@ -198,6 +220,7 @@ class _DashboardScreenState extends ConsumerState<DashboardScreenView> {
     _quotasSub?.cancel();
     _retrySub?.cancel();
     _filesChangeSub?.cancel();
+    _bridgeEventSub?.cancel();
     if (_currentConversationRoom != null) {
       _sessionsRepo.leaveConversation(_currentConversationRoom!);
     }
@@ -345,7 +368,7 @@ class _DashboardScreenState extends ConsumerState<DashboardScreenView> {
           builder: (_) => SetupSplashScreen(
             serverAddress: _serverAddress,
             // Đóng splash rồi mở hộp thoại IP; đổi máy chủ sẽ dựng lại dashboard và kiểm tra lại
-            onChangeServer: () => unawaited(_showServerConfigDialog()),
+            onChangeServer: () => unawaited(_openSettings()),
           ),
         ),
       );
@@ -556,6 +579,12 @@ class _DashboardScreenState extends ConsumerState<DashboardScreenView> {
         ),
       );
     }
+    // Conversation của máy phụ không nằm trong danh sách này: giữ lại khi danh sách local được làm mới
+    for (final existing in _sessions) {
+      if (_peerSessionIds.contains(existing.id) && !merged.any((m) => m.id == existing.id)) {
+        merged.add(existing);
+      }
+    }
     // Server trả tối đa 500 conversation: khi đạt giới hạn thì giữ lại các session cũ để không mất lịch sử
     if (incoming.length >= 500) {
       for (final existing in _sessions) {
@@ -593,6 +622,8 @@ class _DashboardScreenState extends ConsumerState<DashboardScreenView> {
     setState(() {
       _isRemoteConnected = true;
       _remoteHostName = meta.hostname;
+      _serverWorkspaceRoot = meta.workspaceRoot;
+      _serverHomeDir = meta.homeDir;
       if (meta.lanIps.isNotEmpty) {
       }
       _projects = meta.projects;
@@ -603,8 +634,9 @@ class _DashboardScreenState extends ConsumerState<DashboardScreenView> {
         );
       }
       if (meta.availableModels.isNotEmpty) {
-        _availableModels = meta.availableModels;
-        _modelLabels = meta.modelLabels;
+        _localModels = meta.availableModels;
+        _localLabels = meta.modelLabels;
+        _recomputeModels();
         _effortLevels = meta.effortLevels;
         _modelContextLimits = meta.modelContextLimits;
       }
@@ -768,6 +800,8 @@ class _DashboardScreenState extends ConsumerState<DashboardScreenView> {
   }
 
   static String _sourceFromModel(String model) {
+    // Model máy phụ: provider là provider của model trên máy đó
+    if (isPeerModel(model)) return _sourceFromModel(remoteModelId(model));
     if (model.startsWith('claude-cli:') ||
         model == 'sonnet' ||
         model == 'opus' ||
@@ -861,13 +895,170 @@ class _DashboardScreenState extends ConsumerState<DashboardScreenView> {
     }
   }
 
+  // ───── Máy phụ qua cầu nối ─────
+
+  /// Hợp model và nhãn của máy đang kết nối với model của máy phụ
+  void _recomputeModels() {
+    _availableModels = mergeModelLists(_localModels, _peerModels);
+    _modelLabels = {..._localLabels, ..._peerLabels};
+  }
+
+  /// Model dùng để gửi. Conversation chạy trên máy phụ luôn dùng đúng model máy phụ đã chạy nó,
+  /// không đổi sang model cục bộ.
+  String get _sendModel {
+    final cid = _selectedSessionId;
+    if (!_isNewConversationMode && cid != null && _peerSessionIds.contains(cid)) {
+      final remembered = _activeSession?.selectedModel ?? '';
+      if (isPeerModel(remembered)) return remembered;
+    }
+    return _effectiveModel;
+  }
+
+  void _bindPeerStreams() {
+    _bridgeEventSub = _bridgeRepo.watchEvents().listen((event) {
+      if (!mounted) return;
+      final data = event.data;
+      if (data is! Map<String, dynamic>) return;
+      switch (event.name) {
+        case 'bridge:status':
+          _onPeerStatus(BridgeStatus.fromJson(data));
+        case 'bridge:session:update':
+          _handlePeerSession(data);
+      }
+    });
+  }
+
+  /// Đọc trạng thái cầu nối khi mở màn hình
+  Future<void> _refreshPeer() async {
+    final status = await _bridgeRepo.fetchStatus(_serverAddress);
+    if (!mounted) return;
+    _onPeerStatus(status);
+  }
+
+  void _onPeerStatus(BridgeStatus status) {
+    final wasConnected = _peerConnected;
+    setState(() {
+      _peerConnected = status.connected;
+    });
+    // Vừa kết nối (hoặc kết nối lại): lấy lại model và danh sách conversation của máy phụ
+    if (status.connected && !wasConnected) unawaited(_loadPeerData());
+  }
+
+  /// Model và conversation của máy phụ. Khi mất kết nối thì giữ dữ liệu đã có để chọn lại được.
+  Future<void> _loadPeerData() async {
+    final meta = await _bridgeRepo.fetchPeerMeta(_serverAddress);
+    if (!mounted) return;
+    if (meta.ok) {
+      setState(() {
+        _peerHost = meta.hostname.isNotEmpty ? meta.hostname : _peerHost;
+        _peerModels = [for (final m in meta.models) toPeerModelId(m)];
+        _peerLabels = peerModelLabels(
+          remoteModels: meta.models,
+          remoteLabels: meta.labels,
+          host: _peerHost,
+        );
+        _recomputeModels();
+        // Conversation đang mở có thể dùng model máy phụ vừa có: chọn lại theo lịch sử
+        _syncDefaultSelections();
+      });
+    }
+    final raw = await _bridgeRepo.fetchPeerSessions(_serverAddress);
+    if (!mounted) return;
+    _upsertPeerSessions([
+      for (final json in raw) ConversationSession.fromJson(asPeerSessionJson(json)),
+    ]);
+  }
+
+  /// Thêm hoặc cập nhật conversation của máy phụ. Giữ steps đã tải khi bản mới không kèm steps.
+  void _upsertPeerSessions(List<ConversationSession> incoming) {
+    if (incoming.isEmpty || !mounted) return;
+    setState(() {
+      final next = [..._sessions];
+      for (final raw in incoming) {
+        if (raw.id.isEmpty) continue;
+        // Conversation vẫn thuộc workspace của máy này (server đã chuyển về project); chỉ gắn tag máy phụ
+        final s = raw.copyWith(
+          title: peerSessionTitle(host: _peerHost, title: raw.title),
+        );
+        _peerSessionIds.add(s.id);
+        final index = next.indexWhere((x) => x.id == s.id);
+        if (index < 0) {
+          next.add(s);
+        } else {
+          final existing = next[index];
+          next[index] = s.copyWith(steps: s.steps.isEmpty ? existing.steps : s.steps);
+        }
+      }
+      next.sort((a, b) => b.updatedAt.compareTo(a.updatedAt));
+      _sessions = next;
+      _syncDefaultSelections();
+    });
+  }
+
+  /// `bridge:session:update` hoặc chi tiết conversation máy phụ
+  void _handlePeerSession(Map<String, dynamic> data) {
+    final session = ConversationSession.fromJson(asPeerSessionJson(data));
+    _upsertPeerSessions([session]);
+  }
+
+  Future<void> _loadPeerSession(String cid) async {
+    final json = await _bridgeRepo.fetchPeerSession(_serverAddress, id: cid);
+    if (!mounted || json == null) return;
+    _handlePeerSession(json);
+  }
+
+  /// Gửi lượt chat tới máy phụ qua cầu nối. Máy phụ tự thêm nhãn nguồn vào prompt.
+  Future<ChatSendResult> _sendToPeer({
+    required String prompt,
+    required String projectPath,
+    required String conversationId,
+    required String model,
+    required List<ChatImageAttachment> images,
+  }) async {
+    final res = await _bridgeRepo.sendPrompt(
+      _serverAddress,
+      prompt: prompt,
+      projectPath: projectPath,
+      conversationId: conversationId,
+      model: remoteModelId(model),
+      images: [for (final image in images) image.toJson()],
+    );
+    if (!res.ok || res.conversationId.isEmpty) {
+      return ChatSendResult(
+        ok: false,
+        conversationId: '',
+        projectPath: projectPath,
+        error: res.error.isEmpty ? 'Máy phụ không nhận được lệnh' : res.error,
+      );
+    }
+    // Thêm conversation vào danh sách ngay, để màn không hiện nhầm conversation khác trong lúc chờ
+    final now = DateTime.now().toUtc().toIso8601String();
+    _handlePeerSession({
+      'id': res.conversationId,
+      'title': prompt.isEmpty ? 'Lượt mới trên máy phụ' : prompt,
+      'status': 'running',
+      'createdAt': now,
+      'updatedAt': now,
+      'projectPath': projectPath,
+      'selectedModel': remoteModelId(model),
+      'source': res.source,
+    });
+    unawaited(_loadPeerSession(res.conversationId));
+    return ChatSendResult(
+      ok: true,
+      conversationId: res.conversationId,
+      projectPath: projectPath,
+      source: res.source,
+    );
+  }
+
   Future<void> _handleSendPrompt(
     String promptText,
     List<ChatImageAttachment> images,
   ) async {
     final targetProjectPath = _activeChatProject?.path ??
         _activeSession?.projectPath ??
-        '/home/john/Documents/muop-ecosystem/muop-erp-server';
+        _serverWorkspaceRoot;
     final targetConvId =
         _isNewConversationMode ? '' : (_selectedSessionId ?? '');
 
@@ -893,17 +1084,25 @@ class _DashboardScreenState extends ConsumerState<DashboardScreenView> {
       };
     });
 
-    final effectiveModel = _effectiveModel;
+    final effectiveModel = _sendModel;
 
-    final result = await _chatRepo.sendRemoteChatPrompt(
-      address: _serverAddress,
-      prompt: promptText,
-      projectPath: targetProjectPath,
-      conversationId: targetConvId,
-      agentName: _selectedAgent,
-      model: effectiveModel,
-      images: images,
-    );
+    final result = isPeerModel(effectiveModel)
+        ? await _sendToPeer(
+            prompt: promptText,
+            projectPath: targetProjectPath,
+            conversationId: targetConvId,
+            model: effectiveModel,
+            images: images,
+          )
+        : await _chatRepo.sendRemoteChatPrompt(
+            address: _serverAddress,
+            prompt: promptText,
+            projectPath: targetProjectPath,
+            conversationId: targetConvId,
+            agentName: _selectedAgent,
+            model: effectiveModel,
+            images: images,
+          );
 
     if (!mounted) return;
     setState(() => _isSendingPrompt = false);
@@ -989,6 +1188,11 @@ class _DashboardScreenState extends ConsumerState<DashboardScreenView> {
   Future<void> _handleStopTurn() async {
     final cid = _selectedSessionId ?? '';
     if (cid.isEmpty) return;
+    if (_peerSessionIds.contains(cid)) {
+      // Conversation của máy phụ: dừng qua cầu nối
+      await _bridgeRepo.stopTurn(_serverAddress, conversationId: cid);
+      return;
+    }
     await _chatRepo.stopRemoteChatTurn(
       address: _serverAddress,
       conversationId: cid,
@@ -1266,11 +1470,13 @@ class _DashboardScreenState extends ConsumerState<DashboardScreenView> {
     final activeSession = _activeSession;
     final initialDir = _activeChatProject?.path ??
         activeSession?.projectPath ??
-        '/home/john/Documents/muop-ecosystem';
+        _serverWorkspaceRoot;
 
     ServerFileBrowserSheet.show(
       context,
       initialPath: initialDir,
+      workspaceRoot: _serverWorkspaceRoot,
+      homeDir: _serverHomeDir,
       projects: _projects,
       sessionFiles: activeSession?.filesTouched ?? const [],
       initialTab: initialTab,
@@ -1290,7 +1496,7 @@ class _DashboardScreenState extends ConsumerState<DashboardScreenView> {
     final project = _activeChatProject;
     final path = project?.path ??
         _activeSession?.projectPath ??
-        '/home/john/Documents/muop-ecosystem/muop-agent';
+        _serverWorkspaceRoot;
     final name = project?.name ?? _activeSession?.projectName;
 
     ProjectGitHistorySheet.show(
@@ -1365,9 +1571,12 @@ class _DashboardScreenState extends ConsumerState<DashboardScreenView> {
             final textTheme = Theme.of(dialogContext).textTheme;
 
             final projectName = nameController.text.trim();
-            final targetPath = projectName.isEmpty
-                ? '/home/john/Documents/muop-ecosystem/<tên-project>'
-                : '/home/john/Documents/muop-ecosystem/$projectName';
+            final targetPath = _serverWorkspaceRoot.isEmpty
+                ? 'Chưa chọn thư mục project trong Khởi tạo'
+                : joinServerPath(
+                    _serverWorkspaceRoot,
+                    projectName.isEmpty ? '<tên-project>' : projectName,
+                  );
 
             return AlertDialog(
               shape: RoundedRectangleBorder(
@@ -1584,7 +1793,7 @@ class _DashboardScreenState extends ConsumerState<DashboardScreenView> {
                                 ProjectWorkspace(
                                   id: name,
                                   name: name,
-                                  path: '/home/john/Documents/muop-ecosystem/$name',
+                                  path: joinServerPath(_serverWorkspaceRoot, name),
                                   sessionCount: 0,
                                   runningCount: 0,
                                 );
@@ -1633,332 +1842,8 @@ class _DashboardScreenState extends ConsumerState<DashboardScreenView> {
     );
   }
 
-  /// Kết nối tới [addr]: ghi nhận vào danh sách đã lưu, nối socket và tải lại dữ liệu
-  Future<void> _connectToServer(String addr) async {
-    await _connectionRepo.saveServerAddress(addr);
-    if (!mounted) return;
-    // Đổi địa chỉ toàn cục: dashboard và mọi màn đang mount được dựng lại và tải lại dữ liệu
-    ref.read(serverAddressProvider.notifier).change(addr);
-  }
-
-  Future<void> _showServerConfigDialog() async {
-    final ipController = TextEditingController(text: _serverAddress);
-    RemotePingResult? pingResult;
-    bool isPinging = false;
-    // Quét mạng LAN tìm máy chủ
-    bool isScanning = false;
-    bool scanned = false;
-    int scanDone = 0;
-    int scanTotal = 0;
-    List<LanServer> lanServers = const [];
-    // Các server đã kết nối trước đây (mới nhất đứng đầu)
-    final saved = List<String>.of(await _connectionRepo.loadSavedServers());
-    if (!mounted) return;
-
-    await showDialog<void>(
-      context: context,
-      builder: (ctx) {
-        return StatefulBuilder(
-          builder: (context, setModalState) {
-            final colorScheme = Theme.of(context).colorScheme;
-            final textTheme = Theme.of(context).textTheme;
-
-            Future<void> testPing() async {
-              setModalState(() {
-                isPinging = true;
-                pingResult = null;
-              });
-              final res = await _connectionRepo.pingRemoteServer(ipController.text);
-              setModalState(() {
-                isPinging = false;
-                pingResult = res;
-              });
-            }
-
-            Future<void> scanLan() async {
-              setModalState(() {
-                isScanning = true;
-                scanned = false;
-                scanDone = 0;
-                scanTotal = 0;
-                lanServers = const [];
-              });
-              final found = await _connectionRepo.scanLanServers(
-                onProgress: (done, total) {
-                  // Dialog đã đóng thì bỏ qua cập nhật
-                  if (!context.mounted) return;
-                  setModalState(() {
-                    scanDone = done;
-                    scanTotal = total;
-                  });
-                },
-              );
-              if (!context.mounted) return;
-              setModalState(() {
-                isScanning = false;
-                scanned = true;
-                lanServers = found;
-              });
-            }
-
-            return AlertDialog(
-              title: Row(
-                children: [
-                  Icon(Icons.bolt_rounded, color: colorScheme.primary),
-                  const SizedBox(width: 10),
-                  const Expanded(
-                    child: Text(
-                      'Kết nối Rust Server (Socket.IO)',
-                      style: TextStyle(
-                        fontSize: 16.5,
-                        fontWeight: FontWeight.w800,
-                      ),
-                    ),
-                  ),
-                ],
-              ),
-              content: SingleChildScrollView(
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Container(
-                      padding: const EdgeInsets.all(12),
-                      decoration: BoxDecoration(
-                        color: (_isSocketLive ? context.status.success : context.status.warning)
-                            .withAlpha(25),
-                        borderRadius: BorderRadius.circular(10),
-                        border: Border.all(
-                          color: (_isSocketLive ? context.status.success : context.status.warning)
-                              .withAlpha(120),
-                        ),
-                      ),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Row(
-                            children: [
-                              Icon(
-                                _isSocketLive
-                                    ? Icons.sensors_rounded
-                                    : Icons.sync_problem_rounded,
-                                size: 16,
-                                color:
-                                    _isSocketLive ? context.status.success : context.status.warning,
-                              ),
-                              const SizedBox(width: 6),
-                              Expanded(
-                                child: Text(
-                                  _isSocketLive
-                                      ? 'Socket.IO Realtime đang kết nối!'
-                                      : 'Đang chờ kết nối Socket.IO...',
-                                  style: textTheme.labelMedium?.copyWith(
-                                    fontWeight: FontWeight.w800,
-                                    color: _isSocketLive
-                                        ? context.status.success
-                                        : context.status.warning,
-                                  ),
-                                ),
-                              ),
-                            ],
-                          ),
-                        ],
-                      ),
-                    ),
-                    if (saved.isNotEmpty) ...[
-                      const SizedBox(height: 14),
-                      Text(
-                        'Đã kết nối trước đây',
-                        style: textTheme.labelLarge?.copyWith(
-                          fontWeight: FontWeight.w700,
-                        ),
-                      ),
-                      const SizedBox(height: 4),
-                      for (final addr in saved)
-                        ListTile(
-                          dense: true,
-                          contentPadding: const EdgeInsets.symmetric(horizontal: 4),
-                          leading: Icon(
-                            addr == _serverAddress
-                                ? Icons.check_circle_rounded
-                                : Icons.dns_outlined,
-                            size: 20,
-                            color: addr == _serverAddress
-                                ? context.status.success
-                                : colorScheme.onSurfaceVariant,
-                          ),
-                          title: Text(
-                            addr,
-                            style: const TextStyle(
-                              fontFamily: 'monospace',
-                              fontSize: 13,
-                              fontWeight: FontWeight.w700,
-                            ),
-                          ),
-                          subtitle: addr == _serverAddress
-                              ? const Text('Đang dùng')
-                              : null,
-                          onTap: () {
-                            Navigator.of(ctx).pop();
-                            unawaited(_connectToServer(addr));
-                          },
-                          trailing: IconButton(
-                            tooltip: 'Xóa khỏi danh sách',
-                            icon: Icon(
-                              Icons.delete_outline_rounded,
-                              size: 18,
-                              color: colorScheme.error,
-                            ),
-                            onPressed: () async {
-                              await _connectionRepo.removeSavedServer(addr);
-                              setModalState(() {
-                                saved.remove(addr);
-                              });
-                            },
-                          ),
-                        ),
-                      const Divider(height: 20),
-                    ] else
-                      const SizedBox(height: 14),
-                    TextField(
-                      controller: ipController,
-                      keyboardType: TextInputType.url,
-                      decoration: InputDecoration(
-                        labelText: 'Địa chỉ IP máy chủ (cổng 8787)',
-                        hintText: '192.168.31.96',
-                        prefixIcon: const Icon(Icons.dns_rounded),
-                        suffixIcon: IconButton(
-                          icon: const Icon(Icons.clear_rounded, size: 18),
-                          onPressed: () => ipController.clear(),
-                        ),
-                        filled: true,
-                        border: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(12),
-                        ),
-                      ),
-                    ),
-                    const SizedBox(height: 12),
-                    SizedBox(
-                      width: double.infinity,
-                      child: OutlinedButton.icon(
-                        onPressed: isPinging ? null : testPing,
-                        icon: isPinging
-                            ? const SizedBox(
-                                width: 14,
-                                height: 14,
-                                child: CircularProgressIndicator(
-                                  strokeWidth: 2,
-                                ),
-                              )
-                            : const Icon(Icons.network_check_rounded, size: 17),
-                        label: Text(
-                          isPinging ? 'Đang kiểm tra...' : 'Kiểm tra kết nối',
-                        ),
-                      ),
-                    ),
-                    if (pingResult != null) ...[
-                      const SizedBox(height: 10),
-                      Text(
-                        pingResult!.isOnline
-                            ? '✓ Kết nối thành công tới ${pingResult!.hostname} (${pingResult!.latencyMs}ms)'
-                            : '✕ Lỗi kết nối: ${pingResult!.errorMessage}',
-                        style: textTheme.bodySmall?.copyWith(
-                          fontWeight: FontWeight.w700,
-                          color: pingResult!.isOnline
-                              ? context.status.success
-                              : context.scheme.error,
-                        ),
-                      ),
-                    ],
-                    const SizedBox(height: 10),
-                    SizedBox(
-                      width: double.infinity,
-                      child: OutlinedButton.icon(
-                        onPressed: isScanning ? null : scanLan,
-                        icon: isScanning
-                            ? const SizedBox(
-                                width: 14,
-                                height: 14,
-                                child: CircularProgressIndicator(strokeWidth: 2),
-                              )
-                            : const Icon(Icons.wifi_find_rounded, size: 17),
-                        label: Text(
-                          isScanning
-                              ? (scanTotal == 0
-                                  ? 'Đang quét…'
-                                  : 'Đang quét $scanDone/$scanTotal…')
-                              : 'Quét mạng LAN tìm máy chủ',
-                        ),
-                      ),
-                    ),
-                    if (scanned) ...[
-                      const SizedBox(height: 8),
-                      if (lanServers.isEmpty)
-                        Text(
-                          'Không tìm thấy máy chủ muop-agent nào trên mạng LAN (cổng 8787).',
-                          style: textTheme.bodySmall?.copyWith(
-                            color: colorScheme.onSurfaceVariant,
-                          ),
-                        )
-                      else ...[
-                        Text(
-                          'Tìm thấy ${lanServers.length} máy chủ (bấm để kết nối)',
-                          style: textTheme.labelLarge?.copyWith(
-                            fontWeight: FontWeight.w700,
-                          ),
-                        ),
-                        for (final server in lanServers)
-                          ListTile(
-                            dense: true,
-                            contentPadding: const EdgeInsets.symmetric(horizontal: 4),
-                            leading: Icon(
-                              Icons.dns_rounded,
-                              size: 20,
-                              color: colorScheme.primary,
-                            ),
-                            title: Text(
-                              server.ip,
-                              style: const TextStyle(
-                                fontFamily: 'monospace',
-                                fontSize: 13,
-                                fontWeight: FontWeight.w700,
-                              ),
-                            ),
-                            subtitle: server.hostname.isEmpty
-                                ? null
-                                : Text(server.hostname),
-                            onTap: () {
-                              Navigator.of(ctx).pop();
-                              unawaited(_connectToServer(server.ip));
-                            },
-                          ),
-                      ],
-                    ],
-                  ],
-                ),
-              ),
-              actions: [
-                TextButton(
-                  onPressed: () => Navigator.of(ctx).pop(),
-                  child: const Text('Hủy'),
-                ),
-                FilledButton(
-                  onPressed: () {
-                    final newAddr = ipController.text.trim().isEmpty
-                        ? defaultHostAddress
-                        : ipController.text.trim();
-                    Navigator.of(ctx).pop();
-                    unawaited(_connectToServer(newAddr));
-                  },
-                  child: const Text('Kết nối'),
-                ),
-              ],
-            );
-          },
-        );
-      },
-    );
-  }
+  /// Mở màn Cài đặt (thư mục project, máy chủ, cầu nối, tài khoản)
+  Future<void> _openSettings() => _openFromSidebar(context, const SettingsScreen());
 
   List<ConversationSession> get _filteredSessions {
     if (_searchQuery.isEmpty) return _sessions;
@@ -2409,12 +2294,18 @@ class _DashboardScreenState extends ConsumerState<DashboardScreenView> {
       return _buildDisconnectedView(context);
     }
     return ChatCanvasView(
+      workspaceRoot: _serverWorkspaceRoot,
                 session: activeSession,
                 projects: _projects,
                 selectedProject: _activeChatProject,
                 availableAgents: _availableAgents,
                 availableModels: _availableModels,
                 modelLabels: _modelLabels,
+                blockedReason: peerBlockReason(
+                  model: _sendModel,
+                  connected: _peerConnected,
+                  host: _peerHost,
+                ),
                 effortLevels: _effortLevels,
                 modelContextLimits: _modelContextLimits,
                 quotaScope: _quotaScope,
@@ -2482,10 +2373,10 @@ class _DashboardScreenState extends ConsumerState<DashboardScreenView> {
 
     final title = _isNewConversationMode
         ? 'New Conversation'
-        : (activeSession?.title ?? 'Antigravity');
+        : (activeSession?.title ?? 'Mướp Agents');
     final projectName = _activeChatProject?.name ??
         activeSession?.projectName ??
-        'muop-erp-server';
+        'Chưa chọn project';
 
     return Container(
       height: isMobile ? 46 : 50,
@@ -2597,7 +2488,7 @@ class _DashboardScreenState extends ConsumerState<DashboardScreenView> {
           // Trạng thái kết nối Socket.IO với Rust Server
           InkWell(
             borderRadius: BorderRadius.circular(8),
-            onTap: _showServerConfigDialog,
+            onTap: _openSettings,
             child: Container(
               padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 4),
               decoration: BoxDecoration(
@@ -2791,20 +2682,24 @@ class _DashboardScreenState extends ConsumerState<DashboardScreenView> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        // 1. Header Sidebar: Antigravity + New Chat
+        // 1. Header Sidebar: Mướp Agents + New Chat
         Padding(
           padding: const EdgeInsets.fromLTRB(14, 12, 10, 8),
           child: Row(
             children: [
-              Icon(
-                Icons.auto_awesome_rounded,
-                size: 18,
-                color: colorScheme.primary,
+              ClipRRect(
+                borderRadius: BorderRadius.circular(5),
+                child: Image.asset(
+                  'assets/images/logo.png',
+                  width: 22,
+                  height: 22,
+                  fit: BoxFit.contain,
+                ),
               ),
               const SizedBox(width: 8),
               Expanded(
                 child: Text(
-                  'Antigravity',
+                  'Mướp Agents',
                   style: textTheme.titleSmall?.copyWith(
                     fontWeight: FontWeight.w800,
                     letterSpacing: 0.2,
@@ -2900,30 +2795,6 @@ class _DashboardScreenState extends ConsumerState<DashboardScreenView> {
                     size: 16, color: colorScheme.primary),
                 label: Text(
                   'LSP',
-                  style: textTheme.labelMedium?.copyWith(
-                    color: colorScheme.primary,
-                    fontWeight: FontWeight.w600,
-                  ),
-                ),
-              ),
-              TextButton.icon(
-                style: TextButton.styleFrom(
-                  visualDensity: VisualDensity.compact,
-                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                ),
-                onPressed: () {
-                  if (Navigator.of(context).canPop() && isMobileDrawer) {
-                    Navigator.of(context).pop();
-                  }
-                  _openFromSidebar(
-                    context,
-                    AccountsScreen(),
-                  );
-                },
-                icon: Icon(Icons.manage_accounts_rounded,
-                    size: 16, color: colorScheme.primary),
-                label: Text(
-                  'Tài khoản',
                   style: textTheme.labelMedium?.copyWith(
                     color: colorScheme.primary,
                     fontWeight: FontWeight.w600,
@@ -3055,7 +2926,10 @@ class _DashboardScreenState extends ConsumerState<DashboardScreenView> {
                 orElse: () => ProjectWorkspace(
                   id: projName,
                   name: projName,
-                  path: '/home/john/Documents/muop-ecosystem/$projName',
+                  // Đường dẫn thật của conversation trong nhóm (nhóm máy phụ không có đường dẫn đoán được)
+                  path: projSessions.isNotEmpty && projSessions.first.projectPath.isNotEmpty
+                      ? projSessions.first.projectPath
+                      : joinServerPath(_serverWorkspaceRoot, projName),
                   sessionCount: projSessions.length,
                   runningCount: 0,
                 ),
@@ -3084,7 +2958,7 @@ class _DashboardScreenState extends ConsumerState<DashboardScreenView> {
               Expanded(
                 child: InkWell(
                   borderRadius: BorderRadius.circular(8),
-                  onTap: _showServerConfigDialog,
+                  onTap: _openSettings,
                   child: Padding(
                     padding: const EdgeInsets.symmetric(vertical: 4),
                     child: Row(
@@ -3123,9 +2997,9 @@ class _DashboardScreenState extends ConsumerState<DashboardScreenView> {
                 ),
               ),
               IconButton(
-                tooltip: 'Cấu hình IP Server',
+                tooltip: 'Cài đặt',
                 visualDensity: VisualDensity.compact,
-                onPressed: _showServerConfigDialog,
+                onPressed: _openSettings,
                 icon: Icon(
                   Icons.settings_outlined,
                   size: 16,
@@ -3522,9 +3396,9 @@ class _DashboardScreenState extends ConsumerState<DashboardScreenView> {
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
                   FilledButton.tonalIcon(
-                    onPressed: _showServerConfigDialog,
+                    onPressed: _openSettings,
                     icon: const Icon(Icons.settings_ethernet_rounded, size: 16),
-                    label: const Text('Đổi IP Server'),
+                    label: const Text('Cài đặt máy chủ'),
                   ),
                   const SizedBox(width: 8),
                   OutlinedButton.icon(

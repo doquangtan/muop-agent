@@ -8,6 +8,8 @@ class SetupTool {
     required this.path,
     required this.installable,
     required this.hint,
+    this.source = '',
+    this.overridden = '',
   });
 
   final String id;
@@ -24,6 +26,12 @@ class SetupTool {
   /// Lệnh gợi ý khi chưa cài
   final String hint;
 
+  /// Nguồn đường dẫn: `override` (người dùng chọn), `which`, `dev` (bản build trong repo), hoặc rỗng
+  final String source;
+
+  /// Đường dẫn người dùng đã lưu (rỗng nếu chưa chọn)
+  final String overridden;
+
   factory SetupTool.fromJson(Map<String, dynamic> json) {
     return SetupTool(
       id: json['id'] as String? ?? '',
@@ -33,6 +41,39 @@ class SetupTool {
       path: json['path'] as String? ?? '',
       installable: json['installable'] as bool? ?? false,
       hint: json['hint'] as String? ?? '',
+      source: json['source'] as String? ?? '',
+      overridden: json['overridden'] as String? ?? '',
+    );
+  }
+}
+
+/// Một gói apt mà server quản lý (danh sách cố định ở server, `APT_PACKAGES`)
+class SetupAptPackage {
+  const SetupAptPackage({
+    required this.package,
+    required this.label,
+    required this.note,
+    required this.installed,
+    this.required = false,
+  });
+
+  final String package;
+  final String label;
+
+  /// Lý do cần gói
+  final String note;
+
+  /// Bắt buộc: chưa cài thì wizard không cho đi tiếp
+  final bool required;
+  final bool installed;
+
+  factory SetupAptPackage.fromJson(Map<String, dynamic> json) {
+    return SetupAptPackage(
+      package: json['package'] as String? ?? '',
+      label: json['label'] as String? ?? '',
+      note: json['note'] as String? ?? '',
+      installed: json['installed'] as bool? ?? false,
+      required: json['required'] as bool? ?? false,
     );
   }
 }
@@ -143,10 +184,26 @@ class SetupStatus {
     required this.tools,
     required this.job,
     required this.ssh,
+    this.aptPackages = const [],
+    this.aptInstallCommand = '',
+    this.workspaceRoot = '',
+    this.workspaceReady = false,
   });
+
+  /// Thư mục project đã chọn khi khởi tạo (rỗng nếu chưa chọn)
+  final String workspaceRoot;
+
+  /// Đã khởi tạo xong và có thư mục project: đang quét project
+  final bool workspaceReady;
 
   final bool ok;
   final String error;
+
+  /// Các gói apt server quản lý, kèm trạng thái đã cài
+  final List<SetupAptPackage> aptPackages;
+
+  /// Lệnh cài các gói còn thiếu (rỗng nếu đủ); server tạo, client chạy trong terminal
+  final String aptInstallCommand;
 
   /// Đã vào màn hình chính ít nhất một lần (hoặc đã bỏ qua bước đăng nhập)
   final bool completed;
@@ -194,6 +251,12 @@ class SetupStatus {
       ssh: sshJson is Map
           ? SetupSsh.fromJson(Map<String, dynamic>.from(sshJson))
           : SetupSsh.empty,
+      aptPackages: (json['aptPackages'] as List<dynamic>? ?? const [])
+          .map((e) => SetupAptPackage.fromJson(Map<String, dynamic>.from(e as Map)))
+          .toList(),
+      aptInstallCommand: json['aptInstallCommand'] as String? ?? '',
+      workspaceRoot: json['workspaceRoot'] as String? ?? '',
+      workspaceReady: json['workspaceReady'] as bool? ?? false,
     );
   }
 
@@ -210,6 +273,7 @@ class SetupStatus {
   /// hoặc thiếu tool bắt buộc. SSH không tính: máy này dùng shell của server trực tiếp. Đăng nhập agy/claude không tính.
   bool get needsSetup =>
       !completed ||
+      workspaceRoot.isEmpty ||
       selectedClis.isEmpty ||
       selectedClis.any((id) => !isInstalled(id)) ||
       tools.any((t) => t.group == 'base' && !t.installed);

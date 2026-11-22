@@ -3,7 +3,7 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
-FLUTTER_BIN="${FLUTTER_BIN:-/home/john/flutter/bin/flutter}"
+FLUTTER_BIN="${FLUTTER_BIN:-$(command -v flutter || echo "$HOME/flutter/bin/flutter")}"
 if ! command -v "$FLUTTER_BIN" &>/dev/null; then
   FLUTTER_BIN="flutter"
 fi

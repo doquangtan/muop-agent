@@ -9,15 +9,15 @@ use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
 
 /// File JSONL cũ (trước khi chuyển sang SQLite), được import một lần rồi xóa
-const LEGACY_AGY_TURN_MODELS: &str = "/home/john/.local/share/muop-agent/agy-turn-models.jsonl";
+/// File JSONL cũ (trước khi chuyển vào SQLite), nằm trong thư mục dữ liệu của server
+fn legacy_agy_turn_models() -> PathBuf {
+    super::paths::app_data_dir().join("agy-turn-models.jsonl")
+}
 
 static DB: OnceLock<Option<Mutex<Connection>>> = OnceLock::new();
 
 fn db_path() -> PathBuf {
-    let home = std::env::var("HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| PathBuf::from("/home/john"));
-    home.join(".local/share/muop-agent/muop-agent.db")
+    super::paths::db_path()
 }
 
 fn open() -> Option<Connection> {
@@ -86,6 +86,13 @@ fn open() -> Option<Connection> {
              value TEXT NOT NULL,
              updated_at TEXT NOT NULL
          );
+         CREATE TABLE IF NOT EXISTS agy_account (
+             id INTEGER PRIMARY KEY CHECK (id = 1),
+             email TEXT NOT NULL,
+             plan TEXT NOT NULL,
+             quota_json TEXT NOT NULL,
+             updated_at TEXT NOT NULL
+         );
          CREATE TABLE IF NOT EXISTS model_context_limits (
              model_id TEXT PRIMARY KEY,
              limit_tokens INTEGER NOT NULL,
@@ -129,7 +136,7 @@ fn seed_claude_context_limits(conn: &Connection) {
 
 /// Import file JSONL cũ vào bảng rồi xóa file (chỉ chạy khi file còn tồn tại)
 fn import_legacy_agy_turn_models(conn: &Connection) {
-    let Ok(content) = fs::read_to_string(LEGACY_AGY_TURN_MODELS) else {
+    let Ok(content) = fs::read_to_string(legacy_agy_turn_models()) else {
         return;
     };
     for line in content.lines() {
@@ -148,7 +155,7 @@ fn import_legacy_agy_turn_models(conn: &Connection) {
             params![cid, started, model],
         );
     }
-    let _ = fs::remove_file(LEGACY_AGY_TURN_MODELS);
+    let _ = fs::remove_file(legacy_agy_turn_models());
 }
 
 /// Chạy một truy vấn trên kết nối dùng chung. Trả None nếu DB không mở được hoặc truy vấn lỗi.
@@ -636,4 +643,46 @@ pub fn delete_lsp_path(language: &str) -> bool {
         .ok()
     })
     .is_some()
+}
+
+/// Thông tin tài khoản agy đang đăng nhập (một dòng): email, gói, quota (JSON)
+#[derive(Debug, Clone)]
+pub struct AgyAccountRow {
+    pub email: String,
+    pub plan: String,
+    pub quota_json: String,
+}
+
+pub fn save_agy_account(email: &str, plan: &str, quota_json: &str) -> bool {
+    with_db(|c| {
+        c.execute(
+            "INSERT OR REPLACE INTO agy_account (id, email, plan, quota_json, updated_at)
+             VALUES (1, ?1, ?2, ?3, ?4)",
+            params![email, plan, quota_json, chrono::Utc::now().to_rfc3339()],
+        )
+        .ok()
+    })
+    .is_some()
+}
+
+pub fn load_agy_account() -> Option<AgyAccountRow> {
+    with_db(|c| {
+        c.query_row(
+            "SELECT email, plan, quota_json FROM agy_account WHERE id = 1",
+            [],
+            |r| {
+                Ok(AgyAccountRow {
+                    email: r.get(0)?,
+                    plan: r.get(1)?,
+                    quota_json: r.get(2)?,
+                })
+            },
+        )
+        .ok()
+    })
+}
+
+/// Xóa thông tin tài khoản agy (khi đăng xuất)
+pub fn clear_agy_account() -> bool {
+    with_db(|c| c.execute("DELETE FROM agy_account", []).ok()).is_some()
 }

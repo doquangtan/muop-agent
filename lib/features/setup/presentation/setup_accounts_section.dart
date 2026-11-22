@@ -20,9 +20,17 @@ class SetupAccountsSection extends StatefulWidget {
     required this.serverAddress,
     this.repository,
     this.claudeRepository,
+    this.showAgy = true,
+    this.showClaude = true,
   });
 
   final String serverAddress;
+
+  /// Hiện khối đăng nhập agy (chỉ khi agy đã cài trên máy server)
+  final bool showAgy;
+
+  /// Hiện khối đăng nhập Claude (chỉ khi Claude Code CLI đã cài trên máy server)
+  final bool showClaude;
 
   /// Mặc định dùng repository của app; test có thể truyền bản giả
   final AgyAuthRepository? repository;
@@ -38,7 +46,7 @@ class _SetupAccountsSectionState extends State<SetupAccountsSection> {
   AgyAuthRepository get _repo => widget.repository ?? AppDependencies.agyAuth;
 
   AgyAuthState? _state;
-  bool _loading = true;
+  late bool _loading = widget.showAgy;
   bool _busy = false;
   AccountsStatus _accounts = AccountsStatus.empty;
   final _claudeKey = GlobalKey<ClaudeAuthSectionState>();
@@ -52,7 +60,9 @@ class _SetupAccountsSectionState extends State<SetupAccountsSection> {
   @override
   void initState() {
     super.initState();
-    _updatesSub = _repo.updates.listen((s) => _onUpdate(s));
+    _updatesSub = _repo.updates.listen((s) {
+      if (widget.showAgy) _onUpdate(s);
+    });
     _reload();
   }
 
@@ -63,6 +73,11 @@ class _SetupAccountsSectionState extends State<SetupAccountsSection> {
   }
 
   Future<void> _reload() async {
+    // Agy chưa cài: không kiểm tra agy trên server (sẽ báo lỗi giả)
+    if (!widget.showAgy) {
+      if (mounted) setState(() => _loading = false);
+      return;
+    }
     setState(() {
       _loading = true;
       _actionError = null;
@@ -109,6 +124,9 @@ class _SetupAccountsSectionState extends State<SetupAccountsSection> {
     });
     if (wasLoggedIn != (_state?.loggedIn ?? false)) {
       // Đổi trạng thái đăng nhập agy thì gói và email cũng đổi theo
+      _refreshAccounts();
+    } else if (res.ok && res.loggedIn) {
+      // Server lấy lại email, gói từ hub (sau khi đăng nhập, hoặc định kỳ): tải lại để hiện thông tin mới
       _refreshAccounts();
     }
     if (!wasLoggedIn && (_state?.loggedIn ?? false)) {
@@ -191,7 +209,49 @@ class _SetupAccountsSectionState extends State<SetupAccountsSection> {
   @override
   Widget build(BuildContext context) {
     final textTheme = Theme.of(context).textTheme;
+    final children = <Widget>[
+      Align(
+        alignment: Alignment.centerRight,
+        child: IconButton(
+          tooltip: 'Kiểm tra lại',
+          onPressed: _busy
+              ? null
+              : () {
+                  _claudeKey.currentState?.reload();
+                  _reload();
+                },
+          icon: const Icon(Icons.refresh_rounded),
+        ),
+      ),
+    ];
 
+    if (widget.showAgy) {
+      children.add(_buildAgy(textTheme));
+      children.add(const SizedBox(height: 28));
+    }
+    if (widget.showClaude) {
+      children.add(_SectionTitle(text: 'Claude Code CLI', textTheme: textTheme));
+      children.add(const SizedBox(height: 8));
+      children.add(ClaudeAuthSection(
+        key: _claudeKey,
+        serverAddress: widget.serverAddress,
+        repository: widget.claudeRepository,
+      ));
+    }
+    if (!widget.showAgy && !widget.showClaude) {
+      children.add(Text(
+        'Chưa có CLI nào được cài trên máy server.',
+        style: textTheme.bodyMedium,
+      ));
+    }
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: children,
+    );
+  }
+
+  /// Khối đăng nhập agy: trạng thái, đăng nhập hoặc đăng xuất
+  Widget _buildAgy(TextTheme textTheme) {
     if (_loading) {
       return const Padding(
         padding: EdgeInsets.all(24),
@@ -210,19 +270,6 @@ class _SetupAccountsSectionState extends State<SetupAccountsSection> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        Align(
-          alignment: Alignment.centerRight,
-          child: IconButton(
-            tooltip: 'Kiểm tra lại',
-            onPressed: _busy
-                ? null
-                : () {
-                    _claudeKey.currentState?.reload();
-                    _reload();
-                  },
-            icon: const Icon(Icons.refresh_rounded),
-          ),
-        ),
         _SectionTitle(text: 'Antigravity (agy)', textTheme: textTheme),
         const SizedBox(height: 8),
         _StatusCard(
@@ -249,14 +296,6 @@ class _SetupAccountsSectionState extends State<SetupAccountsSection> {
           const SizedBox(height: 12),
           _ErrorBanner(message: _actionError!),
         ],
-        const SizedBox(height: 28),
-        _SectionTitle(text: 'Claude Code CLI', textTheme: textTheme),
-        const SizedBox(height: 8),
-        ClaudeAuthSection(
-          key: _claudeKey,
-          serverAddress: widget.serverAddress,
-          repository: widget.claudeRepository,
-        ),
       ],
     );
   }

@@ -104,9 +104,13 @@ pub(super) fn parse_single_agent_step(
     let step_agent = classify_step_agent(&step_type, &tool_calls, &content, &thinking);
     // Agy ghi khối ảnh đính kèm vào prompt: tách ra để hiển thị chữ sạch và đếm số ảnh
     let (user_content, image_paths) = if step_type == "USER_INPUT" {
-        crate::chat::attachments::split_agy_attachments(&clean_user_request_envelope(
-            &step_type, &content,
-        ))
+        let (text, paths) = crate::chat::attachments::split_agy_attachments(
+            &clean_user_request_envelope(&step_type, &content),
+        );
+        (
+            crate::chat::attachments::strip_agy_workdir_note(&text),
+            paths,
+        )
     } else {
         (
             clean_user_request_envelope(&step_type, &content),
@@ -146,7 +150,7 @@ pub(super) fn parse_transcript_file(
     file_modified: DateTime<Utc>,
     db_meta: Option<&DbConversationMeta>,
 ) -> Option<ParsedTranscript> {
-    let path = PathBuf::from(BRAIN_DIR_PATH)
+    let path = brain_root()
         .join(id)
         .join(".system_generated/logs/transcript.jsonl");
 
@@ -427,13 +431,14 @@ pub(super) fn parse_transcript_file(
         for f in &files_touched {
             if f.repo != "system" && f.repo != ".agents" {
                 project_name = f.repo.clone();
-                project_path = format!("{}/{}", ECOSYSTEM_DIR_PATH, f.repo);
+                project_path = crate::setup::workspace_root()
+                    .map(|r| r.join(&f.repo).to_string_lossy().into_owned())
+                    .unwrap_or_default();
                 break;
             }
         }
         if project_name.is_empty() {
-            project_name = "muop-erp-server".to_string();
-            project_path = format!("{}/muop-erp-server", ECOSYSTEM_DIR_PATH);
+            project_name = "(không rõ project)".to_string();
         }
     }
 

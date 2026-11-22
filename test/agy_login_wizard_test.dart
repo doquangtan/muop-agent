@@ -22,6 +22,7 @@ SetupStatus _setupDone() => SetupStatus.fromJson({
       'ok': true,
       'error': '',
       'completed': true,
+      'workspaceRoot': '/home/tester/project',
       'selectedClis': ['agy'],
       'tools': [
         for (final id in ['git', 'ssh', 'curl'])
@@ -68,6 +69,12 @@ class _FakeSetupRepository implements SetupRepository {
 
   @override
   Future<SetupStatus> complete() async => _setupDone();
+
+  @override
+  Future<SetupStatus> setWorkspace(String path) async => _setupDone();
+
+  @override
+  Future<SetupStatus> setToolPath(String tool, String path) async => _setupDone();
 
   @override
   Future<SetupStatus> configureSsh(String username) async => _setupDone();

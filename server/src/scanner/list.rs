@@ -5,7 +5,7 @@ pub fn scan_all_sessions(
     active_id: Option<&str>,
     max_sessions: usize,
 ) -> Vec<ConversationSession> {
-    let brain_dir = Path::new(BRAIN_DIR_PATH);
+    let brain_dir = brain_root();
     if !brain_dir.exists() {
         return Vec::new();
     }
@@ -24,7 +24,7 @@ pub fn scan_all_sessions(
 
     // 2. Quét nhanh transcript để bổ sung các subagent ID được spawn trong phiên làm việc
     let conv_id_re = Regex::new(r#""conversationId"\s*:\s*"([^"]+)""#).ok();
-    if let Ok(read_dir) = fs::read_dir(brain_dir) {
+    if let Ok(read_dir) = fs::read_dir(&brain_dir) {
         for entry in read_dir.flatten() {
             let path = entry.path();
             if path.is_dir() {
@@ -54,7 +54,7 @@ pub fn scan_all_sessions(
 
     let mut entries: Vec<(String, DateTime<Utc>)> = Vec::new();
 
-    if let Ok(read_dir) = fs::read_dir(brain_dir) {
+    if let Ok(read_dir) = fs::read_dir(&brain_dir) {
         for entry in read_dir.flatten() {
             let path = entry.path();
             if path.is_dir() {
@@ -118,7 +118,7 @@ pub fn scan_all_sessions(
         .cloned()
         .collect();
     raw_sessions.extend(load_subagent_transcripts(
-        Path::new(BRAIN_DIR_PATH),
+        &brain_root(),
         extra_roots,
         &db_meta_map,
     ));

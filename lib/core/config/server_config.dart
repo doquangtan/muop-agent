@@ -1,7 +1,7 @@
 /// Cấu hình mặc định và chuẩn hoá địa chỉ của Rust Server
 library;
 
-const String defaultHostAddress = '192.168.31.96:8787';
+const String defaultHostAddress = 'localhost:8787';
 const int defaultBridgePort = 8787;
 
 /// Danh sách model ban đầu trước khi có metadata đầu tiên. Model Claude cố định;

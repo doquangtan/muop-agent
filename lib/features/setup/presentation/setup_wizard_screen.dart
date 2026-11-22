@@ -5,10 +5,13 @@ import 'package:material_ui/material_ui.dart';
 import 'package:muop_agent/core/di/app_dependencies.dart';
 import 'package:muop_agent/core/theme/app_theme.dart';
 import 'package:muop_agent/features/agy_auth/domain/agy_auth_repository.dart';
+import 'package:muop_agent/features/chat/presentation/run_command_dialog.dart';
 import 'package:muop_agent/features/claude_auth/domain/claude_auth_repository.dart';
 import 'package:muop_agent/features/setup/domain/setup_entities.dart';
 import 'package:muop_agent/features/setup/domain/setup_repository.dart';
 import 'package:muop_agent/features/setup/presentation/setup_accounts_section.dart';
+import 'package:muop_agent/features/setup/presentation/tool_path_field.dart';
+import 'package:muop_agent/features/setup/presentation/workspace_root_field.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:muop_agent/core/state/server_address_provider.dart';
 
@@ -131,6 +134,7 @@ class _SetupWizardScreenState extends State<SetupWizardScreenView> {
   /// Setup đã đủ (khởi tạo, CLI đã cài); chỉ còn việc đăng nhập
   bool _onlyLoginLeft(SetupStatus s) =>
       s.completed &&
+      s.workspaceRoot.isNotEmpty &&
       s.selectedClis.isNotEmpty &&
       s.selectedClis.every(s.isInstalled) &&
       !s.tools.any((t) => t.group == 'base' && !t.installed);
@@ -161,7 +165,8 @@ class _SetupWizardScreenState extends State<SetupWizardScreenView> {
     }
   }
 
-  Future<void> _installAndContinue() async {
+  /// Cài các CLI đã chọn còn thiếu. [advance] = true thì sang bước đăng nhập khi xong.
+  Future<void> _runInstalls({required bool advance}) async {
     if (_selected.isEmpty) {
       setState(() => _message = 'Hãy chọn ít nhất một CLI');
       return;
@@ -182,6 +187,18 @@ class _SetupWizardScreenState extends State<SetupWizardScreenView> {
         return;
       }
     }
+    await _checkTools();
+    if (!mounted) return;
+    setState(() => _busy = false);
+    if (advance) await _continueToLogin();
+  }
+
+  /// Lưu CLI đã chọn và sang bước đăng nhập
+  Future<void> _continueToLogin() async {
+    setState(() {
+      _busy = true;
+      _message = '';
+    });
     final saved = await _repo.selectClis(
       _cliIds.where(_selected.contains).toList(),
     );
@@ -219,7 +236,10 @@ class _SetupWizardScreenState extends State<SetupWizardScreenView> {
   Widget build(BuildContext context) {
     final textTheme = Theme.of(context).textTheme;
     return Scaffold(
-      appBar: AppBar(title: const Text('Khởi tạo Mướp Agent')),
+      appBar: AppBar(
+        automaticallyImplyLeading: false,
+        title: const Text('Khởi tạo Mướp Agent'),
+      ),
       body: Center(
         child: ConstrainedBox(
           constraints: const BoxConstraints(maxWidth: 640),
@@ -244,7 +264,25 @@ class _SetupWizardScreenState extends State<SetupWizardScreenView> {
     );
   }
 
-  /// Chạy một lệnh SSH của server rồi cập nhật trạng thái (kể cả khi lệnh báo lỗi: server vẫn trả trạng thái SSH)
+  /// Gói bắt buộc (apt) còn thiếu; khi còn thì không hiện nút Tiếp tục
+  List<SetupAptPackage> get _blockingApt => _status.aptPackages
+      .where((p) => p.required && !p.installed)
+      .toList();
+
+  /// Mở terminal của "Máy này" và chạy lệnh cài gói apt do server tạo (`aptInstallCommand`).
+  /// Người dùng nhập mật khẩu sudo trực tiếp trong terminal; app không nhận hay lưu mật khẩu.
+  Future<void> _installAptWithSudo() async {
+    final command = _status.aptInstallCommand;
+    if (command.isEmpty) return;
+    await showRunCommandDialog(
+      context,
+      serverAddress: widget.serverAddress,
+      command: command,
+    );
+    if (!mounted) return;
+    await _checkTools();
+  }
+
   Widget _buildCheck(TextTheme textTheme) {
     final hasTools = _status.tools.isNotEmpty;
     final missing = _missingRequired;
@@ -262,7 +300,13 @@ class _SetupWizardScreenState extends State<SetupWizardScreenView> {
         if (_busy && !hasTools)
           const Center(child: CircularProgressIndicator())
         else
-          for (final tool in _status.tools) _ToolRow(tool: tool),
+          for (final tool in _status.tools)
+            _ToolRow(
+              tool: tool,
+              repository: _repo,
+              enabled: !_busy,
+              onSaved: (s) => setState(() => _status = s),
+            ),
         if (missing.isNotEmpty) ...[
           const SizedBox(height: 12),
           Text(
@@ -270,6 +314,56 @@ class _SetupWizardScreenState extends State<SetupWizardScreenView> {
             '${missing.map((t) => t.hint).where((h) => h.isNotEmpty).join('; ')}',
             style: textTheme.bodySmall?.copyWith(color: context.status.warning),
           ),
+        ],
+        if (_blockingApt.isNotEmpty) ...[
+          const SizedBox(height: 12),
+          Text(
+            'Cần cài đủ gói bắt buộc (${_blockingApt.map((p) => p.package).join(', ')}) '
+            'để tiếp tục.',
+            style: textTheme.bodySmall?.copyWith(color: context.status.warning),
+          ),
+        ],
+        const SizedBox(height: 20),
+        Text('Thư mục project', style: textTheme.titleMedium),
+        const SizedBox(height: 4),
+        Text(
+          'Thư mục chứa các project sẽ quét và sửa. Chọn xong rồi bấm Tiếp tục; '
+          'việc quét bắt đầu khi khởi tạo xong.',
+          style: textTheme.bodySmall,
+        ),
+        const SizedBox(height: 8),
+        WorkspaceRootField(
+          repository: _repo,
+          current: _status.workspaceRoot,
+          enabled: !_busy,
+          onSaved: (s) => setState(() => _status = s),
+        ),
+        if (_status.aptPackages.isNotEmpty) ...[
+          const SizedBox(height: 20),
+          Text('Gói hệ thống (apt)', style: textTheme.titleMedium),
+          const SizedBox(height: 4),
+          Text(
+            'Cài bằng sudo trong terminal của máy này. Danh sách do server quản lý.',
+            style: textTheme.bodySmall,
+          ),
+          const SizedBox(height: 8),
+          for (final pkg in _status.aptPackages) _AptPackageRow(pkg: pkg),
+          if (_status.aptInstallCommand.isNotEmpty) ...[
+            const SizedBox(height: 8),
+            OutlinedButton.icon(
+              onPressed: _busy ? null : _installAptWithSudo,
+              icon: const Icon(Icons.terminal_rounded),
+              label: const Text('Cài các gói còn thiếu bằng sudo'),
+            ),
+            const SizedBox(height: 4),
+            Text(
+              _status.aptInstallCommand,
+              style: textTheme.bodySmall?.copyWith(
+                fontFamily: 'monospace',
+                color: context.scheme.onSurfaceVariant,
+              ),
+            ),
+          ],
         ],
         const SizedBox(height: 20),
         Row(
@@ -287,12 +381,16 @@ class _SetupWizardScreenState extends State<SetupWizardScreenView> {
                 label: const Text('Kiểm tra lại'),
               ),
               const Spacer(),
-              FilledButton(
-                onPressed: _busy
-                    ? null
-                    : () => setState(() => _step = _SetupStep.choose),
-                child: const Text('Tiếp tục'),
-              ),
+              // Ẩn Tiếp tục khi còn công cụ, gói bắt buộc chưa cài, hoặc chưa chọn thư mục project
+              if (missing.isEmpty &&
+                  _blockingApt.isEmpty &&
+                  _status.workspaceRoot.isNotEmpty)
+                FilledButton(
+                  onPressed: _busy
+                      ? null
+                      : () => setState(() => _step = _SetupStep.choose),
+                  child: const Text('Tiếp tục'),
+                ),
             ],
           ],
         ),
@@ -303,7 +401,8 @@ class _SetupWizardScreenState extends State<SetupWizardScreenView> {
   Widget _buildChoose(TextTheme textTheme) {
     final job = _status.job;
     final showJob = job != null && job.running;
-    // Đã chọn CLI nào cài rồi thì không cần cài gì nữa: nút chỉ là "Tiếp tục"
+    // Phải có ít nhất một CLI đã cài mới được đi tiếp; chưa có thì nút là "Cài đã chọn"
+    final anyInstalled = _cliIds.any(_status.isInstalled);
     final needsInstall = _cliIds.any(
       (id) => _selected.contains(id) && !_status.isInstalled(id),
     );
@@ -351,10 +450,23 @@ class _SetupWizardScreenState extends State<SetupWizardScreenView> {
               child: const Text('Quay lại'),
             ),
             const Spacer(),
-            FilledButton(
-              onPressed: _busy ? null : _installAndContinue,
-              child: Text(needsInstall ? 'Cài & tiếp tục' : 'Tiếp tục'),
-            ),
+            if (!anyInstalled)
+              FilledButton(
+                onPressed: _busy || _selected.isEmpty
+                    ? null
+                    : () => _runInstalls(advance: false),
+                child: const Text('Cài đã chọn'),
+              )
+            else if (needsInstall)
+              FilledButton(
+                onPressed: _busy ? null : () => _runInstalls(advance: true),
+                child: const Text('Cài & tiếp tục'),
+              )
+            else
+              FilledButton(
+                onPressed: _busy ? null : _continueToLogin,
+                child: const Text('Tiếp tục'),
+              ),
           ],
         ),
       ],
@@ -373,10 +485,13 @@ class _SetupWizardScreenState extends State<SetupWizardScreenView> {
           style: textTheme.bodyMedium,
         ),
         const SizedBox(height: 16),
+        // Chỉ hiện đăng nhập/đăng xuất cho CLI đã cài trên máy
         SetupAccountsSection(
           serverAddress: widget.serverAddress,
           repository: _agyRepo,
           claudeRepository: widget.claudeRepository,
+          showAgy: _status.isInstalled('agy'),
+          showClaude: _status.isInstalled('claude'),
         ),
         const SizedBox(height: 12),
         const SizedBox(height: 8),
@@ -427,10 +542,59 @@ class _StepIndicator extends StatelessWidget {
   }
 }
 
+/// Một dòng trong danh sách gói apt (trạng thái + lý do cần)
+class _AptPackageRow extends StatelessWidget {
+  const _AptPackageRow({required this.pkg});
+
+  final SetupAptPackage pkg;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = context.scheme;
+    final textTheme = Theme.of(context).textTheme;
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 6),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Icon(
+            pkg.installed
+                ? Icons.check_circle_rounded
+                : Icons.radio_button_unchecked_rounded,
+            color: pkg.installed ? context.status.success : scheme.outline,
+            size: 20,
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text('${pkg.label} (${pkg.package})', style: textTheme.bodyLarge),
+                Text(
+                  pkg.note,
+                  style: textTheme.bodySmall?.copyWith(color: scheme.onSurfaceVariant),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
 class _ToolRow extends StatelessWidget {
-  const _ToolRow({required this.tool});
+  const _ToolRow({
+    required this.tool,
+    required this.repository,
+    required this.enabled,
+    required this.onSaved,
+  });
 
   final SetupTool tool;
+  final SetupRepository repository;
+  final bool enabled;
+  final ValueChanged<SetupStatus> onSaved;
 
   @override
   Widget build(BuildContext context) {
@@ -463,6 +627,16 @@ class _ToolRow extends StatelessWidget {
                     color: scheme.onSurfaceVariant,
                   ),
                 ),
+                if (!tool.installed) ...[
+                  const SizedBox(height: 8),
+                  ToolPathField(
+                    repository: repository,
+                    toolId: tool.id,
+                    current: tool.overridden,
+                    enabled: enabled,
+                    onSaved: onSaved,
+                  ),
+                ],
               ],
             ),
           ),

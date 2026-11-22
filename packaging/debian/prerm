@@ -1,0 +1,16 @@
+#!/bin/sh
+# Khi gỡ hẳn gói: dừng server đang chạy. Khi nâng cấp, postinst sẽ khởi động lại.
+set -e
+
+UNIT=muop-agent-server.service
+
+case "$1" in
+    remove)
+        loginctl list-users --no-legend 2>/dev/null | awk '{print $2}' | while read -r u; do
+            [ -n "$u" ] || continue
+            systemctl --machine="$u@" --user stop "$UNIT" >/dev/null 2>&1 || true
+        done
+        ;;
+esac
+
+exit 0

@@ -20,7 +20,7 @@ import UIKit
       return
     }
     let channel = FlutterMethodChannel(
-      name: "vn.muop.muop_agent/file_opener",
+      name: "vn.muop.agents/file_opener",
       binaryMessenger: registrar.messenger()
     )
     channel.setMethodCallHandler { [weak self] call, result in

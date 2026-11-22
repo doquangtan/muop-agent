@@ -1,5 +1,4 @@
 use crate::models::*;
-use crate::scanner;
 use axum::{
     body::Body,
     extract::Query,
@@ -17,11 +16,13 @@ use std::process::Command;
 use std::time::SystemTime;
 
 pub async fn handle_files_list(Query(params): Query<HashMap<String, String>>) -> impl IntoResponse {
+    // Mặc định mở ở thư mục home của người chạy server (không phải thư mục project)
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/".to_string());
     let raw_path = params
         .get("path")
         .map(|s| s.trim())
         .filter(|s| !s.is_empty())
-        .unwrap_or(scanner::ECOSYSTEM_DIR_PATH);
+        .unwrap_or(&home);
     let show_hidden = params
         .get("showHidden")
         .map(|s| s == "true" || s == "1")
@@ -57,10 +58,6 @@ pub async fn handle_files_list(Query(params): Query<HashMap<String, String>>) ->
                 None => continue,
             };
             if !show_hidden && name.starts_with('.') {
-                continue;
-            }
-            if name == ".git" || name == "target" || name == ".dart_tool" || name == "node_modules"
-            {
                 continue;
             }
             if let Ok(meta) = fs::metadata(&p) {

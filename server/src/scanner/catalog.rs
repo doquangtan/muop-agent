@@ -59,7 +59,7 @@ pub(super) fn parse_agy_models(output: &str) -> Vec<AgyModel> {
 }
 
 pub(super) fn run_agy_models() -> Option<Vec<AgyModel>> {
-    let output = Command::new(crate::chat::agy_bin())
+    let output = Command::new(crate::chat::agy_bin().ok()?)
         .arg("models")
         .output()
         .ok()?;
@@ -85,6 +85,19 @@ pub fn refresh_agy_models(output: &str) -> bool {
             true
         }
         Err(_) => false,
+    }
+}
+
+/// Lấy lại danh sách model ngay, bỏ qua TTL. Dùng sau khi đổi tài khoản agy: tài khoản khác có thể có model khác.
+/// Lỗi thì giữ danh sách cũ.
+pub fn reload_agy_models() {
+    let Some(models) = run_agy_models() else {
+        return;
+    };
+    if let Ok(mut cache) = agy_models_cache().lock() {
+        cache.models = models;
+        cache.fetched_at = Some(Instant::now());
+        cache.retry_at = None;
     }
 }
 

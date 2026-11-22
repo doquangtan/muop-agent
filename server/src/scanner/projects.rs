@@ -3,8 +3,9 @@ use super::*;
 pub fn discover_projects(sessions: &[ConversationSession]) -> Vec<ProjectWorkspace> {
     let mut project_map: HashMap<String, (String, usize, usize, Option<String>)> = HashMap::new();
 
-    if let Ok(entries) = fs::read_dir(ECOSYSTEM_DIR_PATH) {
-        for entry in entries.flatten() {
+    // Chưa khởi tạo (hoặc chưa chọn thư mục project) thì không quét project nào
+    if let Some(root) = crate::setup::workspace_root() {
+        for entry in fs::read_dir(root).into_iter().flatten().flatten() {
             let path = entry.path();
             if path.is_dir() {
                 if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
@@ -87,10 +88,12 @@ pub fn create_new_project(
         );
     }
 
-    let target_path = PathBuf::from(ECOSYSTEM_DIR_PATH).join(trimmed_name);
+    let root = crate::setup::workspace_root()
+        .ok_or("Chưa khởi tạo thư mục project (Cài đặt → Thư mục project)")?;
+    let target_path = root.join(trimmed_name);
     if target_path.exists() {
         return Err(format!(
-            "Dự án [{}] đã tồn tại trong thư mục muop-ecosystem",
+            "Dự án [{}] đã tồn tại trong thư mục project",
             trimmed_name
         ));
     }
@@ -200,9 +203,9 @@ pub fn scan_project_agents_and_skills(project_path: &Path) -> (Vec<CustomAgentSp
     }
 
     // 2. Thêm built-in skills từ ~/.gemini/antigravity/builtin/skills nếu chưa có
-    let builtin_skills_dir = Path::new("/home/john/.gemini/antigravity/builtin/skills");
+    let builtin_skills_dir = crate::infra::paths::antigravity_dir().join("builtin/skills");
     if builtin_skills_dir.exists() {
-        scan_agent_subdir(builtin_skills_dir, "skill", &mut specs);
+        scan_agent_subdir(&builtin_skills_dir, "skill", &mut specs);
     }
 
     // Lọc danh sách available_agents: Coordinator + các agent có kind == "agent"
@@ -215,11 +218,12 @@ pub fn scan_project_agents_and_skills(project_path: &Path) -> (Vec<CustomAgentSp
     (specs, available_agents)
 }
 
+/// Agent và skill tùy chỉnh của project đã cấu hình (`<thư mục project>/muop-erp-server`, nếu có)
 pub fn load_custom_agent_specs() -> Vec<CustomAgentSpec> {
-    let (specs, _) = scan_project_agents_and_skills(Path::new(&format!(
-        "{}/muop-erp-server",
-        ECOSYSTEM_DIR_PATH
-    )));
+    let Some(root) = crate::setup::workspace_root() else {
+        return Vec::new();
+    };
+    let (specs, _) = scan_project_agents_and_skills(&root.join("muop-erp-server"));
     specs
 }
 

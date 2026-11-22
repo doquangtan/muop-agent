@@ -8,6 +8,7 @@ void main() {
       'ok': true,
       'error': '',
       'completed': false,
+      'workspaceRoot': '/home/tester/project',
       'selectedClis': ['agy'],
       'tools': [
         {
@@ -63,6 +64,7 @@ void main() {
           'ok': true,
           'error': '',
           'completed': true,
+          'workspaceRoot': '/home/tester/project',
           'selectedClis': ['agy'],
           'tools': [
             {'id': 'git', 'label': 'Git', 'group': 'base', 'installed': true, 'path': '/usr/bin/git', 'installable': false, 'hint': ''},

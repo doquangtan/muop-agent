@@ -415,7 +415,8 @@ void main() {
     expect(find.text('Tài khoản'), findsOneWidget);
     expect(find.text('Antigravity (agy)'), findsOneWidget);
     expect(find.text('Claude Code CLI'), findsOneWidget);
-    expect(find.text('a@example.com · Gói Pro'), findsOneWidget);
-    expect(find.text('PRO'), findsOneWidget);
+    // Thẻ agy và thẻ Claude dùng chung một widget: email nằm riêng, gói hiện thành nhãn PRO
+    expect(find.text('a@example.com'), findsOneWidget);
+    expect(find.text('PRO'), findsNWidgets(2));
   });
 }

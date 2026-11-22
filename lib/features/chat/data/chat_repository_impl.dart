@@ -10,23 +10,27 @@ import 'package:muop_agent/features/chat/domain/chat_repository.dart';
 class ChatRepositoryImpl implements ChatRepository {
   final SocketGateway _gateway;
   ChatRepositoryImpl(this._gateway) {
-    _gateway.on('chat:stream').listen((data) {
-      if (_chatStreamController.isClosed || data == null) return;
-      try {
-        Map<String, dynamic>? map;
-        if (data is Map<String, dynamic>) {
-          map = data;
-        } else if (data is Map) {
-          map = Map<String, dynamic>.from(data);
-        } else if (data is String) {
-          map = jsonDecode(data) as Map<String, dynamic>;
-        }
-        if (map != null) {
-          final streamState = ChatTurnStreamState.fromJson(map);
-          _chatStreamController.add(streamState);
-        }
-      } catch (_) {}
-    });
+    _gateway.on('chat:stream').listen(_onStream);
+    // Lượt chạy trên máy phụ (qua cầu nối) đi vào cùng luồng, khóa theo conversation id
+    _gateway.on('bridge:chat:stream').listen(_onStream);
+  }
+
+  void _onStream(dynamic data) {
+    if (_chatStreamController.isClosed || data == null) return;
+    try {
+      Map<String, dynamic>? map;
+      if (data is Map<String, dynamic>) {
+        map = data;
+      } else if (data is Map) {
+        map = Map<String, dynamic>.from(data);
+      } else if (data is String) {
+        map = jsonDecode(data) as Map<String, dynamic>;
+      }
+      if (map != null) {
+        final streamState = ChatTurnStreamState.fromJson(map);
+        _chatStreamController.add(streamState);
+      }
+    } catch (_) {}
   }
 
   final StreamController<ChatTurnStreamState> _chatStreamController =

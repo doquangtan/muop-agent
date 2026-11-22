@@ -32,8 +32,6 @@ pub fn detect_lan_ips() -> Vec<String> {
             }
         }
     }
-    if ips.is_empty() {
-        ips.push("192.168.31.96".to_string());
-    }
+    // Không đoán IP khi không đọc được: danh sách rỗng, client tự dùng loopback/IP đã biết
     ips
 }

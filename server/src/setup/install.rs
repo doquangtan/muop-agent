@@ -5,6 +5,7 @@
 //!   server chỉ kiểm tra và báo lệnh cài thủ công.
 //! - Một job cài đặt chạy tại một thời điểm. Tiến trình đẩy ra qua `setup:update` (xem `super::publish`).
 
+use crate::infra::tools;
 use serde::Serialize;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -29,6 +30,13 @@ struct ToolSpec {
     bin: &'static str,
     install_script: Option<&'static str>,
     hint: &'static str,
+    /// Điều kiện bổ sung ngoài việc có `bin` (ví dụ `/dev/fuse` của FUSE). None: không có.
+    extra_check: Option<fn() -> bool>,
+}
+
+/// FUSE cần cả `/dev/fuse` (kernel) và `fusermount3` (gói fuse3) thì mount được thư mục project của máy khác
+fn dev_fuse_present() -> bool {
+    Path::new("/dev/fuse").exists()
 }
 
 const TOOLS: &[ToolSpec] = &[
@@ -39,6 +47,7 @@ const TOOLS: &[ToolSpec] = &[
         bin: "git",
         install_script: None,
         hint: "sudo apt install git",
+        extra_check: None,
     },
     ToolSpec {
         id: "ssh",
@@ -47,6 +56,7 @@ const TOOLS: &[ToolSpec] = &[
         bin: "ssh",
         install_script: None,
         hint: "sudo apt install openssh-client",
+        extra_check: None,
     },
     ToolSpec {
         id: "curl",
@@ -55,6 +65,7 @@ const TOOLS: &[ToolSpec] = &[
         bin: "curl",
         install_script: None,
         hint: "sudo apt install curl",
+        extra_check: None,
     },
     ToolSpec {
         id: "agy",
@@ -63,6 +74,7 @@ const TOOLS: &[ToolSpec] = &[
         bin: "agy",
         install_script: Some("curl -fsSL https://antigravity.google/cli/install.sh | bash"),
         hint: "",
+        extra_check: None,
     },
     ToolSpec {
         id: "claude",
@@ -71,6 +83,7 @@ const TOOLS: &[ToolSpec] = &[
         bin: "claude",
         install_script: Some("curl -fsSL https://claude.ai/install.sh | bash"),
         hint: "",
+        extra_check: None,
     },
     ToolSpec {
         id: "docker",
@@ -79,6 +92,7 @@ const TOOLS: &[ToolSpec] = &[
         bin: "docker",
         install_script: None,
         hint: "sudo apt install docker.io, để quản lý container qua SSH",
+        extra_check: None,
     },
     ToolSpec {
         id: "gopls",
@@ -87,6 +101,7 @@ const TOOLS: &[ToolSpec] = &[
         bin: "gopls",
         install_script: None,
         hint: "go install golang.org/x/tools/gopls@latest",
+        extra_check: None,
     },
     ToolSpec {
         id: "rust-analyzer",
@@ -95,6 +110,7 @@ const TOOLS: &[ToolSpec] = &[
         bin: "rust-analyzer",
         install_script: None,
         hint: "rustup component add rust-analyzer",
+        extra_check: None,
     },
     ToolSpec {
         id: "dart",
@@ -103,8 +119,132 @@ const TOOLS: &[ToolSpec] = &[
         bin: "dart",
         install_script: None,
         hint: "Cài Flutter SDK rồi thêm flutter/bin vào PATH",
+        extra_check: None,
+    },
+    ToolSpec {
+        id: "python3",
+        label: "Python 3 (tùy chọn)",
+        group: "optional",
+        bin: "python3",
+        install_script: None,
+        hint: "sudo apt install python3, để đồng bộ session Antigravity IDE",
+        extra_check: None,
+    },
+    ToolSpec {
+        id: "systemd-run",
+        label: "systemd-run (tùy chọn)",
+        group: "optional",
+        bin: "systemd-run",
+        install_script: None,
+        hint: "Có sẵn trên Ubuntu (systemd). Không có thì agent chạy trực tiếp, không tách khỏi server",
+        extra_check: None,
+    },
+    ToolSpec {
+        id: "muop-agent",
+        label: "Ứng dụng Linux Desktop (mở từ tray)",
+        group: "optional",
+        bin: "muop-agent",
+        install_script: None,
+        hint: "Cài file .deb (lệnh muop-agent), hoặc chọn tới tệp muop_agent của bản build dev",
+        extra_check: None,
+    },
+    ToolSpec {
+        id: "fuse",
+        label: "FUSE (fuse3, /dev/fuse)",
+        group: "base",
+        bin: "fusermount3",
+        install_script: None,
+        hint: "sudo apt install fuse3 (và /dev/fuse: sudo modprobe fuse), để mount project của máy khác",
+        extra_check: Some(dev_fuse_present),
     },
 ];
+
+/// Gói apt mà server quản lý. Thêm gói mới: thêm một dòng vào `APT_PACKAGES`.
+/// Gói được coi là có khi `bin` tìm thấy trên PATH và `extra_check` (nếu có) trả true.
+/// Server không tự chạy apt (cần root): chỉ tạo lệnh `sudo apt-get install -y ...` để người dùng chạy.
+pub struct AptPackage {
+    pub package: &'static str,
+    pub label: &'static str,
+    /// Lý do cần gói, hiển thị cho người dùng
+    pub note: &'static str,
+    /// Bắt buộc: chưa cài thì wizard không cho đi tiếp
+    pub required: bool,
+    pub bin: &'static str,
+    pub extra_check: Option<fn() -> bool>,
+}
+
+pub const APT_PACKAGES: &[AptPackage] = &[
+    AptPackage {
+        package: "git",
+        label: "Git",
+        note: "quản lý mã nguồn và xem thay đổi",
+        required: true,
+        bin: "git",
+        extra_check: None,
+    },
+    AptPackage {
+        package: "openssh-client",
+        label: "OpenSSH client",
+        note: "SSH tới các máy đã lưu",
+        required: true,
+        bin: "ssh",
+        extra_check: None,
+    },
+    AptPackage {
+        package: "curl",
+        label: "curl",
+        note: "tải installer của CLI",
+        required: true,
+        bin: "curl",
+        extra_check: None,
+    },
+    AptPackage {
+        package: "fuse3",
+        label: "FUSE (fusermount3, /dev/fuse)",
+        note: "mount project của máy khác để agent làm việc trên đó",
+        required: true,
+        bin: "fusermount3",
+        extra_check: Some(dev_fuse_present),
+    },
+];
+
+/// Trạng thái một gói apt
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct AptPackageStatus {
+    pub package: &'static str,
+    pub label: &'static str,
+    pub note: &'static str,
+    pub required: bool,
+    pub installed: bool,
+}
+
+pub fn probe_apt() -> Vec<AptPackageStatus> {
+    APT_PACKAGES
+        .iter()
+        .map(|p| AptPackageStatus {
+            package: p.package,
+            label: p.label,
+            note: p.note,
+            required: p.required,
+            installed: find_bin(p.bin).is_some() && p.extra_check.is_none_or(|check| check()),
+        })
+        .collect()
+}
+
+/// Lệnh cài các gói còn thiếu, rỗng nếu đã đủ. Chạy trong terminal của người dùng để họ nhập mật khẩu sudo.
+pub fn apt_install_command(packages: &[AptPackageStatus]) -> String {
+    let missing: Vec<&str> = packages
+        .iter()
+        .filter(|p| !p.installed)
+        .map(|p| p.package)
+        .collect();
+    if missing.is_empty() {
+        String::new()
+    } else {
+        format!("sudo apt-get install -y {}", missing.join(" "))
+    }
+}
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -114,6 +254,10 @@ pub struct ToolStatus {
     pub group: &'static str,
     pub installed: bool,
     pub path: String,
+    /// Nguồn đường dẫn: `override` (người dùng chọn), `which`, `dev` (bản build trong repo), hoặc rỗng
+    pub source: &'static str,
+    /// Đường dẫn người dùng đã lưu (rỗng nếu chưa chọn), để ô nhập hiển thị đúng giá trị
+    pub overridden: String,
     /// Server cài tự động được (chỉ các CLI)
     pub installable: bool,
     pub hint: &'static str,
@@ -171,43 +315,45 @@ pub fn user_shell_path_dirs() -> &'static [PathBuf] {
     })
 }
 
-/// Tìm file thực thi `name` trong ~/.local/bin, ~/.cargo/bin, /usr/local/bin, PATH của server
-/// và PATH của shell tương tác của user. Không chạy binary; chỉ kiểm tra file tồn tại và có quyền thực thi.
+/// Tìm công cụ `name` (xem `infra::tools`: đường dẫn người dùng chọn, rồi `which`).
+/// Tên `muop-agent` có thêm nhánh bản build dev trong repo.
 pub fn find_bin(name: &str) -> Option<PathBuf> {
-    let mut dirs: Vec<PathBuf> = Vec::new();
-    if let Some(home) = std::env::var_os("HOME") {
-        let home = PathBuf::from(home);
-        dirs.push(home.join(".local/bin"));
-        dirs.push(home.join(".cargo/bin"));
-    }
-    dirs.push(PathBuf::from("/usr/local/bin"));
-    if let Some(path) = std::env::var_os("PATH") {
-        dirs.extend(std::env::split_paths(&path));
-    }
-    dirs.extend(user_shell_path_dirs().iter().cloned());
-    dirs.into_iter()
-        .map(|d| d.join(name))
-        .find(|p| is_executable(p))
+    locate_tool(name).0
 }
 
-fn is_executable(p: &Path) -> bool {
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::metadata(p)
-        .map(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
-        .unwrap_or(false)
+/// Vị trí công cụ và nguồn tìm thấy
+pub fn locate_tool(bin: &str) -> (Option<PathBuf>, &'static str) {
+    let (path, source) = tools::locate(bin);
+    if path.is_some() || bin != "muop-agent" {
+        return (path, source);
+    }
+    match tools::dev_bundle_from_exe() {
+        Some(p) => (Some(p), "dev"),
+        None => (None, ""),
+    }
+}
+
+/// Tên binary của một công cụ theo `id` trong danh sách (dùng khi người dùng chọn đường dẫn)
+pub fn tool_bin(id: &str) -> Option<&'static str> {
+    TOOLS.iter().find(|t| t.id == id).map(|t| t.bin)
 }
 
 pub fn probe_all() -> Vec<ToolStatus> {
     TOOLS
         .iter()
         .map(|t| {
-            let path = find_bin(t.bin);
+            let (path, source) = locate_tool(t.bin);
+            let extra_ok = t.extra_check.is_none_or(|check| check());
             ToolStatus {
                 id: t.id,
                 label: t.label,
                 group: t.group,
-                installed: path.is_some(),
+                installed: path.is_some() && extra_ok,
                 path: path.map(|p| p.display().to_string()).unwrap_or_default(),
+                source,
+                overridden: tools::override_path(t.bin)
+                    .map(|p| p.display().to_string())
+                    .unwrap_or_default(),
                 installable: t.install_script.is_some(),
                 hint: t.hint,
             }
@@ -358,6 +504,49 @@ async fn pump<R: AsyncRead + Unpin>(stream: R) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fuse_is_a_required_base_tool_that_needs_dev_fuse() {
+        let fuse = TOOLS.iter().find(|t| t.id == "fuse").expect("có mục fuse");
+        assert_eq!(fuse.group, "base");
+        assert_eq!(fuse.bin, "fusermount3");
+        assert!(fuse.install_script.is_none(), "apt cần root, chỉ báo lệnh");
+        assert!(fuse.hint.contains("apt install fuse3"));
+        assert!(fuse.extra_check.is_some());
+    }
+
+    #[test]
+    fn apt_list_contains_required_packages_once() {
+        let names: Vec<&str> = APT_PACKAGES.iter().map(|p| p.package).collect();
+        for want in ["git", "openssh-client", "curl", "fuse3"] {
+            assert_eq!(names.iter().filter(|n| **n == want).count(), 1, "{want}");
+        }
+        assert!(APT_PACKAGES
+            .iter()
+            .find(|p| p.package == "fuse3")
+            .unwrap()
+            .extra_check
+            .is_some());
+    }
+
+    #[test]
+    fn apt_command_lists_only_missing_packages() {
+        let st = |package: &'static str, installed: bool| AptPackageStatus {
+            package,
+            label: "",
+            note: "",
+            required: true,
+            installed,
+        };
+        assert_eq!(
+            apt_install_command(&[st("git", true), st("fuse3", true)]),
+            ""
+        );
+        assert_eq!(
+            apt_install_command(&[st("git", true), st("curl", false), st("fuse3", false)]),
+            "sudo apt-get install -y curl fuse3"
+        );
+    }
 
     #[test]
     fn only_cli_tools_are_installable() {

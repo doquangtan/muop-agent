@@ -17,6 +17,12 @@ abstract class SetupRepository {
   /// Đánh dấu đã khởi tạo xong (vào màn hình chính)
   Future<SetupStatus> complete();
 
+  /// Lưu thư mục project (đường dẫn tuyệt đối, server kiểm tra). Việc quét chỉ bắt đầu sau khi khởi tạo xong.
+  Future<SetupStatus> setWorkspace(String path);
+
+  /// Đặt đường dẫn một công cụ khi server không tìm thấy bằng `which`. Chuỗi rỗng = bỏ lựa chọn.
+  Future<SetupStatus> setToolPath(String tool, String path);
+
   /// Đặt user SSH của máy này (đổi user thì phải thử đăng nhập lại)
   Future<SetupStatus> configureSsh(String username);
 

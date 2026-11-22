@@ -107,6 +107,7 @@ pub async fn handle_claude_respond(
             agent_name: String::new(),
             model: req.model,
             images: Vec::new(),
+            remote_project: None,
         },
     )
     .await;

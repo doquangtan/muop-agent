@@ -1,4 +1,4 @@
-package vn.muop.muop_agent
+package vn.muop.agents
 
 import android.content.ContentValues
 import android.content.Intent
@@ -17,7 +17,7 @@ import java.io.File
 import java.io.IOException
 
 class MainActivity : FlutterActivity() {
-    private val channelName = "vn.muop.muop_agent/file_opener"
+    private val channelName = "vn.muop.agents/file_opener"
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)

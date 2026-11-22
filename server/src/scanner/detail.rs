@@ -19,7 +19,7 @@ pub(super) fn get_single_session_inner(
     if let Some(session) = crate::claude::code::get_session(session_id, active_streams) {
         return Some(session);
     }
-    let brain_dir = Path::new(BRAIN_DIR_PATH);
+    let brain_dir = brain_root();
 
     let db_meta_map = load_conversation_summary_meta();
     // Nếu session_id là child subagent, tự động chuyển sang đọc session cha
@@ -47,7 +47,7 @@ pub(super) fn get_single_session_inner(
 
     // Transcript của sub-agent, kể cả agent cháu do sub-agent gọi
     let raw_sessions = load_subagent_transcripts(
-        brain_dir,
+        &brain_dir,
         parsed
             .spawned_subagents
             .iter()
@@ -203,7 +203,7 @@ pub fn get_session_steps_page(
     if let Some(page) = crate::claude::code::get_steps_page(session_id, before_step, limit) {
         return Some(page);
     }
-    let brain_dir = Path::new(BRAIN_DIR_PATH);
+    let brain_dir = brain_root();
     let session_dir = brain_dir.join(session_id);
     if !session_dir.exists() {
         return None;

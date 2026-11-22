@@ -37,10 +37,7 @@ pub struct PreparedImage {
 }
 
 fn uploads_dir() -> PathBuf {
-    let home = std::env::var("HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| PathBuf::from("/home/john"));
-    home.join(".local/share/muop-agent/uploads")
+    crate::infra::paths::app_data_dir().join("uploads")
 }
 
 /// Kiểm tra, chuẩn hoá và lưu toàn bộ ảnh của một tin nhắn.
@@ -159,6 +156,25 @@ pub fn claude_stream_input_line(prompt: &str, images: &[PreparedImage]) -> Strin
         "message": {"role": "user", "content": content},
     });
     format!("{msg}\n")
+}
+
+/// Đầu dòng chỉ dẫn thư mục làm việc, gắn vào prompt agy khi project nằm trên mount (xem `fsmount`)
+pub const AGY_WORKDIR_HEADER: &str = "[Thư mục làm việc]";
+
+/// Chỉ dẫn thư mục làm việc cho agy. Agy không nhận đường dẫn project qua tham số, và một conversation
+/// tiếp tục có thể còn nhớ đường dẫn cũ trong lịch sử (đã gặp: ghi vào repo local thay vì mount).
+pub fn agy_workdir_note(cwd: &str) -> String {
+    format!(
+        "\n\n{AGY_WORKDIR_HEADER} {cwd}. Mọi thao tác đọc/ghi file và lệnh shell phải dùng thư mục này, không dùng đường dẫn cũ trong lịch sử hội thoại."
+    )
+}
+
+/// Bỏ chỉ dẫn thư mục làm việc khỏi nội dung hiển thị (phần chữ đứng sau dòng chỉ dẫn bị cắt)
+pub fn strip_agy_workdir_note(text: &str) -> String {
+    match text.find(&format!("\n\n{AGY_WORKDIR_HEADER} ")) {
+        Some(pos) => text[..pos].trim_end().to_string(),
+        None => text.to_string(),
+    }
 }
 
 /// Prompt gửi agy: nội dung người dùng, kèm khối liệt kê đường dẫn ảnh để agent mở bằng tool đọc file.
@@ -453,5 +469,25 @@ mod tests {
     #[test]
     fn pct_encode_escapes_spaces_and_unicode() {
         assert_eq!(pct_encode("a b/é.png"), "a%20b/%C3%A9.png");
+    }
+
+    #[test]
+    fn workdir_note_is_hidden_from_the_displayed_text() {
+        let prompt = format!("Tạo file a.txt{}", agy_workdir_note("/mnt/p"));
+        assert!(prompt.contains("/mnt/p"));
+        assert_eq!(strip_agy_workdir_note(&prompt), "Tạo file a.txt");
+        // Không có chỉ dẫn thì giữ nguyên
+        assert_eq!(strip_agy_workdir_note("Chỉ có chữ"), "Chỉ có chữ");
+    }
+
+    #[test]
+    fn workdir_note_survives_before_attachments_block() {
+        let prompt = format!(
+            "Xem ảnh{}\n\n{AGY_BLOCK_HEADER}\n- /tmp/x.png\n",
+            agy_workdir_note("/mnt/p")
+        );
+        let (text, paths) = split_agy_attachments(&prompt);
+        assert_eq!(paths, vec!["/tmp/x.png".to_string()]);
+        assert_eq!(strip_agy_workdir_note(&text), "Xem ảnh");
     }
 }

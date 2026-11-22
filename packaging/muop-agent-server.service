@@ -1,0 +1,17 @@
+# Unit systemd --user của muop-agent-server (cài vào /usr/lib/systemd/user).
+# Restart=on-failure: nút "Thoát" ở tray thoát với mã 0 nên không bị bật lại.
+[Unit]
+Description=Muop Agent Server Engine (Rust Backend)
+After=network.target graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/muop-agent-server
+Restart=on-failure
+RestartSec=2s
+KillMode=process
+Environment=RUST_LOG=info
+LimitNOFILE=65535
+
+[Install]
+WantedBy=default.target

@@ -24,14 +24,19 @@ impl Tray for MuopAgentTray {
     }
 
     fn icon_theme_path(&self) -> String {
-        let home = std::env::var("HOME").unwrap_or_else(|_| "/home/john".to_string());
-        format!("{}/.local/share/icons/muop-agent", home)
+        crate::infra::paths::home_dir()
+            .join(".local/share/icons/muop-agent")
+            .display()
+            .to_string()
     }
 
     fn tool_tip(&self) -> ToolTip {
         ToolTip {
             title: "Mướp Agent Server Engine".to_string(),
-            description: "📡 Cổng: 0.0.0.0:8787 • Socket.IO Realtime Active".to_string(),
+            description: format!(
+                "📡 Cổng: 0.0.0.0:{} • Socket.IO Realtime Active",
+                crate::scanner::listen_port()
+            ),
             icon_name: "muop-agent-server".to_string(),
             icon_pixmap: Vec::new(),
         }
@@ -74,7 +79,10 @@ impl Tray for MuopAgentTray {
     fn menu(&self) -> Vec<MenuItem<Self>> {
         vec![
             StandardItem {
-                label: "🦀 Mướp Agent Server (0.0.0.0:8787)".to_string(),
+                label: format!(
+                    "🦀 Mướp Agent Server (0.0.0.0:{})",
+                    crate::scanner::listen_port()
+                ),
                 enabled: false,
                 ..Default::default()
             }
@@ -94,7 +102,10 @@ impl Tray for MuopAgentTray {
                 icon_name: "web-browser".to_string(),
                 activate: Box::new(|_| {
                     let _ = std::process::Command::new("xdg-open")
-                        .arg("http://localhost:8787/api/meta")
+                        .arg(format!(
+                            "http://localhost:{}/api/meta",
+                            crate::scanner::listen_port()
+                        ))
                         .spawn();
                 }),
                 ..Default::default()
@@ -105,17 +116,6 @@ impl Tray for MuopAgentTray {
                 checked: self.screen.is_active(),
                 enabled: true,
                 activate: Box::new(|this: &mut Self| this.screen.toggle()),
-                ..Default::default()
-            }
-            .into(),
-            StandardItem {
-                label: "📂 Mở Thư mục muop-agent".to_string(),
-                icon_name: "folder".to_string(),
-                activate: Box::new(|_| {
-                    let _ = std::process::Command::new("xdg-open")
-                        .arg("/home/john/Documents/muop-ecosystem/muop-agent")
-                        .spawn();
-                }),
                 ..Default::default()
             }
             .into(),
@@ -138,6 +138,7 @@ impl Tray for MuopAgentTray {
                 icon_name: "application-exit".to_string(),
                 activate: Box::new(|_| {
                     eprintln!("🛑 Nhận lệnh Thoát từ System Tray Menu. Đang tắt server...");
+                    // Thoát sạch (mã 0). Unit systemd dùng Restart=on-failure nên không bật lại.
                     std::process::exit(0);
                 }),
                 ..Default::default()
@@ -171,17 +172,26 @@ pub fn refresh() {
     }
 }
 
+/// Mở ứng dụng Linux Desktop: `muop-agent` trong PATH (bản .deb) hoặc bản build dev; không tìm thấy thì
+/// ghi log hướng dẫn chọn đường dẫn trong Khởi tạo. Không mở thư mục thay thế.
 fn launch_linux_app() {
-    let app_path =
-        "/home/john/Documents/muop-ecosystem/muop-agent/build/linux/x64/release/bundle/muop_agent";
-    if std::path::Path::new(app_path).exists() {
-        let _ = std::process::Command::new("systemd-run")
-            .args(["--user", app_path])
-            .spawn();
-    } else {
-        let _ = std::process::Command::new("xdg-open")
-            .arg("/home/john/Documents/muop-ecosystem/muop-agent")
-            .spawn();
+    let Some(app_path) = crate::infra::tools::app_launcher() else {
+        tracing::error!("{}", crate::infra::tools::missing_message("muop-agent"));
+        return;
+    };
+    // systemd-run --user: app chạy trong user manager nên nhận DISPLAY/WAYLAND_DISPLAY của phiên đồ họa.
+    // Không có systemd-run thì mở trực tiếp.
+    let app = app_path.to_string_lossy().into_owned();
+    let via_systemd = crate::infra::tools::resolve("systemd-run").and_then(|sr| {
+        std::process::Command::new(sr)
+            .args(["--user", &app])
+            .spawn()
+            .ok()
+    });
+    if via_systemd.is_none() {
+        if let Err(e) = std::process::Command::new(&app_path).spawn() {
+            tracing::error!("Không mở được ứng dụng {}: {}", app, e);
+        }
     }
 }
 

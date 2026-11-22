@@ -7,7 +7,7 @@ extension _CanvasExtWelcome on _ChatCanvasViewState {
     final projectName =
         widget.selectedProject?.name ??
         widget.session?.projectName ??
-        'muop-erp-server';
+        'Chưa chọn project';
 
     final quickStarters = [
       (

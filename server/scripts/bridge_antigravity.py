@@ -6,6 +6,7 @@ import json
 import asyncio
 import urllib.request
 import subprocess
+import shutil
 
 CDP_JSON_URL = "http://127.0.0.1:41819/json"
 
@@ -113,7 +114,7 @@ async def submit_via_cdp(conv_id, prompt, model, cwd):
         await asyncio.sleep(0.15)
 
         # Track transcript log file
-        transcript_path = f"/home/john/.gemini/antigravity/brain/{actual_conv_id}/.system_generated/logs/transcript.jsonl"
+        transcript_path = os.path.expanduser(f"~/.gemini/antigravity/brain/{actual_conv_id}/.system_generated/logs/transcript.jsonl")
         start_size = os.path.getsize(transcript_path) if os.path.exists(transcript_path) else 0
 
         # 5. Click Send button or dispatch Enter
@@ -268,7 +269,7 @@ async def submit_via_cdp(conv_id, prompt, model, cwd):
         return True
 
 def fallback_agy_cli(conv_id, prompt, model, cwd):
-    agy_bin = "/home/john/.local/bin/agy" if os.path.exists("/home/john/.local/bin/agy") else "/home/john/.gemini/bin/agy"
+    agy_bin = shutil.which("agy") or "agy"  # dò trong PATH, không đoán đường dẫn cố định
     args = [
         agy_bin,
         "--app_data_dir=antigravity",
@@ -326,7 +327,7 @@ def main():
         conv_id = sys.argv[2] if len(sys.argv) > 2 else ""
         prompt = sys.argv[3] if len(sys.argv) > 3 else ""
         model = sys.argv[4] if len(sys.argv) > 4 else "gemini-3.8-flash-high"
-        cwd = sys.argv[5] if len(sys.argv) > 5 else "/home/john/Documents/muop-ecosystem/muop-erp-server"
+        cwd = sys.argv[5] if len(sys.argv) > 5 else os.getcwd()
 
         success = False
         try:

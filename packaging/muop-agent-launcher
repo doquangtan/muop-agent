@@ -1,0 +1,3 @@
+#!/bin/sh
+# Mở ứng dụng Linux Desktop đã cài trong /usr/lib/muop-agent
+exec /usr/lib/muop-agent/muop_agent "$@"

@@ -1,0 +1,14 @@
+#!/bin/sh
+# Gỡ gói: bỏ bật tự chạy. Dữ liệu người dùng (~/.local/share/muop-agent) được giữ lại.
+set -e
+
+UNIT=muop-agent-server.service
+
+case "$1" in
+    remove|purge)
+        systemctl --global disable "$UNIT" >/dev/null 2>&1 || true
+        update-desktop-database -q /usr/share/applications >/dev/null 2>&1 || true
+        ;;
+esac
+
+exit 0

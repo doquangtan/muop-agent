@@ -30,6 +30,14 @@ class SetupRepositoryImpl implements SetupRepository {
   Future<SetupStatus> complete() => _command('setup:complete');
 
   @override
+  Future<SetupStatus> setWorkspace(String path) =>
+      _command('setup:workspace', {'path': path});
+
+  @override
+  Future<SetupStatus> setToolPath(String tool, String path) =>
+      _command('setup:tool-path', {'tool': tool, 'path': path});
+
+  @override
   Future<SetupStatus> configureSsh(String username) =>
       _command('setup:ssh:configure', {'username': username});
 

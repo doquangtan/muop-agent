@@ -41,10 +41,7 @@ pub(super) fn agy_model(raw: &str) -> String {
     }
 }
 
-pub(crate) fn agy_bin() -> &'static str {
-    if Path::new("/home/john/.local/bin/agy").exists() {
-        "/home/john/.local/bin/agy"
-    } else {
-        "/home/john/.gemini/bin/agy"
-    }
+/// Lệnh `agy`: dò bằng `which` hoặc đường dẫn người dùng đã chọn trong Khởi tạo
+pub(crate) fn agy_bin() -> Result<String, String> {
+    crate::infra::tools::require("agy")
 }
