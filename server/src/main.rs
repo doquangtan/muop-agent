@@ -1,5 +1,6 @@
 mod agy_auth;
 mod api;
+mod bridge;
 mod chat;
 mod claude;
 mod claude_auth;
@@ -43,6 +44,9 @@ async fn main() {
     app_state.screen.start_rtsp_server();
 
     socket::setup_socket_handlers(&io, app_state.clone());
+
+    // Bridge tới máy A (nếu đã cấu hình): gửi lệnh và chuyển tiếp sự kiện của A
+    bridge::start(io.clone());
 
     // Lượt chat còn chạy từ trước khi server khởi động lại: đưa lại vào trạng thái stream
     let adopt_state = app_state.clone();

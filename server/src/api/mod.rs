@@ -1,4 +1,5 @@
 pub mod agy_auth;
+pub mod bridge;
 pub mod chat;
 pub mod claude;
 pub mod claude_auth;
@@ -181,4 +182,9 @@ pub fn router() -> Router<AppState> {
             "/api/ai-questions/answer",
             post(claude::handle_ai_question_answer),
         )
+        .route("/api/bridge/status", get(bridge::handle_status))
+        .route("/api/bridge/peer", post(bridge::handle_set_peer))
+        .route("/api/bridge/send", post(bridge::handle_send))
+        .route("/api/bridge/stop", post(bridge::handle_stop))
+        .route("/api/bridge/respond", post(bridge::handle_respond))
 }

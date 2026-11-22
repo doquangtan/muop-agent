@@ -507,3 +507,10 @@ lsof -i :8787
   5. **Dọn rác trên Mac (bắt buộc sau mỗi lần build):** `rm -rf build .dart_tool` trong `/Volumes/Untitled/muop-agent`, và xóa thư mục tạm `Payload`/`ipa-stage` nếu còn. Giữ lại `muop-agent-trollstore.ipa`, `muop-agent-trollstore.prev.ipa` và `muop-agent-release.apk`.
   6. **Copy IPA về root project (bắt buộc sau khi build IPA thành công):** `scp johndylan@192.168.31.149:/Volumes/Untitled/muop-agent/muop-agent-trollstore.ipa ./muop-agent-trollstore.ipa` từ thư mục gốc project trên máy Linux (cùng cách dùng `SSH_ASKPASS` như trên). Kiểm tra kích thước khớp với file trên Mac (`stat -f %z` trên Mac, `stat -c %s` trên Linux). File này nằm trong `.gitignore` (`*.ipa`) nên không commit.
 - Trạng thái: bundle `com.muop.muopAgent`. Build IPA đã chạy được; chưa kiểm chứng cài bằng TrollStore trên thiết bị. Lưu ý `flutter pub get` trên Mac có thể ghi lại `analysis_options.yaml` và `pubspec.lock` của bản copy đó.
+
+### 8.9. Bridge giữa hai máy (`server/src/bridge/`, `server/src/api/bridge.rs`)
+- Máy B (server + bridge) điều khiển agent trên máy A qua REST và Socket.IO của A. Chi tiết API ở `docs/API.md` mục 18. Đang trong nhánh `feature/machine-bridge`.
+- Địa chỉ máy A lưu trong `app_settings` (`bridge_peer_url`), không có biến môi trường. Thử nghiệm trên một máy: chạy server thứ hai với `HOME=<thư mục tạm>` và `PORT=8790`, để không ghi vào DB thật (`~/.local/share/muop-agent/muop-agent.db` lấy theo `HOME`). Nếu dùng chung DB, `bridge_peer_url` trỏ vào chính server đó sẽ tạo vòng kết nối tự tới chính mình.
+- Client Socket.IO tự viết trên `tokio-tungstenite` (chỉ WebSocket). Không dùng `rust_socketio` 0.6: với server này, payload lớn qua polling bị lỗi JSON và qua WebSocket không nhận được event.
+- Trả lời agy: gửi lượt mới bằng `/api/bridge/send` với `conversationId`. `/api/ai-questions/answer` không gửi gì tới tiến trình agy.
+- Chưa có xác thực (có chủ đích, chỉ dùng trong LAN/VPN tin cậy). Không đưa cổng 8787 ra internet.
