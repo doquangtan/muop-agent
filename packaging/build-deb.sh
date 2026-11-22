@@ -44,7 +44,8 @@ mkdir -p \
     "$STAGE/usr/lib/$PKG" \
     "$STAGE/usr/lib/systemd/user" \
     "$STAGE/usr/share/applications" \
-    "$STAGE/usr/share/icons/hicolor/512x512/apps"
+    "$STAGE/usr/share/icons/hicolor/512x512/apps" \
+    "$STAGE/usr/share/icons/hicolor/256x256/apps"
 
 install -m 0755 "$SERVER_BIN" "$STAGE/usr/bin/muop-agent-server"
 cp -a "$BUNDLE/." "$STAGE/usr/lib/$PKG/"
@@ -55,6 +56,10 @@ install -m 0644 "$ROOT/packaging/vn.muop.agents.desktop" \
     "$STAGE/usr/share/applications/vn.muop.agents.desktop"
 python3 -I -c "from PIL import Image; Image.open('$ROOT/assets/logo.png').convert('RGBA').resize((512,512), Image.LANCZOS).save('$STAGE/usr/share/icons/hicolor/512x512/apps/vn.muop.agents.png')" \
     || install -m 0644 "$ROOT/assets/logo.png" "$STAGE/usr/share/icons/hicolor/512x512/apps/vn.muop.agents.png"
+# Icon của tray (server): tên trùng icon_name trong server/src/infra/tray.rs. Tray không có theme riêng,
+# nên icon phải nằm trong hicolor của hệ thống để GNOME/AppIndicator tìm thấy.
+python3 -I -c "from PIL import Image; Image.open('$ROOT/assets/logo.png').convert('RGBA').resize((256,256), Image.LANCZOS).save('$STAGE/usr/share/icons/hicolor/256x256/apps/muop-agent-server.png')" \
+    || install -m 0644 "$ROOT/assets/logo.png" "$STAGE/usr/share/icons/hicolor/256x256/apps/muop-agent-server.png"
 
 echo "==> Tính phụ thuộc thư viện (dpkg-shlibdeps)"
 SHLIB_DIR="$OUT/shlibs"
