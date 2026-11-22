@@ -28,6 +28,7 @@ Tài liệu này mô tả toàn bộ REST API và sự kiện Socket.IO do Rust 
 15. [Language server và mã nguồn](#15-language-server-và-mã-nguồn)
 16. [Docker qua SSH](#16-docker-qua-ssh)
 17. [Socket.IO](#17-socketio)
+18. [Bridge (máy B điều khiển máy A)](#18-bridge-máy-b-điều-khiển-máy-a)
 
 ---
 
@@ -551,6 +552,41 @@ Ngay khi kết nối, server gửi: `retry:update`, `screen:status`, `setup:upda
 - `chat:send` ghi lại ack `ChatSendResponse`, còn `chat:stream` là luồng tiến độ. Trạng thái các lượt đang chạy lấy từ `streams:update`, không suy ra từ `chat:stream` đã nhận trước đó.
 - Phiên terminal SSH và Docker tồn tại độc lập với client. Thoát màn hình chỉ tách khỏi phiên; mở lại bằng `ssh:list` và `ssh:attach`.
 - Phiên SSH không được dùng (input/attach) quá 6 giờ thì tự đóng.
+
+---
+
+## 18. Bridge (máy B điều khiển máy A)
+
+Server máy B kết nối tới server máy A để gửi lệnh tới agent đang chạy trên A và nhận sự kiện của A. Mã nguồn: `server/src/bridge/` (kết nối, giao thức Socket.IO tối thiểu), `server/src/api/bridge.rs` (REST). Chỉ dùng WebSocket; chưa có xác thực (chỉ dùng trong LAN/VPN tin cậy).
+
+Địa chỉ máy A lưu trong `app_settings` (khoá `bridge_peer_url`). Server tự kết nối lại khi khởi động và khi mất kết nối (backoff 1 → 30 giây).
+
+### 18.1. REST trên máy B
+
+| Route | Body | Phản hồi |
+| :--- | :--- | :--- |
+| `GET /api/bridge/status` | | `{ url, connected, error }` |
+| `POST /api/bridge/peer` | `{ "url": "http://IP:8787" }` (rỗng để ngắt) | Trạng thái mới. Chỉ nhận `http://`. |
+| `POST /api/bridge/send` | Như `POST /api/chat/send` của A (`prompt`, `conversationId`, `projectPath`, `model`, `images`) | Ack của A (`ChatSendResponse`). |
+| `POST /api/bridge/stop` | `{ "conversationId" }` | Ack của A (`chat:stop`). |
+| `POST /api/bridge/respond` | Như `POST /api/claude/respond` của A | Proxy phản hồi của A. |
+
+Lỗi kết nối tới A trả HTTP 503 (`send`, `stop`) hoặc 502 (`respond`) kèm `{ ok: false, error }`. Lỗi nghiệp vụ của A (ví dụ 409 khi tương tác không còn chờ) được trả nguyên trong body.
+
+Nhãn nguồn: `send` thêm `[Từ máy <hostname máy B>] ` vào đầu `prompt` trước khi gửi tới A.
+
+**Trả lời agy:** không có route riêng. `POST /api/ai-questions/answer` của A chỉ cập nhật trạng thái hiển thị và không gửi gì tới tiến trình agy. Muốn agent nhận câu trả lời, gửi lượt mới bằng `POST /api/bridge/send` với `conversationId` của conversation đó.
+
+### 18.2. Sự kiện trên máy B
+
+Các sự kiện của A được chuyển tiếp với tiền tố `bridge:`: `bridge:chat:stream`, `bridge:session:update`, `bridge:streams:update`, `bridge:ai-question:answered`, `bridge:retry:update`, `bridge:quotas:update`. Không chuyển `sessions:list` và `meta:update` (payload hàng trăm KB).
+
+`bridge:status` (`{ url, connected, error }`) phát khi trạng thái kết nối đổi.
+
+### 18.3. Ghi chú kỹ thuật
+
+- Client Socket.IO tự viết trên `tokio-tungstenite`, không dùng `rust_socketio` 0.6: đã kiểm chứng với server này, bản đó không nhận được payload lớn qua polling và không nhận được gì qua WebSocket (spike ngoài repo).
+- Lệnh gửi tới A dùng ack với thời hạn 30 giây. Khi chưa kết nối, lệnh bị từ chối ngay (không xếp hàng).
 
 ---
 
