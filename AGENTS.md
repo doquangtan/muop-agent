@@ -301,6 +301,7 @@ lsof -i :8787
 - Ghi nhận từ tool `Edit`/`Write`/`MultiEdit`/`NotebookEdit` (`record_side_effects`), `source` để trống.
 - Thay đổi làm bằng `Bash` được suy ra bởi `detect_bash_file_changes`: `git status --porcelain` (cache 5 giây) và mtime nằm trong khoảng từ bước gọi Bash đến bước kế tiếp. Các bản ghi này có `source: "bash"`. Bỏ qua thư mục build/cache và file nhị phân (`is_build_or_binary_path`).
 - Hạn chế: không có số dòng +/- cho thay đổi từ Bash; file lock (`Cargo.lock`, `pubspec.lock`) vẫn được tính.
+- File bị xóa bởi Bash: `detect_bash_deletions` (`claude/code/file_changes.rs`) đọc đường dẫn từ `rm`, `unlink`, `git rm` trong lệnh (bỏ qua flag, glob, biến shell, chuyển hướng). Chỉ ghi nhận `deleted` khi file đã biết trong session (agent tạo/sửa trước đó) hoặc đang được git theo dõi, để tránh ghi nhận nhầm khi gõ sai tên. Chưa xử lý: xóa bằng glob (`rm *.txt`), xóa qua biến hoặc script, và file có sẵn từ trước session trong thư mục không phải git.
 
 ### 8.5. Giao diện chat (`lib/ui/widgets/chat_canvas_view.dart`)
 - Mỗi lượt là một thẻ AI (`aiTurnCard`) căn trái, bề rộng tối đa bằng bong bóng user (660 desktop, 320 mobile). Nhãn model nhỏ nằm ngoài thẻ, phía dưới bên trái.
@@ -509,7 +510,7 @@ lsof -i :8787
 - Trạng thái: bundle `com.muop.muopAgent`. Build IPA đã chạy được; chưa kiểm chứng cài bằng TrollStore trên thiết bị. Lưu ý `flutter pub get` trên Mac có thể ghi lại `analysis_options.yaml` và `pubspec.lock` của bản copy đó.
 
 ### 8.9. Bridge giữa hai máy (`server/src/bridge/`, `server/src/api/bridge.rs`)
-- Máy B (server + bridge) điều khiển agent trên máy A qua REST và Socket.IO của A. Chi tiết API ở `docs/API.md` mục 18. Đang trong nhánh `feature/machine-bridge`.
+- Máy B (server + bridge) điều khiển agent trên máy A qua REST và Socket.IO của A. Chi tiết API ở `docs/API.md` mục 18. Đã merge vào `main` (`feature/machine-bridge`).
 - Địa chỉ máy A lưu trong `app_settings` (`bridge_peer_url`), không có biến môi trường. Thử nghiệm trên một máy: chạy server thứ hai với `HOME=<thư mục tạm>` và `PORT=8790`, để không ghi vào DB thật (`~/.local/share/muop-agent/muop-agent.db` lấy theo `HOME`). Nếu dùng chung DB, `bridge_peer_url` trỏ vào chính server đó sẽ tạo vòng kết nối tự tới chính mình.
 - Client Socket.IO tự viết trên `tokio-tungstenite` (chỉ WebSocket). Không dùng `rust_socketio` 0.6: với server này, payload lớn qua polling bị lỗi JSON và qua WebSocket không nhận được event.
 - Trả lời agy: gửi lượt mới bằng `/api/bridge/send` với `conversationId`. `/api/ai-questions/answer` không gửi gì tới tiến trình agy.

@@ -363,6 +363,7 @@ pub(super) fn parse_session_parts(
         .to_string();
 
     detect_bash_file_changes(&project_path, &steps, &mut files);
+    detect_bash_deletions(&project_path, &steps, &mut files);
     files.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
     files.truncate(100);
     commands.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));

@@ -559,7 +559,7 @@ Ngay khi kết nối, server gửi: `retry:update`, `screen:status`, `setup:upda
 
 Server máy B kết nối tới server máy A để gửi lệnh tới agent đang chạy trên A và nhận sự kiện của A. Mã nguồn: `server/src/bridge/` (kết nối, giao thức Socket.IO tối thiểu), `server/src/api/bridge.rs` (REST). Chỉ dùng WebSocket; chưa có xác thực (chỉ dùng trong LAN/VPN tin cậy).
 
-Địa chỉ máy A lưu trong `app_settings` (khoá `bridge_peer_url`). Server tự kết nối lại khi khởi động và khi mất kết nối (backoff 1 → 30 giây).
+Địa chỉ máy A lưu trong bảng `app_settings` (cột `key` = `bridge_peer_url`, `value` = `http://IP:8787`) của DB `~/.local/share/muop-agent/muop-agent.db` (`$HOME` của user chạy server). Đặt hoặc đổi bằng `POST /api/bridge/peer` (xem 18.1), không cần sửa DB tay. Server tự kết nối lại khi khởi động và khi mất kết nối (backoff 1 → 30 giây).
 
 ### 18.1. REST trên máy B
 

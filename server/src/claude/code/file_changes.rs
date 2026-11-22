@@ -154,3 +154,145 @@ pub(super) fn detect_bash_file_changes(
         });
     }
 }
+
+/// Đường dẫn bị xóa bởi `rm`, `unlink` hoặc `git rm` trong một lệnh Bash. Chỉ xét lệnh đứng đầu
+/// mỗi đoạn (sau `&&`, `;`, `|`...). Bỏ qua flag, glob, biến shell và chuyển hướng vì không biết
+/// chính xác file nào bị xóa.
+pub(super) fn rm_targets(command: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    for segment in command.split(['\n', ';', '|', '&']) {
+        let tokens: Vec<&str> = segment.split_whitespace().collect();
+        let rest: &[&str] = match tokens.first() {
+            Some(&"sudo") => &tokens[1..],
+            _ => &tokens[..],
+        };
+        let args: &[&str] = match rest {
+            ["rm", args @ ..] | ["unlink", args @ ..] => args,
+            ["git", "rm", args @ ..] => args,
+            _ => continue,
+        };
+        for arg in args {
+            let arg = arg.trim_matches(|c| c == '"' || c == '\'');
+            if arg.is_empty()
+                || arg.starts_with('-')
+                || arg.starts_with('~')
+                || arg.contains(['*', '?', '[', '$', '`', '>', '<'])
+            {
+                continue;
+            }
+            out.push(arg.to_string());
+        }
+    }
+    out
+}
+
+/// Có ghi nhận file là bị xóa không: phải còn bị thiếu, và phải đã biết trước đó (agent đã tạo/sửa
+/// trong session hoặc git đang theo dõi). Tránh ghi nhận nhầm khi `rm` gõ sai tên file.
+pub(super) fn is_deletion_candidate(exists_now: bool, known: bool, tracked_in_git: bool) -> bool {
+    !exists_now && (known || tracked_in_git)
+}
+
+/// File có đang được git theo dõi (có trong index) không
+fn git_tracked(repo: &str, rel: &str) -> bool {
+    Command::new("git")
+        .args(["-C", repo, "ls-files", "--error-unmatch", "--", rel])
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+
+/// Bổ sung file bị xóa bằng lệnh Bash (`rm`, `git rm`...). `git status` không đủ vì file đã xóa
+/// không có mtime để gắn vào bước, nên đọc trực tiếp đường dẫn trong lệnh.
+pub(super) fn detect_bash_deletions(
+    repo: &str,
+    steps: &[AgentStep],
+    files: &mut Vec<FileTouchRecord>,
+) {
+    if repo.is_empty() {
+        return;
+    }
+    let repo_path = Path::new(repo);
+    for step in steps {
+        for call in step.tool_calls.iter().filter(|t| t.name == "Bash") {
+            let Some(command) = call.args.get("command").and_then(|v| v.as_str()) else {
+                continue;
+            };
+            for arg in rm_targets(command) {
+                let rel = arg.strip_prefix("./").unwrap_or(&arg);
+                let abs = if rel.starts_with('/') {
+                    PathBuf::from(rel)
+                } else {
+                    repo_path.join(rel)
+                };
+                let path = abs.to_string_lossy().to_string();
+                let known = files
+                    .iter()
+                    .any(|f| f.path == path && f.action != "deleted");
+                let tracked = !rel.starts_with('/') && git_tracked(repo, rel);
+                if !is_deletion_candidate(abs.exists(), known, tracked) {
+                    continue;
+                }
+                if files
+                    .iter()
+                    .any(|f| f.step_index == step.step_index && f.path == path)
+                {
+                    continue;
+                }
+                files.push(FileTouchRecord {
+                    path,
+                    action: "deleted".to_string(),
+                    repo: String::new(),
+                    agent_name: step.agent_name.clone(),
+                    step_index: step.step_index,
+                    timestamp: step.created_at.clone(),
+                    added_lines: 0,
+                    removed_lines: 0,
+                    diff_preview: String::new(),
+                    source: "bash".to_string(),
+                });
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod deletion_tests {
+    use super::*;
+
+    #[test]
+    fn rm_targets_skips_flags_globs_and_redirects() {
+        assert_eq!(
+            rm_targets("cd x && rm -rf build a.txt; ls -la"),
+            vec!["build".to_string(), "a.txt".to_string()]
+        );
+        assert_eq!(
+            rm_targets("rm *.txt && rm b.txt 2>/dev/null"),
+            vec!["b.txt".to_string()]
+        );
+    }
+
+    #[test]
+    fn rm_targets_handles_sudo_git_rm_and_ignores_other_commands() {
+        assert_eq!(rm_targets("sudo rm a"), vec!["a".to_string()]);
+        assert_eq!(
+            rm_targets("git rm -r --cached dir"),
+            vec!["dir".to_string()]
+        );
+        assert!(rm_targets("echo rm a").is_empty());
+        assert!(rm_targets("cat a.txt | wc -l").is_empty());
+    }
+
+    #[test]
+    fn deletion_needs_known_or_tracked_and_missing_file() {
+        assert!(is_deletion_candidate(false, true, false));
+        assert!(is_deletion_candidate(false, false, true));
+        assert!(
+            !is_deletion_candidate(false, false, false),
+            "typo: never existed"
+        );
+        assert!(
+            !is_deletion_candidate(true, true, true),
+            "rm failed, file still there"
+        );
+    }
+}
