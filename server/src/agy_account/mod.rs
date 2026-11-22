@@ -110,6 +110,20 @@ fn watch() {
     }
 }
 
+/// Hub duy nhất của server (mở nếu chưa có). Mọi lời gọi RPC tới agy (tài khoản, quota, context, đăng xuất)
+/// đều đi qua hub này, không mở thêm hub khác. `None` khi chưa đăng nhập hoặc hub không lên.
+pub fn hub_endpoint() -> Option<(u16, String)> {
+    if !crate::agy_auth::current().logged_in {
+        return None;
+    }
+    ensure_hub().ok()
+}
+
+/// Lấy tài khoản và quota từ hub ngay (không chờ watcher), ghi DB. Dùng khi client cần quota mà DB chưa có.
+pub fn refresh_now() -> Result<(), String> {
+    refresh()
+}
+
 /// Đăng xuất agy qua RPC `AuthLogout` của hub do server mở (không dùng TUI). Chỉ gửi lệnh: việc agy đã xóa token
 /// được kiểm tra ở `agy_auth::logout` bằng `agy models`. Lỗi của hub (dạng `code`/`message`) được trả về nguyên văn.
 pub fn logout_via_hub() -> Result<(), String> {

@@ -10,8 +10,6 @@ pub(super) struct QuotaCache {
 
 pub(super) static QUOTA_CACHE: OnceLock<Mutex<QuotaCache>> = OnceLock::new();
 
-/// Giữ quota đọc từ màn `/usage`: mở TUI tốn khoảng 30 giây nên không hỏi lại liên tục
-const USAGE_TTL: Duration = Duration::from_secs(300);
 /// Giữ kết quả từ hub và kết quả lỗi
 const SHORT_TTL: Duration = Duration::from_secs(10);
 
@@ -81,32 +79,30 @@ pub fn clear_antigravity_quota_cache() {
     }
 }
 
-/// Tính quota agy và thời gian giữ kết quả. Ưu tiên hub đang chạy; không có hub thì đọc màn `/usage`
-/// của TUI agy khi `allow_host`, còn không thì lỗi (không mở gì).
+/// Tính quota agy và thời gian giữ kết quả. Quota lấy từ hub duy nhất của server (`agy_account`), lưu trong DB.
+/// Chưa có trong DB thì khi `allow_host` hỏi hub ngay (hub được mở nếu chưa chạy), còn không thì báo lỗi.
 fn compute_antigravity(allow_host: bool) -> (Result<Vec<ModelQuotaGroup>, String>, Duration) {
-    // Quota do watcher của agy_account lấy từ hub của server và lưu trong DB
-    if let Some(snap) = crate::agy_account::snapshot() {
-        if !snap.quota.is_empty() {
-            let mut groups = snap.quota;
-            // Gắn gói của tài khoản vào tên nhóm, giống nhãn "(pro)" của Claude
-            if !snap.plan.is_empty() {
-                for g in &mut groups {
-                    g.display_name = format!("{} ({})", g.display_name, snap.plan);
-                }
-            }
-            return (Ok(groups), SHORT_TTL);
+    let mut snap = crate::agy_account::snapshot().filter(|s| !s.quota.is_empty());
+    if snap.is_none() && allow_host {
+        if let Err(e) = crate::agy_account::refresh_now() {
+            return (Err(e), SHORT_TTL);
         }
+        snap = crate::agy_account::snapshot().filter(|s| !s.quota.is_empty());
     }
-    if !allow_host {
+    let Some(snap) = snap else {
         return (
             Err("Chưa có quota agy (đang chờ server lấy từ hub)".to_string()),
             SHORT_TTL,
         );
+    };
+    let mut groups = snap.quota;
+    // Gắn gói của tài khoản vào tên nhóm, giống nhãn "(pro)" của Claude
+    if !snap.plan.is_empty() {
+        for g in &mut groups {
+            g.display_name = format!("{} ({})", g.display_name, snap.plan);
+        }
     }
-    let result = crate::agy_auth::host::read_usage_screen()
-        .and_then(|screen| crate::agy_auth::usage::parse_usage_screen(&screen, chrono::Utc::now()));
-    let ttl = if result.is_ok() { USAGE_TTL } else { SHORT_TTL };
-    (result, ttl)
+    (Ok(groups), SHORT_TTL)
 }
 
 /// Quota Antigravity, có cache. Chỉ dữ liệu thật: không dùng số cũ hay số mặc định.

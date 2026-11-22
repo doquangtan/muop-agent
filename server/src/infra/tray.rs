@@ -23,11 +23,9 @@ impl Tray for MuopAgentTray {
         "muop-agent-server".to_string()
     }
 
+    /// Không đặt theme riêng: icon `muop-agent-server` được cài vào hicolor của hệ thống (xem `packaging/build-deb.sh`)
     fn icon_theme_path(&self) -> String {
-        crate::infra::paths::home_dir()
-            .join(".local/share/icons/muop-agent")
-            .display()
-            .to_string()
+        String::new()
     }
 
     fn tool_tip(&self) -> ToolTip {

@@ -1,10 +1,11 @@
-//! PTY của TUI agy do server mở để đọc màn hình khi không có IDE (xem [`host`](super::host)).
+//! Chạy agy trong PTY do server giữ (hub `agy --hub`, xem `agy_account`), và các hàm đọc màn hình
+//! của terminal đăng nhập (`strip_ansi`, `link_on_screen`, `chat_ready`...).
 //!
 //! Đăng nhập không đi qua đây: người dùng tự đăng nhập trong terminal SSH chạy `agy`
-//! (xem `open_login_terminal` trong `mod.rs`). Ở đây chỉ có PTY, đọc đầu ra và gửi phím.
+//! (xem `open_login_terminal` trong `mod.rs`).
 
 use std::fs::{self, File};
-use std::io::{Read, Write};
+use std::io::Read;
 use std::os::fd::{FromRawFd, OwnedFd};
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::process::CommandExt;
@@ -19,50 +20,20 @@ use super::host;
 
 const COLS: u16 = 120;
 const ROWS: u16 = 45;
-/// Số byte đầu ra giữ lại để đọc màn hình
-const OUTPUT_KEEP: usize = 512 * 1024;
-/// Màn chọn màu lần đầu của agy (so sánh chữ thường): chặn TUI nên phải nhấn Enter
-/// Màn lần đầu chạy agy chặn TUI: chọn màu, rồi hộp hướng dẫn "[Next] … enter Confirm" (nhiều bước).
-/// Đo được trên laptop sạch: chỉ nhấn Enter cho màn chọn màu thì host kẹt ở hướng dẫn.
-const FIRST_RUN_MARKS: [&str; 3] = [
-    "choose your color scheme",
-    "enter confirm",
-    "press enter to continue",
-];
-/// Số lần nhấn Enter tối đa cho các màn lần đầu chạy
-const NUDGE_MAX: u32 = 12;
 
+/// Đầu ra của PTY không được giữ (hub không có gì cần đọc): chỉ cần đọc cạn để PTY không nghẽn
+/// và biết tiến trình đã thoát chưa.
 #[derive(Default)]
 struct Output {
-    buf: Vec<u8>,
-    /// Tổng số byte đã nhận từ lúc mở PTY (để đánh dấu vị trí tuyệt đối)
-    total: usize,
     closed: bool,
-}
-
-impl Output {
-    /// Dữ liệu từ vị trí tuyệt đối `abs` trở đi (phần đã bị cắt bớt thì bắt đầu từ đầu bộ đệm)
-    fn since(&self, abs: usize) -> &[u8] {
-        let start = self.total - self.buf.len();
-        let from = abs.saturating_sub(start).min(self.buf.len());
-        &self.buf[from..]
-    }
 }
 
 pub(crate) struct Session {
     child: Child,
-    writer: File,
+    /// Giữ đầu master của PTY mở suốt đời phiên (đóng thì agy nhận SIGHUP)
+    _master: File,
     out: Arc<Mutex<Output>>,
     dir: PathBuf,
-    nudge: Nudge,
-}
-
-/// Theo dõi lần nhấn Enter cho màn chọn màu (xem [`Session::nudge_first_run`])
-#[derive(Default)]
-pub(super) struct Nudge {
-    mark: usize,
-    count: u32,
-    last: Option<Instant>,
 }
 
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);
@@ -81,77 +52,7 @@ pub(crate) fn close_session(session: Session) {
     session.close();
 }
 
-/// Chữ TUI đã in ra từ lúc mở (đã bỏ ANSI), để đọc màn hình trạng thái
-pub(super) fn screen_text(session: &Session) -> String {
-    snapshot_text(&session.out, 0).0
-}
-
-/// Gõ một dòng vào TUI rồi nhấn Enter, như người dùng tự gõ. Enter gửi riêng sau một khoảng ngắn để
-/// TUI kịp nhận chữ và đóng menu gợi ý lệnh (`/...`) trước khi Enter chọn lệnh.
-pub(super) fn type_line(session: &mut Session, text: &str) -> Result<(), String> {
-    session.write(text)?;
-    thread::sleep(Duration::from_millis(400));
-    session.write("\r")
-}
-
-/// Vị trí hiện tại của đầu ra TUI, để đọc chữ in ra sau đó
-pub(super) fn output_mark(session: &Session) -> usize {
-    total(&session.out)
-}
-
-/// Chữ TUI đã in ra từ vị trí `mark` (đã bỏ ANSI)
-pub(super) fn text_since(session: &Session, mark: usize) -> String {
-    snapshot_text(&session.out, mark).0
-}
-
-/// Gửi dữ liệu thô tới TUI (ví dụ phím Escape `\u{1b}`)
-pub(super) fn send_raw(session: &mut Session, data: &str) -> Result<(), String> {
-    session.write(data)
-}
-
-fn total(out: &Arc<Mutex<Output>>) -> usize {
-    out.lock().map(|o| o.total).unwrap_or(0)
-}
-
-/// Text đã bỏ ANSI của output từ vị trí `from`, kèm cờ đã thoát hay chưa
-fn snapshot_text(out: &Arc<Mutex<Output>>, from: usize) -> (String, bool) {
-    match out.lock() {
-        Ok(o) => (strip_ansi(o.since(from)), o.closed),
-        Err(_) => (String::new(), true),
-    }
-}
-
 impl Session {
-    /// Nhấn Enter nếu màn chọn màu lần đầu vừa được vẽ. Màn đó chặn TUI: không có nó thì hub không lên.
-    pub(super) fn nudge_first_run(&mut self) {
-        if self.nudge.count >= NUDGE_MAX {
-            return;
-        }
-        if self
-            .nudge
-            .last
-            .is_some_and(|t| t.elapsed() < Duration::from_secs(2))
-        {
-            return;
-        }
-        let (text, _) = snapshot_text(&self.out, self.nudge.mark);
-        let low = text.to_lowercase();
-        if !FIRST_RUN_MARKS.iter().any(|m| low.contains(m)) {
-            return;
-        }
-        let _ = self.write("\r");
-        self.nudge.count += 1;
-        self.nudge.last = Some(Instant::now());
-        self.nudge.mark = total(&self.out);
-    }
-
-    fn write(&mut self, data: &str) -> Result<(), String> {
-        self.writer
-            .write_all(data.as_bytes())
-            .and_then(|_| self.writer.flush())
-            .map_err(|e| format!("Không gửi được dữ liệu tới agy: {e}"))
-    }
-
     /// Dừng TUI (SIGTERM, sau 2 giây thì SIGKILL) và xóa thư mục tạm
     fn close(mut self) {
         let pid = self.child.id() as libc::pid_t;
@@ -172,10 +73,6 @@ impl Session {
         }
         let _ = fs::remove_dir_all(&self.dir);
     }
-}
-
-pub(super) fn spawn_tui() -> Result<Session, String> {
-    spawn_agy(&[], &[])
 }
 
 /// Chạy agy trong PTY với tham số và biến môi trường thêm (ví dụ `--hub` với `AGY_ENABLE_HUB=1`)
@@ -270,10 +167,9 @@ pub(crate) fn spawn_agy(args: &[&str], envs: &[(&str, &str)]) -> Result<Session,
 
     Ok(Session {
         child,
-        writer: master,
+        _master: master,
         out,
         dir,
-        nudge: Nudge::default(),
     })
 }
 
@@ -283,16 +179,7 @@ fn spawn_reader(mut reader: File, out: Arc<Mutex<Output>>) {
         loop {
             match reader.read(&mut chunk) {
                 Ok(0) => break,
-                Ok(n) => {
-                    if let Ok(mut o) = out.lock() {
-                        o.buf.extend_from_slice(&chunk[..n]);
-                        o.total += n;
-                        if o.buf.len() > OUTPUT_KEEP {
-                            let drop_len = o.buf.len() - OUTPUT_KEEP;
-                            o.buf.drain(..drop_len);
-                        }
-                    }
-                }
+                Ok(_) => {}
                 Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
                 // EIO khi tiến trình con đã thoát
                 Err(_) => break,

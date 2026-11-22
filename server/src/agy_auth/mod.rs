@@ -13,7 +13,6 @@ mod flow;
 pub(crate) mod host;
 pub mod socket;
 pub(crate) mod tui;
-pub(crate) mod usage;
 
 use crate::models::{AccountsStatus, AgyAuthEvent};
 use base64::Engine;
@@ -75,11 +74,6 @@ pub fn init(io: SocketIo) {
     crate::agy_account::start();
     // TUI của lần chạy trước (server đã thoát) còn sót thì tắt đi
     host::cleanup_stale();
-    // Tắt host agy (TUI mở để có hub) khi người dùng không còn dùng màn tài khoản
-    thread::spawn(|| loop {
-        thread::sleep(Duration::from_secs(60));
-        host::reap_idle();
-    });
     // Kiểm tra đăng nhập nền: client không cần hỏi mới biết agy đã đăng nhập (màn Tài khoản, wizard)
     thread::spawn(|| loop {
         thread::sleep(STATUS_WATCH_EVERY);
@@ -166,8 +160,6 @@ pub(crate) fn open_login_terminal() -> Result<(String, i64), String> {
             return Ok((sid, host_id));
         }
     }
-    // Host có thể đang giữ hub và token cũ: tắt đi để hub của agy trong terminal là hub duy nhất
-    host::restart();
     let (sid, host_id) = crate::setup::ssh::open_agy_terminal()?;
     *terminal_slot() = Some((sid.clone(), host_id));
     reset_login_state();
@@ -475,7 +467,6 @@ fn watch_status() {
 /// Đã đăng nhập agy hay chưa, theo `agy models` (cùng nguồn token mà terminal đăng nhập dùng).
 /// Không hỏi hub: hub có thể giữ trạng thái cũ (đã gặp: `authResult: {}` khi tài khoản vẫn đăng nhập).
 pub fn status() -> Result<bool, String> {
-    host::note_user_activity();
     signed_in_by_models()
 }
 
@@ -566,7 +557,6 @@ fn agy_logs_since(since: std::time::SystemTime) -> Vec<String> {
 /// Trạng thái đăng nhập: terminal đăng nhập đang chạy thì lấy từ terminal; không thì hỏi `agy models`.
 /// Không phát event: dùng cho client hỏi bằng `agy:auth:status`.
 pub fn query() -> AgyAuthEvent {
-    host::note_user_activity();
     // Đang đăng nhập trong terminal: trạng thái lấy từ terminal (watcher). Không hỏi hub:
     // hub của agy đang đăng nhập có thể đang bận (OAuth) và làm lời gọi treo.
     if login_active() {
@@ -587,7 +577,6 @@ pub fn query() -> AgyAuthEvent {
 /// Khi terminal đăng nhập đang chạy và đã vào màn chat thì kết thúc luồng đăng nhập (như watcher).
 /// Không thì trả trạng thái như `agy:auth:status` (`query`). Phát `agy:auth:update` khi trạng thái đổi.
 pub fn check() -> AgyAuthEvent {
-    host::note_user_activity();
     if let Some((sid, _)) = terminal_session().filter(|(sid, _)| terminal_alive(sid)) {
         let in_chat =
             terminal_output(&sid).is_some_and(|raw| tui::chat_ready(&tui::strip_ansi(&raw)));
@@ -604,10 +593,9 @@ pub fn check() -> AgyAuthEvent {
     current()
 }
 
-/// Đăng xuất agy bằng đúng thao tác của người dùng: mở `agy`, gõ `/logout` (xem [`host::logout_tui`]).
+/// Đăng xuất agy bằng đúng thao tác của người dùng: gọi RPC `AuthLogout` của hub.
 /// Hủy terminal đăng nhập đang mở (nếu có). Chặn luồng: gọi qua `spawn_blocking`.
 pub fn logout() -> Result<(), String> {
-    host::note_user_activity();
     cancel_login();
     let res = logout_inner();
     match &res {
@@ -646,7 +634,6 @@ fn logout_inner() -> Result<(), String> {
 /// Bắt đầu đăng nhập: mở terminal SSH chạy `agy` để người dùng tự đăng nhập trong đó.
 /// Kết quả đến qua `agy:auth:update` (xem [`watch_login`]).
 pub fn begin_login() -> Result<(), String> {
-    host::note_user_activity();
     let res = begin_login_inner();
     if let Err(e) = &res {
         publish("failed", matches!(signed_in_by_models(), Ok(true)), e);
@@ -664,8 +651,6 @@ fn begin_login_inner() -> Result<(), String> {
 /// Xóa quota cũ của Antigravity rồi đẩy quota hiện tại (`quotas:update`) cho mọi client.
 /// Gọi sau khi đăng xuất (quota về rỗng) và sau khi đăng nhập xong (quota của tài khoản mới).
 pub(crate) fn sync_quotas() {
-    // Tài khoản vừa đổi: host cũ có thể còn token cũ, mở lại host để đọc trạng thái mới
-    host::restart();
     crate::scanner::clear_antigravity_quota_cache();
     push_quotas();
 }

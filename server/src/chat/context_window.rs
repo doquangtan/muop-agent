@@ -17,9 +17,8 @@ use chrono::{DateTime, FixedOffset};
 use rusqlite::{Connection, OpenFlags};
 use serde_json::{json, Value};
 use std::collections::HashMap;
-use std::fs;
 use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
@@ -236,7 +235,7 @@ fn fetch_latest_generation(
     conversation_id: &str,
     label_to_id: &HashMap<String, String>,
 ) -> Result<Option<AgyContextUsage>, ()> {
-    let (port, token) = discover_hub().ok_or(())?;
+    let (port, token) = crate::agy_account::hub_endpoint().ok_or(())?;
     let body = json!({ "cascadeId": conversation_id }).to_string();
     let response = rpc_post(port, &token, RPC_PATH, &body)?;
     let generations = response
@@ -290,45 +289,6 @@ fn fetch_latest_generation(
 /// protobuf JSON trả số dưới dạng số hoặc chuỗi tùy trường
 fn json_u64(v: &Value) -> Option<u64> {
     v.as_u64().or_else(|| v.as_str()?.parse().ok())
-}
-
-/// Đọc file discovery `daemon/hub_<port>.json` của hub đang chạy (pid còn sống).
-/// Trả về (cổng HTTP, CSRF token).
-pub(crate) fn discover_hub() -> Option<(u16, String)> {
-    let home = PathBuf::from(std::env::var("HOME").ok()?);
-    let dir = home.join(".gemini/antigravity/daemon");
-    for entry in fs::read_dir(dir).ok()?.flatten() {
-        let name = entry.file_name().to_string_lossy().to_string();
-        if !(name.starts_with("hub_") && name.ends_with(".json")) {
-            continue;
-        }
-        let Ok(raw) = fs::read_to_string(entry.path()) else {
-            continue;
-        };
-        let Ok(v) = serde_json::from_str::<Value>(&raw) else {
-            continue;
-        };
-        let (Some(pid), Some(port), Some(token)) = (
-            v.get("pid").and_then(Value::as_u64),
-            v.get("httpPort").and_then(Value::as_u64),
-            v.get("csrfToken").and_then(Value::as_str),
-        ) else {
-            continue;
-        };
-        // Token được ghép vào file cấu hình của curl: chỉ nhận ký tự an toàn
-        let token_ok = !token.is_empty()
-            && token
-                .chars()
-                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_');
-        if !token_ok || port == 0 || port > u64::from(u16::MAX) {
-            continue;
-        }
-        if !Path::new("/proc").join(pid.to_string()).exists() {
-            continue;
-        }
-        return Some((port as u16, token.to_string()));
-    }
-    None
 }
 
 /// Gọi RPC bằng curl. Token và body đi qua stdin (`-K -`) để không lộ trên dòng lệnh.
