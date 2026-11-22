@@ -11,9 +11,10 @@ mod client;
 mod protocol;
 
 use crate::infra::store;
+use crate::scanner;
 use client::SessionEnd;
 use serde::Serialize;
-use serde_json::Value;
+use serde_json::{json, Value};
 use socketioxide::SocketIo;
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
@@ -161,9 +162,18 @@ async fn forward_events(mut rx: broadcast::Receiver<PeerEvent>) {
     loop {
         match rx.recv().await {
             Ok(ev) if FORWARDED_EVENTS.contains(&ev.name.as_str()) => {
+                // Conversation máy phụ chạy cho một project của máy này: chuyển về project đó; còn lại bỏ
+                let data = if ev.name == "session:update" {
+                    match map_peer_session(&ev.data) {
+                        Some(mapped) => mapped,
+                        None => continue,
+                    }
+                } else {
+                    ev.data.clone()
+                };
                 if let Some(ns) = bridge_ref().io.of("/") {
                     let event = format!("bridge:{}", ev.name);
-                    let _ = ns.emit(event, &ev.data);
+                    let _ = ns.emit(event, &data);
                 }
             }
             Ok(_) => {}
@@ -173,6 +183,54 @@ async fn forward_events(mut rx: broadcast::Receiver<PeerEvent>) {
             Err(broadcast::error::RecvError::Closed) => return,
         }
     }
+}
+
+/// Các project trên máy này (thư mục dưới hệ sinh thái), kèm tên thư mục mount mà máy phụ dùng cho từng project:
+/// `fsmount::mount_name(tên máy này, đường dẫn project)`.
+pub fn local_projects() -> Vec<(String, String)> {
+    let host = origin_label();
+    let Some(root) = crate::setup::workspace_root() else {
+        return Vec::new();
+    };
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return Vec::new();
+    };
+    entries
+        .flatten()
+        .filter(|e| e.path().is_dir())
+        .filter_map(|e| {
+            let name = e.file_name().to_string_lossy().to_string();
+            if name.starts_with('.') {
+                return None;
+            }
+            let path = e.path().to_string_lossy().to_string();
+            Some((crate::fsmount::mount_name(&host, &path), path))
+        })
+        .collect()
+}
+
+/// Chuyển một conversation của máy phụ về project của máy này. Máy phụ chạy conversation với cwd là thư mục mount,
+/// nên chỉ conversation có `projectPath` nằm trong `mounts/` và đúng tên thư mục mount của một project mới được nhận.
+/// Conversation khác (của chính máy phụ) trả None và không hiện.
+pub fn map_peer_session(session: &Value) -> Option<Value> {
+    map_peer_session_in(session, &local_projects())
+}
+
+pub fn map_peer_session_in(session: &Value, projects: &[(String, String)]) -> Option<Value> {
+    let path = session
+        .get("projectPath")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .trim_end_matches('/');
+    if !path.contains("/mounts/") {
+        return None;
+    }
+    let mount_name = path.rsplit('/').next().unwrap_or("");
+    let (_, project) = projects.iter().find(|(name, _)| name == mount_name)?;
+    let mut out = session.clone();
+    out["projectPath"] = json!(project);
+    out["projectName"] = json!(project.rsplit('/').next().unwrap_or(project));
+    Some(out)
 }
 
 pub fn status() -> PeerStatus {
@@ -233,7 +291,19 @@ pub async fn emit_ack(name: &str, payload: Value) -> Result<Value, String> {
 }
 
 /// Gửi lượt chat tới agent trên máy A. Prompt được thêm nhãn nguồn `[Từ máy <tên>]`.
+///
+/// Kèm `remoteProject` (địa chỉ máy này + đường dẫn project) để máy A mount đúng thư mục này về máy A
+/// và làm việc trên đó. Máy A không cần cấu hình gì thêm.
 pub async fn send_chat(mut body: Value) -> Result<Value, String> {
+    let project = body
+        .get("projectPath")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    if !project.is_empty() {
+        body["remoteProject"] = remote_project(&project, &scanner::detect_lan_ips(), scanner::listen_port(), &origin_label());
+    }
     if let Some(prompt) = body
         .get("prompt")
         .and_then(Value::as_str)
@@ -242,6 +312,65 @@ pub async fn send_chat(mut body: Value) -> Result<Value, String> {
         body["prompt"] = Value::String(tag_origin(&prompt, &origin_label()));
     }
     emit_ack("chat:send", body).await
+}
+
+/// Thông tin máy này gửi cho máy phụ khi được thêm vào cầu nối: các địa chỉ của máy này và thư mục gốc
+/// của hệ sinh thái (máy phụ chỉ kiểm tra kết nối vào thư mục này, không mount).
+pub fn local_identity() -> crate::models::RemoteProject {
+    let port = scanner::listen_port();
+    let mut urls: Vec<String> = scanner::detect_lan_ips()
+        .iter()
+        .map(|ip| format!("http://{ip}:{port}"))
+        .collect();
+    urls.push(format!("http://127.0.0.1:{port}"));
+    crate::models::RemoteProject {
+        urls,
+        project_path: crate::setup::workspace_root()
+            .map(|r| r.to_string_lossy().into_owned())
+            .unwrap_or_default(),
+        origin_host: origin_label(),
+    }
+}
+
+/// Gọi máy phụ tại [url] để đăng ký máy này. Trả về phản hồi của máy phụ (`ok`, `origin` hoặc `error`).
+pub async fn register_on_peer(url: &str) -> Result<Value, String> {
+    let identity = local_identity();
+    if identity.project_path.is_empty() {
+        return Err("máy chính chưa cấu hình thư mục project (Cài đặt → Thư mục project)".into());
+    }
+    let resp = peer_http_client()?
+        .post(format!("{url}/api/fsmount/register"))
+        .json(&identity)
+        .send()
+        .await
+        .map_err(|e| format!("không gọi được máy phụ để đăng ký: {e}"))?;
+    let body = resp
+        .json::<Value>()
+        .await
+        .map_err(|e| format!("phản hồi đăng ký của máy phụ không hợp lệ: {e}"))?;
+    if body["ok"] == json!(true) {
+        Ok(body)
+    } else {
+        Err(body["error"]
+            .as_str()
+            .unwrap_or("máy phụ từ chối đăng ký")
+            .to_string())
+    }
+}
+
+/// Thông tin project gửi kèm lượt chat: các địa chỉ máy này (IP LAN trước, loopback sau) và đường dẫn
+/// project. Máy nhận tự chọn địa chỉ kết nối được.
+fn remote_project(project: &str, lan_ips: &[String], port: u16, host: &str) -> Value {
+    let mut urls: Vec<String> = lan_ips
+        .iter()
+        .map(|ip| format!("http://{ip}:{port}"))
+        .collect();
+    urls.push(format!("http://127.0.0.1:{port}"));
+    json!({
+        "urls": urls,
+        "projectPath": project,
+        "originHost": host,
+    })
 }
 
 /// Thêm nhãn nguồn vào đầu prompt để agent trên A biết tin nhắn đến từ máy nào.
@@ -259,14 +388,8 @@ pub async fn stop_chat(conversation_id: &str) -> Result<Value, String> {
 
 /// Gọi REST trên máy A (dùng cho trả lời câu hỏi và duyệt plan).
 pub async fn post_peer(path: &str, body: Value) -> Result<Value, String> {
-    let url = status().url;
-    if url.is_empty() {
-        return Err("chưa cấu hình địa chỉ máy A".into());
-    }
-    let client = reqwest::Client::builder()
-        .timeout(HTTP_TIMEOUT)
-        .build()
-        .map_err(|e| e.to_string())?;
+    let url = configured_peer_url()?;
+    let client = peer_http_client()?;
     let resp = client
         .post(format!("{url}{path}"))
         .json(&body)
@@ -276,6 +399,35 @@ pub async fn post_peer(path: &str, body: Value) -> Result<Value, String> {
     resp.json::<Value>()
         .await
         .map_err(|e| format!("phản hồi của máy A không hợp lệ: {e}"))
+}
+
+/// Gọi GET trên máy A (chỉ đọc, ví dụ tương tác Claude đang chờ)
+pub async fn get_peer(path: &str) -> Result<Value, String> {
+    let url = configured_peer_url()?;
+    let client = peer_http_client()?;
+    let resp = client
+        .get(format!("{url}{path}"))
+        .send()
+        .await
+        .map_err(|e| format!("không gọi được máy A: {e}"))?;
+    resp.json::<Value>()
+        .await
+        .map_err(|e| format!("phản hồi của máy A không hợp lệ: {e}"))
+}
+
+fn configured_peer_url() -> Result<String, String> {
+    let url = status().url;
+    if url.is_empty() {
+        return Err("chưa cấu hình địa chỉ máy A".into());
+    }
+    Ok(url)
+}
+
+fn peer_http_client() -> Result<reqwest::Client, String> {
+    reqwest::Client::builder()
+        .timeout(HTTP_TIMEOUT)
+        .build()
+        .map_err(|e| e.to_string())
 }
 
 /// Tên máy B, dùng làm nhãn nguồn trong prompt gửi tới A.
@@ -289,7 +441,68 @@ pub fn origin_label() -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{normalize_url, tag_origin};
+    use super::{map_peer_session_in, normalize_url, remote_project, tag_origin};
+    use serde_json::json;
+
+    #[test]
+    fn remote_project_lists_lan_addresses_before_loopback() {
+        let ips = vec!["192.168.31.96".to_string(), "10.0.0.5".to_string()];
+        let v = remote_project("/home/john/p", &ips, 8787, "asrock");
+        assert_eq!(v["projectPath"], "/home/john/p");
+        assert_eq!(v["originHost"], "asrock");
+        assert_eq!(
+            v["urls"],
+            serde_json::json!([
+                "http://192.168.31.96:8787",
+                "http://10.0.0.5:8787",
+                "http://127.0.0.1:8787"
+            ])
+        );
+    }
+
+    #[test]
+    fn peer_session_in_a_mount_maps_to_the_local_project() {
+        let projects = vec![(
+            "3b0cf23755d3e304".to_string(),
+            "/home/john/Documents/muop-ecosystem/muop-agent".to_string(),
+        )];
+        let s = json!({
+            "id": "cid-1",
+            "projectPath": "/home/john/.local/share/muop-agent/mounts/3b0cf23755d3e304",
+            "projectName": "3b0cf23755d3e304"
+        });
+        let mapped = map_peer_session_in(&s, &projects).expect("thuộc project của máy này");
+        assert_eq!(mapped["projectPath"], "/home/john/Documents/muop-ecosystem/muop-agent");
+        assert_eq!(mapped["projectName"], "muop-agent");
+        assert_eq!(mapped["id"], "cid-1");
+    }
+
+    #[test]
+    fn peer_conversations_outside_mounts_are_not_shown() {
+        let projects = vec![(
+            "3b0cf23755d3e304".to_string(),
+            "/home/john/Documents/muop-ecosystem/muop-agent".to_string(),
+        )];
+        // Conversation chạy trên chính máy phụ (không qua mount)
+        let own = json!({"projectPath": "/home/john/Documents/muop-ecosystem/muop-erp-app"});
+        // Mount của project không thuộc máy này
+        let other_mount = json!({"projectPath": "/home/john/.local/share/muop-agent/mounts/0000000000000000"});
+        assert!(map_peer_session_in(&own, &projects).is_none());
+        assert!(map_peer_session_in(&other_mount, &projects).is_none());
+        assert!(map_peer_session_in(&json!({}), &projects).is_none());
+    }
+
+    #[test]
+    fn mount_directory_name_matches_what_the_peer_uses() {
+        // Tên thư mục mount đã thấy trên Laptop khi mount project này từ máy chính
+        assert_eq!(
+            crate::fsmount::mount_name(
+                "ASRock-X99-Taichi-Server",
+                "/home/john/Documents/muop-ecosystem/muop-agent"
+            ),
+            "3b0cf23755d3e304"
+        );
+    }
 
     #[test]
     fn prompt_is_tagged_with_origin() {

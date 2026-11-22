@@ -4,6 +4,7 @@ import 'package:material_ui/material_ui.dart';
 
 import 'package:muop_agent/core/di/app_dependencies.dart';
 import 'package:muop_agent/core/theme/app_theme.dart';
+import 'package:muop_agent/features/accounts_common/presentation/account_widgets.dart';
 import 'package:muop_agent/features/agy_auth/domain/agy_auth_entities.dart';
 import 'package:muop_agent/features/agy_auth/domain/agy_auth_repository.dart';
 import 'package:muop_agent/features/agy_auth/presentation/agy_login_panel.dart';
@@ -17,11 +18,7 @@ import 'package:muop_agent/core/state/server_address_provider.dart';
 /// (khung đăng nhập dùng chung với wizard: [AgyLoginPanel]).
 /// Màn gắn với server đang kết nối: đổi địa chỉ (provider toàn cục) thì dựng lại và tải lại dữ liệu
 class AccountsScreen extends ConsumerWidget {
-  const AccountsScreen({
-    super.key,
-    this.repository,
-    this.claudeRepository,
-  });
+  const AccountsScreen({super.key, this.repository, this.claudeRepository});
 
   final AgyAuthRepository? repository;
   final ClaudeAuthRepository? claudeRepository;
@@ -39,8 +36,12 @@ class AccountsScreen extends ConsumerWidget {
 }
 
 class AccountsScreenView extends StatefulWidget {
+  /// Nhúng vào màn khác (tab Cài đặt): chỉ trả phần thân, không có AppBar/Scaffold riêng
+  final bool embedded;
+
   const AccountsScreenView({
     super.key,
+    this.embedded = false,
     required this.serverAddress,
     this.repository,
     this.claudeRepository,
@@ -116,7 +117,10 @@ class _AccountsScreenState extends State<AccountsScreenView> {
 
   /// Áp dụng trạng thái từ server: ack của một lệnh hoặc event `agy:auth:update`.
   /// Khi thất bại, giữ trạng thái đăng nhập theo server và hiện lỗi.
-  void _onUpdate(AgyAuthState res, {String fallbackError = 'Thao tác thất bại'}) {
+  void _onUpdate(
+    AgyAuthState res, {
+    String fallbackError = 'Thao tác thất bại',
+  }) {
     if (!mounted) return;
     final wasLoggedIn = _state?.loggedIn ?? false;
     setState(() {
@@ -134,11 +138,13 @@ class _AccountsScreenState extends State<AccountsScreenView> {
     if (wasLoggedIn != (_state?.loggedIn ?? false)) {
       // Đổi trạng thái đăng nhập agy thì gói và email cũng đổi theo
       _refreshAccounts();
+    } else if (res.ok && res.loggedIn) {
+      // Server lấy lại email, gói từ hub (sau khi đăng nhập, hoặc định kỳ): tải lại để hiện thông tin mới
+      _refreshAccounts();
     }
     if (!wasLoggedIn && (_state?.loggedIn ?? false)) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Đã đăng nhập agy')),
-      );
+      ScaffoldMessenger.of(context)
+          .showSnackBar(const SnackBar(content: Text('Đã đăng nhập agy')));
     }
   }
 
@@ -216,6 +222,61 @@ class _AccountsScreenState extends State<AccountsScreenView> {
   Widget build(BuildContext context) {
     final textTheme = Theme.of(context).textTheme;
 
+    final Widget content = _loading
+        ? const Center(child: CircularProgressIndicator())
+        : _state == null || !_state!.ok
+        ? _ErrorView(
+            message: _state?.error.isNotEmpty == true
+                ? _state!.error
+                : 'Không tải được trạng thái agy',
+            onRetry: _reload,
+            textTheme: textTheme,
+          )
+        : ListView(
+            padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
+            children: [
+              _SectionTitle(text: 'Antigravity (agy)', textTheme: textTheme),
+              const SizedBox(height: 8),
+              AccountStatusCard(
+                loggedIn: _state!.loggedIn,
+                email: _accounts.agyEmail,
+                badge: _state!.loggedIn ? _accounts.agyPlan : '',
+                description: _state!.loggedIn && _accounts.agyEmail.isEmpty
+                    ? 'Agy trên server đang dùng tài khoản Google đã đăng nhập.'
+                    : _state!.loggedIn
+                    ? 'Tài khoản agy trên server đang phục vụ các phiên chat.'
+                    : 'Agy chưa có tài khoản. Chat với agy sẽ thất bại cho tới khi đăng nhập.',
+              ),
+              const SizedBox(height: 12),
+              if (_state!.loggedIn)
+                AccountLogoutButton(busy: _busy, onLogout: _confirmLogout)
+              else if (_state!.terminalOpen)
+                AgyLoginPanel(
+                  state: _state!,
+                  busy: _busy,
+                  onRestart: _startLogin,
+                  onCancel: _cancelLogin,
+                  onSubmitCode: _submitCode,
+                  onCheck: _checkStatus,
+                  terminalHeight: 360,
+                )
+              else
+                _LoggedOutSection(busy: _busy, onStart: _startLogin),
+              if (_actionError != null) ...[
+                const SizedBox(height: 12),
+                _ErrorBanner(message: _actionError!),
+              ],
+              const SizedBox(height: 28),
+              _SectionTitle(text: 'Claude Code CLI', textTheme: textTheme),
+              const SizedBox(height: 8),
+              ClaudeAuthSection(
+                key: _claudeKey,
+                serverAddress: widget.serverAddress,
+                repository: widget.claudeRepository,
+              ),
+            ],
+          );
+    if (widget.embedded) return content;
     return Scaffold(
       appBar: AppBar(
         title: const Text('Tài khoản'),
@@ -232,135 +293,7 @@ class _AccountsScreenState extends State<AccountsScreenView> {
           ),
         ],
       ),
-      body: _loading
-          ? const Center(child: CircularProgressIndicator())
-          : _state == null || !_state!.ok
-              ? _ErrorView(
-                  message: _state?.error.isNotEmpty == true
-                      ? _state!.error
-                      : 'Không tải được trạng thái agy',
-                  onRetry: _reload,
-                  textTheme: textTheme,
-                )
-              : ListView(
-                  padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
-                  children: [
-                    _SectionTitle(text: 'Antigravity (agy)', textTheme: textTheme),
-                    const SizedBox(height: 8),
-                    _StatusCard(
-                      state: _state!,
-                      email: _accounts.agyEmail,
-                      plan: _accounts.agyPlan,
-                    ),
-                    const SizedBox(height: 12),
-                    if (_state!.loggedIn)
-                      _LoggedInSection(busy: _busy, onLogout: _confirmLogout)
-                    else if (_state!.terminalOpen)
-                      AgyLoginPanel(
-                        state: _state!,
-                        busy: _busy,
-                        onRestart: _startLogin,
-                        onCancel: _cancelLogin,
-                        onSubmitCode: _submitCode,
-                        onCheck: _checkStatus,
-                        terminalHeight: 360,
-                      )
-                    else
-                      _LoggedOutSection(busy: _busy, onStart: _startLogin),
-                    if (_actionError != null) ...[
-                      const SizedBox(height: 12),
-                      _ErrorBanner(message: _actionError!),
-                    ],
-                    const SizedBox(height: 28),
-                    _SectionTitle(text: 'Claude Code CLI', textTheme: textTheme),
-                    const SizedBox(height: 8),
-                    ClaudeAuthSection(
-                      key: _claudeKey,
-                      serverAddress: widget.serverAddress,
-                      repository: widget.claudeRepository,
-                    ),
-                  ],
-                ),
-    );
-  }
-}
-
-class _StatusCard extends StatelessWidget {
-  const _StatusCard({required this.state, this.email = '', this.plan = ''});
-  final AgyAuthState state;
-  final String email;
-  final String plan;
-
-  @override
-  Widget build(BuildContext context) {
-    final scheme = context.scheme;
-    final status = context.status;
-    final textTheme = Theme.of(context).textTheme;
-    final loggedIn = state.loggedIn;
-    final color = loggedIn ? status.success : status.warning;
-
-    return Material(
-      color: scheme.surfaceContainerLow,
-      borderRadius: BorderRadius.circular(12),
-      child: Padding(
-        padding: const EdgeInsets.all(14),
-        child: Row(
-          children: [
-            Icon(
-              loggedIn ? Icons.verified_user_rounded : Icons.lock_open_rounded,
-              color: color,
-            ),
-            const SizedBox(width: 12),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    loggedIn ? 'Đã đăng nhập' : 'Chưa đăng nhập',
-                    style: textTheme.titleSmall?.copyWith(
-                      fontWeight: FontWeight.w700,
-                      color: color,
-                    ),
-                  ),
-                  const SizedBox(height: 2),
-                  Text(
-                    loggedIn
-                        ? (email.isEmpty ? 'Agy trên server đang dùng tài khoản Google đã đăng nhập.' : '$email${plan.isEmpty ? '' : ' · Gói $plan'}')
-                        : 'Agy chưa có tài khoản. Chat với agy sẽ thất bại cho tới khi đăng nhập.',
-                    style: textTheme.bodySmall?.copyWith(color: scheme.onSurfaceVariant),
-                  ),
-                ],
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-class _LoggedInSection extends StatelessWidget {
-  const _LoggedInSection({required this.busy, required this.onLogout});
-  final bool busy;
-  final VoidCallback onLogout;
-
-  @override
-  Widget build(BuildContext context) {
-    final scheme = context.scheme;
-    return Align(
-      alignment: Alignment.centerLeft,
-      child: OutlinedButton.icon(
-        style: OutlinedButton.styleFrom(foregroundColor: scheme.error),
-        onPressed: busy ? null : onLogout,
-        icon: busy
-            ? const SizedBox(
-                width: 16,
-                height: 16,
-                child: CircularProgressIndicator(strokeWidth: 2),
-              )
-            : const Icon(Icons.logout_rounded),
-        label: const Text('Đăng xuất'),
-      ),
+      body: content,
     );
   }
 }
@@ -405,14 +338,17 @@ class _ErrorBanner extends StatelessWidget {
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Icon(Icons.error_outline_rounded, size: 18, color: scheme.onErrorContainer),
+          Icon(
+            Icons.error_outline_rounded,
+            size: 18,
+            color: scheme.onErrorContainer,
+          ),
           const SizedBox(width: 8),
           Expanded(
             child: Text(
               message,
-              style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                    color: scheme.onErrorContainer,
-                  ),
+              style: Theme.of(context).textTheme.bodySmall
+                  ?.copyWith(color: scheme.onErrorContainer),
             ),
           ),
         ],
@@ -442,7 +378,11 @@ class _ErrorView extends StatelessWidget {
           children: [
             Icon(Icons.cloud_off_rounded, size: 40, color: scheme.error),
             const SizedBox(height: 12),
-            Text(message, textAlign: TextAlign.center, style: textTheme.bodyMedium),
+            Text(
+              message,
+              textAlign: TextAlign.center,
+              style: textTheme.bodyMedium,
+            ),
             const SizedBox(height: 12),
             OutlinedButton(onPressed: onRetry, child: const Text('Thử lại')),
           ],

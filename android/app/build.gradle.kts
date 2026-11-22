@@ -15,7 +15,7 @@ val keystoreProps = Properties().apply {
 val releaseKeyFile: File? = keystoreProps.getProperty("storeFile")?.let { file(it) }?.takeIf { it.exists() }
 
 android {
-    namespace = "vn.muop.muop_agent"
+    namespace = "vn.muop.agents"
     compileSdk = flutter.compileSdkVersion
     ndkVersion = flutter.ndkVersion
 
@@ -26,7 +26,7 @@ android {
 
     defaultConfig {
         // TODO: Specify your own unique Application ID (https://developer.android.com/studio/build/application-id.html).
-        applicationId = "vn.muop.muop_agent"
+        applicationId = "vn.muop.agents"
         // You can update the following values to match your application needs.
         // For more information, see: https://flutter.dev/to/review-gradle-config.
         minSdk = flutter.minSdkVersion

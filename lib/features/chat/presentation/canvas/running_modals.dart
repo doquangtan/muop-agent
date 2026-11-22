@@ -471,7 +471,7 @@ extension _CanvasExtRunningModals on _ChatCanvasViewState {
         ? widget.selectedProject!.path
         : (session != null && session.projectPath.isNotEmpty)
         ? session.projectPath
-        : '/home/john/Documents/muop-ecosystem/muop-erp-server';
+        : widget.workspaceRoot;
 
     showModalBottomSheet<void>(
       context: context,

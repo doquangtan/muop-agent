@@ -1,0 +1,31 @@
+#!/bin/sh
+# Sau khi cài hoặc nâng cấp: bật unit cho mọi user, khởi động hoặc khởi động lại server đang chạy.
+set -e
+
+UNIT=muop-agent-server.service
+
+# Chạy hành động systemctl --user cho từng user đang có user manager (phiên đăng nhập hoạt động)
+each_user_manager() {
+    loginctl list-users --no-legend 2>/dev/null | awk '{print $2}' | while read -r u; do
+        [ -n "$u" ] || continue
+        systemctl --machine="$u@" --user daemon-reload >/dev/null 2>&1 || true
+        systemctl --machine="$u@" --user "$1" "$UNIT" >/dev/null 2>&1 || true
+    done
+}
+
+case "$1" in
+    configure)
+        systemctl --global enable "$UNIT" >/dev/null 2>&1 || true
+        if [ -n "$2" ]; then
+            # Nâng cấp: chỉ khởi động lại server đang chạy để nạp bản mới
+            each_user_manager try-restart
+        else
+            # Cài mới: khởi động server cho các phiên đang đăng nhập
+            each_user_manager start
+        fi
+        update-desktop-database -q /usr/share/applications >/dev/null 2>&1 || true
+        gtk-update-icon-cache -q -t -f /usr/share/icons/hicolor >/dev/null 2>&1 || true
+        ;;
+esac
+
+exit 0

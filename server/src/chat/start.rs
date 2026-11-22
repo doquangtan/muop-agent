@@ -6,6 +6,17 @@ use tokio::io::AsyncWriteExt;
 /// Câu mặc định khi người dùng chỉ gửi ảnh mà không gõ chữ (để lượt chat luôn có nội dung trong lịch sử)
 const DEFAULT_IMAGE_PROMPT: &str = "Hãy mô tả các ảnh đính kèm.";
 
+/// Lỗi khi thiếu công cụ (agy, claude): trả về ngay, client hiển thị và hướng dẫn chọn đường dẫn
+fn tool_missing_response(req: &ChatSendRequest, error: String) -> ChatSendResponse {
+    ChatSendResponse {
+        ok: false,
+        conversation_id: req.conversation_id.clone(),
+        project_path: req.project_path.clone(),
+        error,
+        source: String::new(),
+    }
+}
+
 /// Kiểm tra và lưu ảnh đính kèm ngoài luồng async (giải mã/thu nhỏ ảnh tốn CPU)
 async fn prepare_images_blocking(images: Vec<ChatImage>) -> Result<Vec<PreparedImage>, String> {
     if images.is_empty() {
@@ -17,15 +28,32 @@ async fn prepare_images_blocking(images: Vec<ChatImage>) -> Result<Vec<PreparedI
     }
 }
 
-/// Chạy script đồng bộ session của Antigravity IDE (chỉ dùng cho provider agy)
+/// Script đồng bộ session của Antigravity IDE, nhúng vào binary: không phụ thuộc vị trí repo khi cài .deb
+const SYNC_IDE_SCRIPT: &str = include_str!("../../scripts/sync_antigravity_ide.py");
+
+/// Chạy script đồng bộ session của Antigravity IDE (chỉ dùng cho provider agy).
+/// Script đưa vào `python3 -` qua stdin. Không có python3 thì bỏ qua (tùy chọn).
 pub(super) fn spawn_agy_sync(cid: String, delay_ms: u64) {
     tokio::spawn(async move {
         tokio::time::sleep(Duration::from_millis(delay_ms)).await;
-        let _ = Command::new("python3")
-            .arg("/home/john/Documents/muop-ecosystem/muop-agent/server/scripts/sync_antigravity_ide.py")
+        let Some(python) = crate::infra::tools::resolve("python3") else {
+            return;
+        };
+        let Ok(mut child) = Command::new(python)
+            .arg("-")
             .arg(&cid)
-            .output()
-            .await;
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .kill_on_drop(true)
+            .spawn()
+        else {
+            return;
+        };
+        if let Some(mut stdin) = child.stdin.take() {
+            let _ = stdin.write_all(SYNC_IDE_SCRIPT.as_bytes()).await;
+        }
+        let _ = child.wait().await;
     });
 }
 
@@ -42,6 +70,24 @@ pub async fn start_chat_turn_attempt(
     mut req: ChatSendRequest,
     attempt: u32,
 ) -> ChatSendResponse {
+    // Project ở máy khác: mount về đây và chạy agent trên điểm mount. Làm trước khi chụp snapshot
+    // để lượt tự gửi lại (retry) dùng luôn điểm mount, không mount lại theo đường dẫn của máy gửi.
+    if let Some(remote) = req.remote_project.take() {
+        match crate::fsmount::resolve_chat_project(&remote).await {
+            Ok(mounted) => {
+                req.project_path = mounted.mount_point.to_string_lossy().into_owned();
+            }
+            Err(error) => {
+                return ChatSendResponse {
+                    ok: false,
+                    conversation_id: req.conversation_id,
+                    project_path: remote.project_path,
+                    error,
+                    source: String::new(),
+                };
+            }
+        }
+    }
     let request_snapshot = req.clone();
     let trimmed_prompt = req.prompt.trim().to_string();
     let images_in = std::mem::take(&mut req.images);
@@ -75,9 +121,15 @@ pub async fn start_chat_turn_attempt(
 
     let (provider, model) = resolve_model(&req.model);
 
-    let mut effective_cwd = req.project_path.trim().to_string();
+    let effective_cwd = req.project_path.trim().to_string();
     if effective_cwd.is_empty() || !Path::new(&effective_cwd).exists() {
-        effective_cwd = "/home/john/Documents/muop-ecosystem/muop-erp-server".to_string();
+        return ChatSendResponse {
+            ok: false,
+            conversation_id: req.conversation_id,
+            project_path: req.project_path,
+            error: "Chưa chọn project hợp lệ cho lượt chat".to_string(),
+            source: String::new(),
+        };
     }
 
     let clean_conv_id = req.conversation_id.trim().to_string();
@@ -109,8 +161,12 @@ pub async fn start_chat_turn_attempt(
             let stream_input = !images.is_empty();
             let payload =
                 stream_input.then(|| attachments::claude_stream_input_line(body, &images));
+            let bin = match crate::claude::code::claude_bin() {
+                Ok(bin) => bin,
+                Err(e) => return tool_missing_response(&req, e),
+            };
             (
-                crate::claude::code::claude_bin(),
+                bin,
                 claude_args(
                     body,
                     &model,
@@ -122,16 +178,31 @@ pub async fn start_chat_turn_attempt(
                 payload,
             )
         }
-        Provider::Agy => (
-            agy_bin().to_string(),
-            agy_args(
-                &attachments::agy_prompt(&user_text, &images),
-                &model,
-                resume_id,
-                req.agent_name.trim(),
-            ),
-            None,
-        ),
+        Provider::Agy => {
+            // Project trên mount: nhắc agent dùng thư mục mount, vì conversation cũ có thể nhớ đường dẫn khác
+            let agy_text = if crate::fsmount::is_mount_path(&effective_cwd) {
+                format!(
+                    "{user_text}{}",
+                    attachments::agy_workdir_note(&effective_cwd)
+                )
+            } else {
+                user_text.clone()
+            };
+            let bin = match agy_bin() {
+                Ok(bin) => bin,
+                Err(e) => return tool_missing_response(&req, e),
+            };
+            (
+                bin,
+                agy_args(
+                    &attachments::agy_prompt(&agy_text, &images),
+                    &model,
+                    resume_id,
+                    req.agent_name.trim(),
+                ),
+                None,
+            )
+        }
     };
 
     eprintln!(
@@ -145,20 +216,22 @@ pub async fn start_chat_turn_attempt(
         user_text
     );
 
-    let use_systemd_scope =
-        Path::new("/usr/bin/systemd-run").exists() || Path::new("/bin/systemd-run").exists();
-    let mut cmd = if use_systemd_scope {
-        let mut c = Command::new("systemd-run");
-        c.arg("--user")
-            .arg("--scope")
-            .arg("--quiet")
-            .arg(&bin)
-            .args(&args);
-        c
-    } else {
-        let mut c = Command::new(&bin);
-        c.args(&args);
-        c
+    // systemd-run (nếu dò được bằng which): chạy agent trong scope riêng, tách khỏi tiến trình server
+    let mut cmd = match crate::infra::tools::resolve("systemd-run") {
+        Some(systemd_run) => {
+            let mut c = Command::new(systemd_run);
+            c.arg("--user")
+                .arg("--scope")
+                .arg("--quiet")
+                .arg(&bin)
+                .args(&args);
+            c
+        }
+        None => {
+            let mut c = Command::new(&bin);
+            c.args(&args);
+            c
+        }
     };
 
     let mut child = match cmd

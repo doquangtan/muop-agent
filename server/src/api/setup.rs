@@ -1,4 +1,4 @@
-use crate::setup::{self, ssh, InstallRequest, SelectRequest};
+use crate::setup::{self, ssh, InstallRequest, SelectRequest, ToolPathRequest};
 use axum::{http::StatusCode, response::IntoResponse, Json};
 
 /// Đổi user SSH của máy này (REST, tương đương `setup:ssh:configure`)
@@ -60,6 +60,14 @@ pub async fn handle_setup_install(Json(req): Json<InstallRequest>) -> impl IntoR
     (code, Json(res))
 }
 
+/// Lưu đường dẫn công cụ người dùng chọn (REST, tương đương `setup:tool-path`)
+pub async fn handle_setup_tool_path(Json(req): Json<ToolPathRequest>) -> impl IntoResponse {
+    match setup::set_tool_path(&req) {
+        Ok(s) => (StatusCode::OK, Json(s)),
+        Err(e) => (StatusCode::BAD_REQUEST, Json(setup::status(false, e))),
+    }
+}
+
 /// Lưu CLI đã chọn (REST, tương đương `setup:select`)
 pub async fn handle_setup_select(Json(req): Json<SelectRequest>) -> impl IntoResponse {
     match setup::select_clis(&req.clis) {
@@ -76,5 +84,13 @@ pub async fn handle_setup_complete() -> impl IntoResponse {
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(setup::status(false, e)),
         ),
+    }
+}
+
+/// Lưu thư mục project (REST, tương đương `setup:workspace`)
+pub async fn handle_setup_workspace(Json(req): Json<setup::WorkspaceRequest>) -> impl IntoResponse {
+    match setup::set_workspace(&req.path) {
+        Ok(s) => (StatusCode::OK, Json(s)),
+        Err(e) => (StatusCode::BAD_REQUEST, Json(setup::status(false, e))),
     }
 }

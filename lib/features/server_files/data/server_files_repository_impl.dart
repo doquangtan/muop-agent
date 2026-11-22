@@ -260,7 +260,7 @@ class ServerFilesRepositoryImpl implements ServerFilesRepository {
   }
 
   static const MethodChannel _fileOpenerChannel =
-      MethodChannel('vn.muop.muop_agent/file_opener');
+      MethodChannel('vn.muop.agents/file_opener');
 
   /// Mở trực tiếp tệp vừa tải về trên thiết bị (Android FileProvider Intent hoặc Linux xdg-open)
   @override

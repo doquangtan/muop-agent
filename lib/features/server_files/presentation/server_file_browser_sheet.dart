@@ -160,12 +160,17 @@ class ServerFileBrowserSheet extends ConsumerWidget {
     required this.projects,
     required this.sessionFiles,
     this.initialTab = 0,
+    this.workspaceRoot = '',
+    this.homeDir = '',
   });
 
   final String initialPath;
   final List<ProjectWorkspace> projects;
   final List<FileTouchRecord> sessionFiles;
   final int initialTab;
+  /// Thư mục project gốc và home của server (lấy từ `meta`, không đoán trên client)
+  final String workspaceRoot;
+  final String homeDir;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -177,6 +182,8 @@ class ServerFileBrowserSheet extends ConsumerWidget {
       projects: projects,
       sessionFiles: sessionFiles,
       initialTab: initialTab,
+      workspaceRoot: workspaceRoot,
+      homeDir: homeDir,
     );
   }
   static Future<void> show(
@@ -185,6 +192,8 @@ class ServerFileBrowserSheet extends ConsumerWidget {
     required List<ProjectWorkspace> projects,
     required List<FileTouchRecord> sessionFiles,
     int initialTab = 0,
+    String workspaceRoot = '',
+    String homeDir = '',
   }) {
     final colorScheme = Theme.of(context).colorScheme;
     return showModalBottomSheet<void>(
@@ -202,6 +211,8 @@ class ServerFileBrowserSheet extends ConsumerWidget {
           projects: projects,
           sessionFiles: sessionFiles,
           initialTab: initialTab,
+          workspaceRoot: workspaceRoot,
+          homeDir: homeDir,
         ),
       ),
     );
@@ -251,12 +262,16 @@ class ServerFileBrowserSheetView extends StatefulWidget {
     required this.projects,
     required this.sessionFiles,
     this.initialTab = 0,
+    this.workspaceRoot = '',
+    this.homeDir = '',
   });
   final String serverAddress;
   final String initialPath;
   final List<ProjectWorkspace> projects;
   final List<FileTouchRecord> sessionFiles;
   final int initialTab;
+  final String workspaceRoot;
+  final String homeDir;
 
   @override
   State<ServerFileBrowserSheetView> createState() => _ServerFileBrowserSheetState();
@@ -283,6 +298,9 @@ class _ServerFileBrowserSheetState extends State<ServerFileBrowserSheetView> {
   int _totalBytes = 0;
   String? _lastSavedPath;
   String? _downloadError;
+  /// Thư mục đang hiển thị và đang được server theo dõi (`explore:`)
+  String? _watchedDir;
+  StreamSubscription<String>? _changedSub;
 
   @override
   void initState() {
@@ -290,22 +308,46 @@ class _ServerFileBrowserSheetState extends State<ServerFileBrowserSheetView> {
     _activeTab = widget.initialTab;
     _currentPath = widget.initialPath.trim().isNotEmpty
         ? widget.initialPath.trim()
-        : '/home/john/Documents/muop-ecosystem';
+        : (widget.workspaceRoot.isNotEmpty ? widget.workspaceRoot : widget.homeDir);
     _pathEditController = TextEditingController(text: _currentPath);
+    _changedSub = AppDependencies.explore.changedRooms.listen(_onRoomChanged);
     _loadDirectory(_currentPath);
   }
 
   @override
   void dispose() {
+    _changedSub?.cancel();
+    final watched = _watchedDir;
+    if (watched != null) AppDependencies.explore.unwatch(watched);
+    _watchedDir = null;
     super.dispose();
   }
 
-  Future<void> _loadDirectory(String path) async {
-    setState(() {
-      _isLoading = true;
-      _errorMessage = '';
-      _isEditingPath = false;
-    });
+  /// Chuyển theo dõi sang thư mục đang hiển thị (bỏ thư mục cũ)
+  void _setWatch(String dir) {
+    if (dir == _watchedDir) return;
+    final previous = _watchedDir;
+    if (previous != null) AppDependencies.explore.unwatch(previous);
+    AppDependencies.explore.watch(dir);
+    _watchedDir = dir;
+  }
+
+  /// Server báo thư mục đang xem đã đổi: nạp lại danh sách, không hiện trạng thái đang tải
+  void _onRoomChanged(String room) {
+    final dir = _watchedDir;
+    if (dir == null || !mounted) return;
+    if (AppDependencies.explore.roomOf(dir) != room) return;
+    _loadDirectory(_currentPath, silent: true);
+  }
+
+  Future<void> _loadDirectory(String path, {bool silent = false}) async {
+    if (!silent) {
+      setState(() {
+        _isLoading = true;
+        _errorMessage = '';
+        _isEditingPath = false;
+      });
+    }
 
     final res = await AppDependencies.serverFiles.fetchServerDirectory(
       address: widget.serverAddress,
@@ -328,6 +370,7 @@ class _ServerFileBrowserSheetState extends State<ServerFileBrowserSheetView> {
             : 'Không thể đọc thư mục SFTP từ Rust Server';
       }
     });
+    if (res.ok) _setWatch(res.currentPath);
   }
 
   Future<void> _downloadFile(String remotePath) async {
@@ -766,28 +809,29 @@ class _ServerFileBrowserSheetState extends State<ServerFileBrowserSheetView> {
             scrollDirection: Axis.horizontal,
             padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
             children: [
-              Padding(
-                padding: const EdgeInsets.only(right: 6),
-                child: ActionChip(
-                  visualDensity: VisualDensity.compact,
-                  avatar: const Icon(Icons.home_outlined, size: 13.5),
-                  label: const Text('/home/john', style: TextStyle(fontSize: 11.5)),
-                  onPressed: () => _loadDirectory('/home/john'),
-                ),
-              ),
-              Padding(
-                padding: const EdgeInsets.only(right: 6),
-                child: ActionChip(
-                  visualDensity: VisualDensity.compact,
-                  avatar: const Icon(Icons.workspaces_outlined, size: 13.5),
-                  label: const Text(
-                    'muop-ecosystem',
-                    style: TextStyle(fontSize: 11.5),
+              if (widget.homeDir.isNotEmpty)
+                Padding(
+                  padding: const EdgeInsets.only(right: 6),
+                  child: ActionChip(
+                    visualDensity: VisualDensity.compact,
+                    avatar: const Icon(Icons.home_outlined, size: 13.5),
+                    label: Text(widget.homeDir, style: const TextStyle(fontSize: 11.5)),
+                    onPressed: () => _loadDirectory(widget.homeDir),
                   ),
-                  onPressed: () =>
-                      _loadDirectory('/home/john/Documents/muop-ecosystem'),
                 ),
-              ),
+              if (widget.workspaceRoot.isNotEmpty)
+                Padding(
+                  padding: const EdgeInsets.only(right: 6),
+                  child: ActionChip(
+                    visualDensity: VisualDensity.compact,
+                    avatar: const Icon(Icons.workspaces_outlined, size: 13.5),
+                    label: Text(
+                      widget.workspaceRoot.split('/').last,
+                      style: const TextStyle(fontSize: 11.5),
+                    ),
+                    onPressed: () => _loadDirectory(widget.workspaceRoot),
+                  ),
+                ),
               for (final p in widget.projects)
                 Padding(
                   padding: const EdgeInsets.only(right: 6),

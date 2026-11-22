@@ -1,30 +1,14 @@
 use super::*;
 
-/// Đường dẫn binary `claude`. Ưu tiên biến môi trường `MUOP_CLAUDE_BIN`,
-/// sau đó các vị trí cài đặt phổ biến, cuối cùng là tìm trong PATH.
-pub fn claude_bin() -> String {
+/// Đường dẫn binary `claude`. Ưu tiên biến môi trường `MUOP_CLAUDE_BIN` (dùng khi phát triển),
+/// rồi dò bằng `which` hoặc đường dẫn người dùng đã chọn trong Khởi tạo.
+pub fn claude_bin() -> Result<String, String> {
     if let Ok(p) = std::env::var("MUOP_CLAUDE_BIN") {
         if !p.trim().is_empty() {
-            return p.trim().to_string();
+            return Ok(p.trim().to_string());
         }
     }
-    let home = home_dir();
-    let candidates = [
-        home.join(".local/bin/claude"),
-        home.join(".nvm/versions/node/v22.21.1/bin/claude"),
-        PathBuf::from("/usr/local/bin/claude"),
-    ];
-    for c in candidates.iter() {
-        // `exists()` trả về false với symlink hỏng nên các đường dẫn hỏng sẽ bị bỏ qua
-        if c.exists() {
-            return c.to_string_lossy().to_string();
-        }
-    }
-    // Dự phòng: cùng logic tìm của màn khởi tạo (PATH của shell user, kể cả nvm đổi version)
-    if let Some(found) = crate::setup::install::find_bin("claude") {
-        return found.to_string_lossy().to_string();
-    }
-    "claude".to_string()
+    crate::infra::tools::require("claude")
 }
 
 /// Model mặc định của Claude Code CLI (ID đầy đủ có version)
@@ -55,10 +39,9 @@ pub fn effort_levels() -> Vec<String> {
             }
         }
     }
-    let levels = Command::new(claude_bin())
-        .arg("--help")
-        .output()
+    let levels = claude_bin()
         .ok()
+        .and_then(|bin| Command::new(bin).arg("--help").output().ok())
         .map(|out| parse_effort_levels(&String::from_utf8_lossy(&out.stdout)))
         .unwrap_or_default();
     if let Ok(mut guard) = EFFORT_CACHE.lock() {
@@ -109,8 +92,12 @@ pub fn claude_model_ids() -> Vec<String> {
 
 /// Tách hậu tố mức suy nghĩ khỏi id model: `claude-sonnet-5-5-high` → (`claude-sonnet-5-5`, Some(`high`))
 pub fn split_effort(model: &str) -> (String, Option<String>) {
-    let levels = effort_levels();
-    for level in &levels {
+    split_effort_with(model, &effort_levels())
+}
+
+/// Tách hậu tố mức khỏi id model theo danh sách mức đã biết (hàm thuần, không gọi CLI)
+pub fn split_effort_with(model: &str, levels: &[String]) -> (String, Option<String>) {
+    for level in levels {
         if let Some(base) = model.strip_suffix(&format!("-{level}")) {
             if !base.is_empty() {
                 return (base.to_string(), Some(level.clone()));

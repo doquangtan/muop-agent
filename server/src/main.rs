@@ -1,11 +1,14 @@
 mod agy_auth;
+mod agy_account;
 mod api;
 mod bridge;
 mod chat;
 mod claude;
 mod claude_auth;
 mod docker;
+mod explore;
 mod files;
+mod fsmount;
 mod git;
 mod infra;
 mod lsp;
@@ -169,10 +172,7 @@ async fn main() {
         .layer(axum::extract::DefaultBodyLimit::max(MAX_REQUEST_BODY_BYTES))
         .with_state(app_state);
 
-    let port = std::env::var("PORT")
-        .ok()
-        .and_then(|s| s.parse::<u16>().ok())
-        .unwrap_or(scanner::DEFAULT_PORT);
+    let port = scanner::listen_port();
     let addr = SocketAddr::from(([0, 0, 0, 0], port));
 
     let ips = scanner::detect_lan_ips();

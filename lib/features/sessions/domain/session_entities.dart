@@ -457,8 +457,8 @@ class ConversationSession {
     required this.totalInputTokens,
     required this.totalOutputTokens,
     required this.totalCacheTokens,
-    this.projectName = 'muop-erp-server',
-    this.projectPath = '/home/john/Documents/muop-ecosystem/muop-erp-server',
+    this.projectName = '',
+    this.projectPath = '',
     this.isSimulated = false,
     this.pendingPlans = const [],
     this.gitSyncStatus,
@@ -678,9 +678,8 @@ class ConversationSession {
       totalInputTokens: (json['totalInputTokens'] as num?)?.toInt() ?? 0,
       totalOutputTokens: (json['totalOutputTokens'] as num?)?.toInt() ?? 0,
       totalCacheTokens: (json['totalCacheTokens'] as num?)?.toInt() ?? 0,
-      projectName: '${json['projectName'] ?? 'muop-erp-server'}',
-      projectPath:
-          '${json['projectPath'] ?? '/home/john/Documents/muop-ecosystem/muop-erp-server'}',
+      projectName: '${json['projectName'] ?? ''}',
+      projectPath: '${json['projectPath'] ?? ''}',
       isSimulated: json['isSimulated'] == true,
       pendingPlans: (json['pendingPlans'] is List)
           ? (json['pendingPlans'] as List)
@@ -813,6 +812,8 @@ class ServerMeta {
     required this.lanIps,
     required this.port,
     this.effortLevels = const [],
+    this.workspaceRoot = '',
+    this.homeDir = '',
   });
 
   final List<ProjectWorkspace> projects;
@@ -826,6 +827,12 @@ class ServerMeta {
   final int port;
   /// Mức suy nghĩ (effort) mà CLI của server hỗ trợ, theo thứ tự từ thấp đến cao; rỗng nếu không rõ
   final List<String> effortLevels;
+
+  /// Thư mục project đã chọn trong Khởi tạo (rỗng nếu chưa chọn): gốc mặc định, không đoán trên client
+  final String workspaceRoot;
+
+  /// Thư mục home của user đang chạy server
+  final String homeDir;
 
   factory ServerMeta.fromJson(Map<String, dynamic> json) {
     final projects = <ProjectWorkspace>[];
@@ -866,6 +873,8 @@ class ServerMeta {
         if (json['effortLevels'] is List)
           for (final e in json['effortLevels'] as List) '$e',
       ],
+      workspaceRoot: '${json['workspaceRoot'] ?? ''}',
+      homeDir: '${json['homeDir'] ?? ''}',
     );
   }
 }

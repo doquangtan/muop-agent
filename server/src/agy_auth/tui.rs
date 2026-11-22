@@ -49,7 +49,7 @@ impl Output {
     }
 }
 
-pub(super) struct Session {
+pub(crate) struct Session {
     child: Child,
     writer: File,
     out: Arc<Mutex<Output>>,
@@ -72,12 +72,12 @@ fn is_closed(out: &Arc<Mutex<Output>>) -> bool {
 }
 
 /// TUI của phiên còn chạy (chưa thoát)
-pub(super) fn session_alive(session: &Session) -> bool {
+pub(crate) fn session_alive(session: &Session) -> bool {
     !is_closed(&session.out)
 }
 
 /// Đóng TUI của một phiên
-pub(super) fn close_session(session: Session) {
+pub(crate) fn close_session(session: Session) {
     session.close();
 }
 
@@ -175,6 +175,11 @@ impl Session {
 }
 
 pub(super) fn spawn_tui() -> Result<Session, String> {
+    spawn_agy(&[], &[])
+}
+
+/// Chạy agy trong PTY với tham số và biến môi trường thêm (ví dụ `--hub` với `AGY_ENABLE_HUB=1`)
+pub(crate) fn spawn_agy(args: &[&str], envs: &[(&str, &str)]) -> Result<Session, String> {
     let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
     let dir = std::env::temp_dir().join(format!("muop-agy-tui-{}-{id}", std::process::id()));
     fs::create_dir_all(&dir).map_err(|_| "Không tạo được thư mục tạm cho agy".to_string())?;
@@ -218,7 +223,10 @@ pub(super) fn spawn_tui() -> Result<Session, String> {
         .map(PathBuf::from)
         .filter(|p| p.is_dir())
         .unwrap_or_else(|| dir.clone());
-    let mut cmd = Command::new(crate::chat::agy_bin());
+    let agy = crate::chat::agy_bin()?;
+    let mut cmd = Command::new(agy);
+    cmd.args(args);
+    cmd.envs(envs.iter().copied());
     cmd.current_dir(&workdir)
         .env("TERM", "xterm-256color")
         // Đánh dấu TUI do server tạo để lần khởi động sau tắt được tiến trình còn sót (xem `host::cleanup_stale`)
@@ -429,6 +437,18 @@ pub(super) fn chat_ready(text: &str) -> bool {
     compact.contains(&CHAT_READY_MARK.replace(' ', ""))
 }
 
+/// Menu chọn cách đăng nhập đang hiện, có mục "Google OAuth" (so khớp bỏ khoảng trắng, không phân biệt hoa thường).
+/// Chỉ dùng khi chưa có link: đầu ra là toàn bộ lịch sử, nên menu cũ vẫn còn sau khi đã chuyển màn
+/// (khi đó caller đã có link hoặc đã gửi mã và không hỏi lại).
+pub(super) fn google_menu_on_screen(text: &str) -> bool {
+    let compact: String = text
+        .chars()
+        .filter(|c| !c.is_whitespace())
+        .collect::<String>()
+        .to_lowercase();
+    compact.contains("selectloginmethod") && compact.contains("googleoauth")
+}
+
 /// Nội dung lỗi xác thực agy in ra, chỉ khi TUI đã vẽ xong thông báo (có "Press any key")
 pub(super) fn auth_error(text: &str) -> Option<String> {
     let rest = text.split(ERROR_MARK).nth(1)?;
@@ -530,5 +550,17 @@ mod tests {
     fn detects_success_mark() {
         assert!(auth_succeeded("...Authentication successful\n"));
         assert!(!auth_succeeded("Select login method"));
+    }
+
+    #[test]
+    fn detects_google_menu_with_or_without_spaces() {
+        assert!(google_menu_on_screen(
+            "Select login method\n> 1. Google OAuth\n2. API key"
+        ));
+        assert!(google_menu_on_screen("Selectloginmethod:>1.GoogleOAuth"));
+        assert!(!google_menu_on_screen(
+            "Open the URL below in your browser:"
+        ));
+        assert!(!google_menu_on_screen("Select login method only"));
     }
 }

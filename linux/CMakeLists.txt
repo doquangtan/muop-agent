@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.13)
 project(runner LANGUAGES CXX)
 
 set(BINARY_NAME "muop_agent")
-set(APPLICATION_ID "vn.muop.muop_agent")
+set(APPLICATION_ID "vn.muop.agents")
 
 cmake_policy(SET CMP0063 NEW)
 

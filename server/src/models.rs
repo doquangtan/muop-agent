@@ -284,6 +284,26 @@ pub struct ChatSendRequest {
     /// Ảnh đính kèm (base64). Rỗng nếu tin nhắn chỉ có chữ.
     #[serde(default)]
     pub images: Vec<ChatImage>,
+    /// Project nằm trên máy gửi (bridge gắn vào khi chạy từ máy khác). Máy nhận mount thư mục đó
+    /// qua `/api/fs/*` rồi thay `project_path` bằng điểm mount. Không gửi thì chạy trên máy này.
+    #[serde(default)]
+    pub remote_project: Option<RemoteProject>,
+}
+
+/// Thư mục project trên máy khác: các địa chỉ có thể dùng để kết nối tới máy đó và đường dẫn tuyệt đối
+/// của project trên máy đó.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RemoteProject {
+    /// Địa chỉ `http://IP:PORT` của máy có project, theo thứ tự ưu tiên gợi ý
+    #[serde(default)]
+    pub urls: Vec<String>,
+    /// Đường dẫn tuyệt đối của project trên máy có project
+    #[serde(default)]
+    pub project_path: String,
+    /// Tên máy có project (dùng đặt tên điểm mount)
+    #[serde(default)]
+    pub origin_host: String,
 }
 
 /// Một ảnh người dùng đính kèm vào tin nhắn chat
@@ -882,6 +902,10 @@ pub struct MetaPayload {
     pub lan_ips: Vec<String>,
     pub port: u16,
     pub timestamp: String,
+    /// Thư mục project đã chọn trong Khởi tạo (rỗng nếu chưa chọn): client dùng làm gốc, không tự đoán
+    pub workspace_root: String,
+    /// Thư mục home của user đang chạy server (gốc duyệt file)
+    pub home_dir: String,
 }
 
 /// Trạng thái đăng nhập agy (`/api/agy/auth/*`)

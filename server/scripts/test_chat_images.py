@@ -19,6 +19,7 @@ import sys
 import time
 import urllib.error
 import urllib.request
+import os
 
 from PIL import Image
 
@@ -65,7 +66,7 @@ class Api:
             "/api/chat/send",
             {
                 "prompt": prompt,
-                "projectPath": "/home/john/Documents/muop-ecosystem/muop-agent",
+                "projectPath": PROJECT_PATH,
                 "conversationId": conversation_id,
                 "agentName": "",
                 "model": model,
@@ -242,13 +243,29 @@ def run_provider(api, label, model, checks):
     checks.check(status == 400 and res.get("error") == "Nội dung tin nhắn trống", "tin trống, không ảnh bị từ chối (400)", str(res))
 
 
+# Thư mục project gửi kèm mỗi lượt: MUOP_TEST_PROJECT, nếu không có thì workspace đã cấu hình trên server
+PROJECT_PATH = os.environ.get("MUOP_TEST_PROJECT", "")
+
+
+def workspace_from_server(base):
+    with urllib.request.urlopen(base.rstrip("/") + "/api/setup/status", timeout=10) as r:
+        return json.loads(r.read().decode()).get("workspaceRoot", "")
+
+
 def main():
+    global PROJECT_PATH
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--base", default="http://127.0.0.1:8787")
     parser.add_argument("--claude-model", default="claude-cli:claude-haiku-5-5")
     parser.add_argument("--agy-model", default="agy:gemini-4-hydrogen-low")
     parser.add_argument("--only", choices=["claude", "agy"], help="chỉ chạy một provider")
     args = parser.parse_args()
+
+    if not PROJECT_PATH:
+        PROJECT_PATH = workspace_from_server(args.base)
+    if not PROJECT_PATH:
+        print("Chưa có thư mục project: đặt MUOP_TEST_PROJECT hoặc chọn workspace trong Khởi tạo")
+        return 2
 
     api = Api(args.base)
     checks = Checks()

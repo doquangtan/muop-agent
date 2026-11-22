@@ -204,64 +204,6 @@ pub fn read_usage_screen() -> Result<String, String> {
     Ok(text)
 }
 
-/// Thời gian tối đa chờ `agy models` báo đã đăng xuất sau khi gõ `/logout`
-const LOGOUT_WAIT: Duration = Duration::from_secs(60);
-/// Khoảng cách hỏi `agy models` sau `/logout` (mỗi lần là một tiến trình agy)
-const LOGOUT_CHECK_EVERY: Duration = Duration::from_secs(2);
-/// Lệnh đăng xuất gõ vào TUI (cùng thao tác người dùng tự làm)
-const LOGOUT_COMMAND: &str = "/logout";
-
-/// Đăng xuất agy đúng như người dùng làm: mở TUI `agy`, gõ `/logout` rồi Enter.
-/// Trạng thái chỉ kiểm tra bằng `agy models` (không đọc chữ trên màn hình để kết luận):
-/// đã đăng xuất sẵn thì không mở TUI; sau `/logout` thì chờ `agy models` báo "sign in".
-/// Chặn luồng (có thể mất vài chục giây): gọi qua `spawn_blocking`.
-pub fn logout_tui() -> Result<(), String> {
-    // Giữ khóa HOST suốt lần đăng xuất: không để lần hỏi khác mở thêm một agy song song
-    let mut guard = HOST
-        .lock()
-        .map_err(|_| "Không khóa được phiên agy".to_string())?;
-    if let Some(old) = guard.take() {
-        tui::close_session(old);
-    }
-    if matches!(super::signed_in_by_models(), Ok(false)) {
-        return Ok(());
-    }
-    let mut session = tui::spawn_tui()?;
-
-    // Chờ giao diện vẽ xong để nhận lệnh (chỉ là chờ TUI sẵn sàng, không dùng để xác định đăng nhập)
-    let deadline = Instant::now() + PROBE_WAIT;
-    loop {
-        session.nudge_first_run();
-        if screen_logged_in(&session).is_some() {
-            break;
-        }
-        if Instant::now() >= deadline {
-            tui::close_session(session);
-            return Err("Không mở được giao diện agy để đăng xuất".to_string());
-        }
-        std::thread::sleep(POLL);
-    }
-
-    if let Err(e) = tui::type_line(&mut session, LOGOUT_COMMAND) {
-        tui::close_session(session);
-        return Err(e);
-    }
-
-    // Giữ TUI mở tới khi agy xóa token xong, rồi mới đóng
-    let deadline = Instant::now() + LOGOUT_WAIT;
-    let result = loop {
-        if matches!(super::signed_in_by_models(), Ok(false)) {
-            break Ok(());
-        }
-        if Instant::now() >= deadline {
-            break Err("agy vẫn báo đã đăng nhập sau lệnh /logout".to_string());
-        }
-        std::thread::sleep(LOGOUT_CHECK_EVERY);
-    };
-    tui::close_session(session);
-    result
-}
-
 /// Tắt host (sau khi đổi tài khoản). Lần hỏi sau sẽ mở host mới và đọc trạng thái mới.
 pub fn restart() {
     if let Ok(mut guard) = HOST.lock() {

@@ -10,7 +10,6 @@ use axum::{
 use serde_json::json;
 use std::collections::HashMap;
 use std::fs;
-use std::path::Path;
 
 pub async fn handle_plan_pending(
     Query(params): Query<HashMap<String, String>>,
@@ -42,7 +41,24 @@ pub async fn handle_plan_action(
         );
     }
 
-    let brain_dir = Path::new(scanner::BRAIN_DIR_PATH).join(conv_id);
+    // Lượt phê duyệt/góp ý chạy trong đúng project của conversation (không dùng đường dẫn cố định)
+    let cid_for_lookup = conv_id.to_string();
+    let project_path = tokio::task::spawn_blocking(move || {
+        scanner::get_single_session_with_streams(&cid_for_lookup, &HashMap::new())
+            .map(|s| s.project_path)
+            .filter(|p| !p.is_empty())
+    })
+    .await
+    .ok()
+    .flatten();
+    let Some(project_path) = project_path else {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "ok": false, "error": "Không xác định được project của conversation" })),
+        );
+    };
+
+    let brain_dir = scanner::brain_root().join(conv_id);
     let meta_file = brain_dir.join(format!("{}.metadata.json", req.file_name));
 
     if req.action == "approve" || req.action == "cancel" {
@@ -75,11 +91,12 @@ pub async fn handle_plan_action(
         };
         let send_req = ChatSendRequest {
             prompt: prompt.to_string(),
-            project_path: "/home/john/Documents/muop-ecosystem/muop-erp-server".to_string(),
+            project_path: project_path.clone(),
             conversation_id: conv_id.to_string(),
             agent_name: "Coordinator".to_string(),
             model: req.model.clone(),
             images: Vec::new(),
+            remote_project: None,
         };
 
         let result = chat::start_chat_turn(state.clone(), send_req).await;
@@ -111,11 +128,12 @@ pub async fn handle_plan_action(
 
         let send_req = ChatSendRequest {
             prompt: feedback_msg,
-            project_path: "/home/john/Documents/muop-ecosystem/muop-erp-server".to_string(),
+            project_path: project_path.clone(),
             conversation_id: conv_id.to_string(),
             agent_name: "Coordinator".to_string(),
             model: req.model.clone(),
             images: Vec::new(),
+            remote_project: None,
         };
 
         let result = chat::start_chat_turn(state.clone(), send_req).await;

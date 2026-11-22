@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Mướp Agents
+Comment=Giám sát và trò chuyện với AI coding agent
+Exec=/usr/bin/muop-agent
+Icon=vn.muop.agents
+Terminal=false
+Categories=Development;
+StartupWMClass=vn.muop.agents

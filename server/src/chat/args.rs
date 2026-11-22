@@ -145,12 +145,18 @@ mod claude_effort_args_tests {
 
     #[test]
     fn effort_suffix_becomes_effort_flag() {
-        let args = claude_args("hi", "claude-sonnet-5-5-high", None, "/tmp", false, false);
-        assert_eq!(
-            arg_after(&args, "--model").as_deref(),
-            Some("claude-sonnet-5-5")
-        );
-        assert_eq!(arg_after(&args, "--effort").as_deref(), Some("high"));
+        // Hàm thuần với danh sách mức cho sẵn: không phụ thuộc việc tìm được CLI `claude` trên máy
+        let levels: Vec<String> = ["low", "medium", "high", "xhigh", "max"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let (base, effort) =
+            crate::claude::code::split_effort_with("claude-sonnet-5-5-high", &levels);
+        assert_eq!(base, "claude-sonnet-5-5");
+        assert_eq!(effort.as_deref(), Some("high"));
+        let (base, effort) = crate::claude::code::split_effort_with("claude-sonnet-5-5", &levels);
+        assert_eq!(base, "claude-sonnet-5-5");
+        assert_eq!(effort, None);
     }
 
     #[test]

@@ -2,12 +2,12 @@ use super::*;
 
 pub(super) fn load_conversation_summary_meta() -> HashMap<String, DbConversationMeta> {
     let mut map = HashMap::new();
-    if !Path::new(SUMMARY_DB_PATH).exists() {
+    if !summary_db_path().exists() {
         return map;
     }
 
     let conn = match Connection::open_with_flags(
-        SUMMARY_DB_PATH,
+        summary_db_path(),
         OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
     ) {
         Ok(c) => c,
@@ -61,10 +61,7 @@ pub(super) fn resolve_project_from_workspace_uris(uris_json: &str) -> (String, S
             }
         }
     }
-    (
-        "muop-erp-server".to_string(),
-        format!("{}/muop-erp-server", ECOSYSTEM_DIR_PATH),
-    )
+    ("(không rõ project)".to_string(), String::new())
 }
 
 pub(super) fn normalize_project_path(raw_path: &str) -> (String, String) {
@@ -72,11 +69,13 @@ pub(super) fn normalize_project_path(raw_path: &str) -> (String, String) {
         .split('/')
         .filter(|s| !s.is_empty())
         .last()
-        .unwrap_or("muop-erp-server")
+        .unwrap_or("(không rõ project)")
         .to_string();
-    let candidate = format!("{}/{}", ECOSYSTEM_DIR_PATH, name);
-    if Path::new(&candidate).exists() {
-        return (name, candidate);
+    if let Some(root) = crate::setup::workspace_root() {
+        let candidate = root.join(&name);
+        if candidate.exists() {
+            return (name, candidate.to_string_lossy().into_owned());
+        }
     }
     (name, raw_path.to_string())
 }

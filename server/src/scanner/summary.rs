@@ -43,5 +43,7 @@ pub fn build_meta(sessions: &[ConversationSession]) -> crate::models::MetaPayloa
         lan_ips: detect_lan_ips(),
         port: DEFAULT_PORT,
         timestamp: Utc::now().to_rfc3339(),
+        workspace_root: crate::setup::configured_workspace(),
+        home_dir: crate::infra::paths::home_dir().display().to_string(),
     }
 }

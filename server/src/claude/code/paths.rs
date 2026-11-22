@@ -6,7 +6,7 @@ pub(super) const MAX_SESSION_FILES: usize = 200;
 pub(super) const SNAPSHOT_STEP_LIMIT: usize = 100;
 
 pub(super) fn home_dir() -> PathBuf {
-    PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| "/home/john".to_string()))
+    crate::infra::paths::home_dir()
 }
 
 pub fn projects_dir() -> PathBuf {

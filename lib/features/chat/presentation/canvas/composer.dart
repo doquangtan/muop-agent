@@ -8,6 +8,12 @@ extension _CanvasExtComposer on _ChatCanvasViewState {
   void _handleSend() {
     final text = _promptController.text.trim();
     final images = _pendingImages;
+    final blocked = widget.blockedReason;
+    if (blocked != null) {
+      // Khung chat bị khóa: giữ nguyên nội dung đang soạn, chỉ báo lý do
+      _showComposerNotice(blocked);
+      return;
+    }
     if ((text.isEmpty && images.isEmpty) || widget.isSending) return;
     _promptController.clear();
     _applyState(() {
@@ -233,7 +239,7 @@ extension _CanvasExtComposer on _ChatCanvasViewState {
     final activeProjectName =
         widget.selectedProject?.name ??
         widget.session?.projectName ??
-        'muop-erp-server';
+        'Chưa chọn project';
 
     return Container(
       decoration: BoxDecoration(
@@ -252,6 +258,23 @@ extension _CanvasExtComposer on _ChatCanvasViewState {
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
+          if (widget.blockedReason != null)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(14, 10, 14, 0),
+              child: Row(
+                children: [
+                  Icon(Icons.cloud_off_rounded, size: 18, color: colorScheme.error),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      widget.blockedReason!,
+                      key: const Key('composer-blocked'),
+                      style: textTheme.bodySmall?.copyWith(color: colorScheme.error),
+                    ),
+                  ),
+                ],
+              ),
+            ),
           if (_pendingImages.isNotEmpty)
             _buildPendingImagesStrip(colorScheme, isMobile),
           Padding(
@@ -267,6 +290,7 @@ extension _CanvasExtComposer on _ChatCanvasViewState {
                 child: TextField(
                   controller: _promptController,
                   focusNode: _inputFocusNode,
+                  enabled: widget.blockedReason == null,
                   minLines: 4,
                   maxLines: 10,
                   keyboardType: TextInputType.multiline,

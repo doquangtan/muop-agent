@@ -6,6 +6,7 @@ import 'package:url_launcher/url_launcher.dart';
 
 import 'package:muop_agent/core/di/app_dependencies.dart';
 import 'package:muop_agent/core/theme/app_theme.dart';
+import 'package:muop_agent/features/accounts_common/presentation/account_widgets.dart';
 import 'package:muop_agent/features/claude_auth/domain/claude_auth_entities.dart';
 import 'package:muop_agent/features/claude_auth/domain/claude_auth_repository.dart';
 
@@ -66,8 +67,10 @@ class ClaudeAuthSectionState extends State<ClaudeAuthSection> {
     });
   }
 
-  void _onUpdate(ClaudeAuthState res,
-      {String fallbackError = 'Thao tác thất bại'}) {
+  void _onUpdate(
+    ClaudeAuthState res, {
+    String fallbackError = 'Thao tác thất bại',
+  }) {
     if (!mounted) return;
     final wasLoggedIn = _state?.loggedIn ?? false;
     setState(() {
@@ -180,11 +183,14 @@ class ClaudeAuthSectionState extends State<ClaudeAuthSection> {
 
   Future<void> _openLink(String url) async {
     final uri = Uri.tryParse(url);
-    final opened = uri != null &&
+    final opened =
+        uri != null &&
         await launchUrl(uri, mode: LaunchMode.externalApplication);
     if (!mounted || opened) return;
-    setState(() => _actionError =
-        'Không mở được trình duyệt. Hãy sao chép link rồi mở thủ công.');
+    setState(
+      () => _actionError =
+          'Không mở được trình duyệt. Hãy sao chép link rồi mở thủ công.',
+    );
   }
 
   @override
@@ -209,10 +215,17 @@ class ClaudeAuthSectionState extends State<ClaudeAuthSection> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        _StatusCard(state: _state!),
+        AccountStatusCard(
+          loggedIn: _state!.loggedIn,
+          email: _state!.email,
+          badge: _state!.loggedIn ? _state!.subscriptionType : '',
+          description: _state!.loggedIn
+              ? 'Claude Code CLI trên server đang sẵn sàng phục vụ các phiên chat.'
+              : 'Claude Code CLI chưa có tài khoản. Hãy đăng nhập để kích hoạt các model claude-cli.',
+        ),
         const SizedBox(height: 12),
         if (_state!.loggedIn)
-          _LoggedInSection(busy: _busy, onLogout: _confirmLogout)
+          AccountLogoutButton(busy: _busy, onLogout: _confirmLogout)
         else if (_state!.awaitingCode)
           _CodeSection(
             url: _state!.loginUrl,
@@ -229,123 +242,6 @@ class ClaudeAuthSectionState extends State<ClaudeAuthSection> {
           _ErrorBanner(message: _actionError!),
         ],
       ],
-    );
-  }
-}
-
-class _StatusCard extends StatelessWidget {
-  const _StatusCard({required this.state});
-  final ClaudeAuthState state;
-
-  @override
-  Widget build(BuildContext context) {
-    final scheme = context.scheme;
-    final status = context.status;
-    final textTheme = Theme.of(context).textTheme;
-    final loggedIn = state.loggedIn;
-    final color = loggedIn ? status.success : status.warning;
-
-    return Material(
-      color: scheme.surfaceContainerLow,
-      borderRadius: BorderRadius.circular(12),
-      child: Padding(
-        padding: const EdgeInsets.all(14),
-        child: Row(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Padding(
-              padding: const EdgeInsets.only(top: 2),
-              child: Icon(
-                loggedIn
-                    ? Icons.verified_user_rounded
-                    : Icons.lock_open_rounded,
-                color: color,
-              ),
-            ),
-            const SizedBox(width: 12),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Row(
-                    children: [
-                      Text(
-                        loggedIn ? 'Đã đăng nhập' : 'Chưa đăng nhập',
-                        style: textTheme.titleSmall?.copyWith(
-                          fontWeight: FontWeight.w700,
-                          color: color,
-                        ),
-                      ),
-                      if (loggedIn && state.subscriptionType.isNotEmpty) ...[
-                        const SizedBox(width: 8),
-                        Container(
-                          padding: const EdgeInsets.symmetric(
-                              horizontal: 6, vertical: 2),
-                          decoration: BoxDecoration(
-                            color: scheme.primaryContainer,
-                            borderRadius: BorderRadius.circular(6),
-                          ),
-                          child: Text(
-                            state.subscriptionType.toUpperCase(),
-                            style: textTheme.labelSmall?.copyWith(
-                              fontWeight: FontWeight.w700,
-                              color: scheme.onPrimaryContainer,
-                            ),
-                          ),
-                        ),
-                      ],
-                    ],
-                  ),
-                  if (loggedIn && state.email.isNotEmpty) ...[
-                    const SizedBox(height: 4),
-                    Text(
-                      state.email,
-                      style: textTheme.bodyMedium?.copyWith(
-                        fontWeight: FontWeight.w600,
-                        color: scheme.onSurface,
-                      ),
-                    ),
-                  ],
-                  const SizedBox(height: 4),
-                  Text(
-                    loggedIn
-                        ? 'Claude Code CLI trên server đang sẵn sàng phục vụ các phiên chat.'
-                        : 'Claude Code CLI chưa có tài khoản. Hãy đăng nhập để kích hoạt các model claude-cli.',
-                    style: textTheme.bodySmall
-                        ?.copyWith(color: scheme.onSurfaceVariant),
-                  ),
-                ],
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-class _LoggedInSection extends StatelessWidget {
-  const _LoggedInSection({required this.busy, required this.onLogout});
-  final bool busy;
-  final VoidCallback onLogout;
-
-  @override
-  Widget build(BuildContext context) {
-    final scheme = context.scheme;
-    return Align(
-      alignment: Alignment.centerLeft,
-      child: OutlinedButton.icon(
-        style: OutlinedButton.styleFrom(foregroundColor: scheme.error),
-        onPressed: busy ? null : onLogout,
-        icon: busy
-            ? const SizedBox(
-                width: 16,
-                height: 16,
-                child: CircularProgressIndicator(strokeWidth: 2),
-              )
-            : const Icon(Icons.logout_rounded),
-        label: const Text('Đăng xuất'),
-      ),
     );
   }
 }
@@ -417,8 +313,7 @@ class _CodeSection extends StatelessWidget {
                 SelectableText(
                   url,
                   maxLines: 3,
-                  style:
-                      textTheme.bodySmall?.copyWith(fontFamily: 'monospace'),
+                  style: textTheme.bodySmall?.copyWith(fontFamily: 'monospace'),
                 ),
                 const SizedBox(height: 8),
                 Wrap(
@@ -436,7 +331,8 @@ class _CodeSection extends StatelessWidget {
                               Clipboard.setData(ClipboardData(text: url));
                               ScaffoldMessenger.of(context).showSnackBar(
                                 const SnackBar(
-                                    content: Text('Đã sao chép link')),
+                                  content: Text('Đã sao chép link'),
+                                ),
                               );
                             },
                       icon: const Icon(Icons.copy_rounded, size: 18),
@@ -503,14 +399,18 @@ class _ErrorBanner extends StatelessWidget {
         padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
         child: Row(
           children: [
-            Icon(Icons.error_outline_rounded,
-                color: scheme.onErrorContainer, size: 20),
+            Icon(
+              Icons.error_outline_rounded,
+              color: scheme.onErrorContainer,
+              size: 20,
+            ),
             const SizedBox(width: 8),
             Expanded(
               child: Text(
                 message,
-                style: textTheme.bodySmall
-                    ?.copyWith(color: scheme.onErrorContainer),
+                style: textTheme.bodySmall?.copyWith(
+                  color: scheme.onErrorContainer,
+                ),
               ),
             ),
           ],

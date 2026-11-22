@@ -322,8 +322,7 @@ fn rtsp_url() -> String {
 
 /// File lưu restore token của portal (quyền 0600), để không hỏi lại mỗi lần bật
 fn restore_token_path() -> PathBuf {
-    let home = std::env::var("HOME").unwrap_or_else(|_| "/home/john".to_string());
-    PathBuf::from(home).join(".local/share/muop-agent/screen-restore-token")
+    crate::infra::paths::app_data_dir().join("screen-restore-token")
 }
 
 fn load_restore_token() -> Option<String> {

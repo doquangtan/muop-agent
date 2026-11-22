@@ -1,3 +1,4 @@
+use serde_json::json;
 use crate::chat::AppState;
 use crate::models::*;
 use crate::scanner;
@@ -24,9 +25,25 @@ pub async fn handle_project_agents(
         .map(|s| s.trim())
         .filter(|s| !s.is_empty())
     {
-        PathBuf::from(scanner::ECOSYSTEM_DIR_PATH).join(n)
+        match crate::setup::workspace_root() {
+            Some(root) => root.join(n),
+            None => {
+                return (
+                    StatusCode::CONFLICT,
+                    Json(json!({
+                        "ok": false,
+                        "error": "Chưa khởi tạo thư mục project (Cài đặt → Thư mục project)"
+                    })),
+                )
+                    .into_response();
+            }
+        }
     } else {
-        PathBuf::from(scanner::ECOSYSTEM_DIR_PATH).join("muop-erp-server")
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "ok": false, "error": "Thiếu tham số path hoặc name của project" })),
+        )
+            .into_response();
     };
 
     let (specs, available) = scanner::scan_project_agents_and_skills(&project_path);
@@ -62,6 +79,7 @@ pub async fn handle_project_agents(
             error: None,
         }),
     )
+        .into_response()
 }
 
 pub async fn handle_claude_extensions(

@@ -1,70 +1,40 @@
 use super::*;
 
-pub(super) fn home_dir() -> Option<PathBuf> {
-    std::env::var_os("HOME").map(PathBuf::from)
-}
-
-/// Tìm tệp thực thi trong PATH
-pub(super) fn which(name: &str) -> Option<PathBuf> {
-    let path = std::env::var_os("PATH")?;
-    std::env::split_paths(&path)
-        .map(|dir| dir.join(name))
-        .find(|p| is_executable(p))
-}
-
+/// Kiểm tra tệp có phải thực thi được không (dùng chung với `infra::tools`)
 pub fn is_executable(p: &Path) -> bool {
-    use std::os::unix::fs::PermissionsExt;
-    fs::metadata(p)
-        .map(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
-        .unwrap_or(false)
+    crate::infra::tools::is_executable(p)
 }
 
-/// Các vị trí thường gặp của tiến trình LSP (khi không có trong PATH)
+/// Các đường dẫn ứng viên của tiến trình LSP: binary dò bằng `which` (hoặc người dùng chọn trong Khởi tạo),
+/// và với rust-analyzer thì thêm bản đi kèm extension VSCode/Cursor.
 pub(super) fn candidate_paths(lang: Lang) -> Vec<PathBuf> {
     let mut out: Vec<PathBuf> = Vec::new();
-    if let Some(p) = which(lang.binary_name()) {
+    if let Some(p) = crate::infra::tools::resolve(lang.binary_name()) {
         out.push(p);
     }
-    let Some(home) = home_dir() else {
-        return out;
-    };
-    match lang {
-        Lang::Go => {
-            out.push(home.join("go/bin/gopls"));
-            if let Some(gopath) = std::env::var_os("GOPATH") {
-                out.push(PathBuf::from(gopath).join("bin/gopls"));
-            }
-            out.push(PathBuf::from("/usr/local/go/bin/gopls"));
-        }
-        Lang::Dart => {
-            out.push(home.join("flutter/bin/dart"));
-            out.push(home.join("flutter/bin/cache/dart-sdk/bin/dart"));
-            out.push(PathBuf::from("/usr/lib/dart/bin/dart"));
-        }
-        Lang::Rust => {
-            out.push(home.join(".cargo/bin/rust-analyzer"));
-            // rust-analyzer đi kèm extension VSCode: ~/.vscode*/extensions/rust-lang.rust-analyzer-*/server/
-            for ext_root in [
-                ".vscode/extensions",
-                ".vscode-server/extensions",
-                ".cursor/extensions",
-            ] {
-                let Ok(entries) = fs::read_dir(home.join(ext_root)) else {
-                    continue;
-                };
-                let mut found: Vec<PathBuf> = entries
-                    .flatten()
-                    .filter(|e| {
-                        e.file_name()
-                            .to_string_lossy()
-                            .starts_with("rust-lang.rust-analyzer-")
-                    })
-                    .map(|e| e.path().join("server/rust-analyzer"))
-                    .collect();
-                found.sort();
-                found.reverse(); // phiên bản mới nhất trước
-                out.extend(found);
-            }
+    if lang == Lang::Rust {
+        let home = crate::infra::paths::home_dir();
+        // rust-analyzer đi kèm extension VSCode: ~/.vscode*/extensions/rust-lang.rust-analyzer-*/server/
+        for ext_root in [
+            ".vscode/extensions",
+            ".vscode-server/extensions",
+            ".cursor/extensions",
+        ] {
+            let Ok(entries) = fs::read_dir(home.join(ext_root)) else {
+                continue;
+            };
+            let mut found: Vec<PathBuf> = entries
+                .flatten()
+                .filter(|e| {
+                    e.file_name()
+                        .to_string_lossy()
+                        .starts_with("rust-lang.rust-analyzer-")
+                })
+                .map(|e| e.path().join("server/rust-analyzer"))
+                .collect();
+            found.sort();
+            found.reverse(); // phiên bản mới nhất trước
+            out.extend(found);
         }
     }
     out

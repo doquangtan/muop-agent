@@ -150,6 +150,8 @@ Future<void> _pump(
   bool claudeLoggedIn = false,
   // Spinner đang quay không bao giờ "settle": màn có spinner dùng settle: false
   bool settle = true,
+  bool showAgy = true,
+  bool showClaude = true,
 }) async {
   addTearDown(repo.dispose);
   await tester.pumpWidget(
@@ -165,6 +167,8 @@ Future<void> _pump(
               serverAddress: 'http://127.0.0.1:8787',
               repository: repo,
               claudeRepository: _FakeClaudeRepo(loggedIn: claudeLoggedIn),
+              showAgy: showAgy,
+              showClaude: showClaude,
             ),
           ],
         ),
@@ -424,5 +428,19 @@ void main() {
     expect(find.text('Claude Code CLI'), findsOneWidget);
     expect(find.text('a@example.com · Gói Pro'), findsOneWidget);
     expect(find.text('PRO'), findsOneWidget);
+  });
+
+  testWidgets('agy chưa cài: không hiện khối agy, vẫn hiện Claude', (tester) async {
+    await _pump(tester, _FakeAgyAuthRepository(status: _out()), showAgy: false);
+
+    expect(find.text('Antigravity (agy)'), findsNothing);
+    expect(find.text('Claude Code CLI'), findsOneWidget);
+  });
+
+  testWidgets('Claude chưa cài: không hiện khối Claude, vẫn hiện agy', (tester) async {
+    await _pump(tester, _FakeAgyAuthRepository(status: _out()), showClaude: false);
+
+    expect(find.text('Claude Code CLI'), findsNothing);
+    expect(find.text('Antigravity (agy)'), findsOneWidget);
   });
 }

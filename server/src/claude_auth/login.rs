@@ -124,7 +124,7 @@ pub fn pending_url() -> Option<String> {
 
 /// Kiểm tra trạng thái xác thực hiện tại của Claude Code CLI
 pub fn cli_auth_status() -> Result<ClaudeAuthInfo, String> {
-    let bin = crate::claude::code::claude_bin();
+    let bin = crate::claude::code::claude_bin()?;
     let child = Command::new(&bin)
         .args(["auth", "status", "--json"])
         .output();
@@ -200,7 +200,7 @@ pub fn cli_auth_status() -> Result<ClaudeAuthInfo, String> {
 
 /// Đăng xuất khỏi Claude CLI
 pub fn cli_logout() -> Result<(), String> {
-    let bin = crate::claude::code::claude_bin();
+    let bin = crate::claude::code::claude_bin()?;
     let output = Command::new(&bin)
         .args(["auth", "logout"])
         .output()
@@ -545,7 +545,7 @@ fn spawn_tui() -> Result<Session, String> {
         }
     };
 
-    let bin = crate::claude::code::claude_bin();
+    let bin = crate::claude::code::claude_bin()?;
     let mut cmd = Command::new(bin);
     cmd.args(["auth", "login"])
         .current_dir(&dir)

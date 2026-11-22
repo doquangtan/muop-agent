@@ -384,9 +384,11 @@ Trạng thái đăng nhập không dùng hub; dùng `agy models` và log agy. Lu
 
 | Method | Path | Body | Ghi chú |
 | :--- | :--- | :--- | :--- |
-| GET | `/api/setup/status` | | Trạng thái công cụ và job cài. |
+| GET | `/api/setup/status` | | Trạng thái công cụ và job cài. Mỗi `tools[]` có `id`, `installed`, `path`, `source` (`override` = người dùng chọn, `which` = dò bằng `which`, `dev` = bản build trong repo, rỗng = không có), `overridden` (đường dẫn người dùng đã lưu). `homeDir` là thư mục home của user chạy server. |
 | POST | `/api/setup/install` | `{ "tool": "agy" \| "claude" }` | Cài trên **máy chạy server**. Chỉ hai tool này cài tự động; id khác bị từ chối (400). Một job tại một thời điểm, timeout 20 phút. |
+| POST | `/api/setup/tool-path` | `{ "tool": "agy", "path": "/duong/dan/tuyet/doi" }` | Đặt đường dẫn công cụ khi `which` không tìm thấy (hoặc muốn dùng bản khác). `tool` là `id` trong `tools[]`. Đường dẫn phải tuyệt đối và là tệp thực thi (400 nếu sai). Chuỗi `path` rỗng = bỏ lựa chọn, dò lại bằng `which`. Lưu vào `app_settings` khóa `tool_path.<tên binary>`. Socket tương ứng: `setup:tool-path`. |
 | POST | `/api/setup/select` | `{ "clis": ["agy", "claude"] }` | Lưu CLI đã chọn. Lỗi trả 400. |
+| POST | `/api/setup/workspace` | `{ "path": "/duong/dan/tuyet/doi" }` | Lưu thư mục project. Không có mặc định: phải là đường dẫn tuyệt đối, không chứa `..`, tồn tại và là thư mục (400 nếu sai). Trạng thái trả `workspaceRoot` và `workspaceReady`. Việc quét project chỉ bắt đầu khi đã khởi tạo xong (`workspaceReady = true`); trước đó danh sách project và mọi API file trong thư mục project trả lỗi "Chưa khởi tạo thư mục project". `POST /api/setup/complete` từ chối nếu chưa có thư mục project. |
 | POST | `/api/setup/complete` | | Đánh dấu hoàn tất wizard. Lỗi trả 500. |
 | POST | `/api/setup/ssh/configure` | `{ "username" }` | Cấu hình SSH cho user. |
 | POST | `/api/setup/ssh/auto` | | Sinh khóa, publish vào `authorized_keys`, thử đăng nhập. |
@@ -514,12 +516,15 @@ Ngay khi kết nối, server gửi: `retry:update`, `screen:status`, `setup:upda
 | `claude:auth:cancel` | | `ClaudeAuthResponse`. |
 | `claude:auth:logout` | | `ClaudeAuthResponse`. |
 | `setup:status` | | `SetupStatus`. |
+| `setup:tool-path` | `{ tool, path }` | `SetupStatus` (ack). Cùng quy tắc với `POST /api/setup/tool-path`. |
 | `setup:install` | `{ "tool" }` | `SetupStatus`. |
 | `setup:select` | `{ "clis": [...] }` | `SetupStatus`. |
 | `setup:complete` | | `SetupStatus`. |
 | `setup:ssh:configure` | `{ "username" }` | `SetupStatus`. |
 | `setup:ssh:auto` | | `SetupStatus`. |
 | `setup:ssh:verify` | `{ "publicKey" }` | `SetupStatus`. |
+| `explore:watch` | `{ "path": "/duong/dan/tuyet/doi" }` | Ack `{ ok, room, error }`. Socket vào room `explore:<khóa>` và bắt đầu theo dõi thư mục nếu là người xem đầu tiên. Khóa là đường dẫn tương đối so với thư mục project (`muop-agent`, `muop-agent/lib`; gốc là `.`), hoặc đường dẫn tuyệt đối nếu nằm ngoài project. Chỉ theo dõi nội dung trực tiếp của thư mục. Đường dẫn không phải thư mục tuyệt đối, có `..`, hoặc không tồn tại thì `ok: false`. |
+| `explore:unwatch` | `{ "room" }` | Ack `{ ok, room, error }`. Socket rời room; room không còn ai xem thì dừng watcher. Socket ngắt kết nối cũng được gỡ khỏi mọi room tự động. |
 
 ### 17.2. Server phát
 
@@ -545,6 +550,7 @@ Ngay khi kết nối, server gửi: `retry:update`, `screen:status`, `setup:upda
 | `ssh:closed` | Phiên terminal kết thúc | `{ sessionId, exitCode }`. |
 | `docker:logs:data` | Có dòng log mới | `{ streamId, lines: [...] }`, gom theo lô 150ms hoặc 80 dòng. |
 | `docker:logs:end` | Luồng log kết thúc | `{ streamId, exitCode }`. |
+| `explore:update` | Nội dung thư mục đang xem đổi (tạo, xóa, đổi tên, sửa file trực tiếp trong thư mục). Gom trong 300ms, chỉ phát vào room của thư mục đó | `{ room, path }`: `path` là đường dẫn tuyệt đối đã giải symlink. Client nạp lại thư mục đó. |
 
 ### 17.3. Lưu ý
 
@@ -552,6 +558,7 @@ Ngay khi kết nối, server gửi: `retry:update`, `screen:status`, `setup:upda
 - `chat:send` ghi lại ack `ChatSendResponse`, còn `chat:stream` là luồng tiến độ. Trạng thái các lượt đang chạy lấy từ `streams:update`, không suy ra từ `chat:stream` đã nhận trước đó.
 - Phiên terminal SSH và Docker tồn tại độc lập với client. Thoát màn hình chỉ tách khỏi phiên; mở lại bằng `ssh:list` và `ssh:attach`.
 - Phiên SSH không được dùng (input/attach) quá 6 giờ thì tự đóng.
+- Explorer (`explore:*`): thư mục chỉ được theo dõi khi có ít nhất một socket đang xem. Hai UI xem hai thư mục khác nhau nhận sự kiện của đúng thư mục mình xem. Watcher dùng `notify` (inotify), không đệ quy.
 
 ---
 
@@ -567,10 +574,13 @@ Server máy B kết nối tới server máy A để gửi lệnh tới agent đa
 | :--- | :--- | :--- |
 | `GET /api/bridge/status` | | `{ url, connected, error }` |
 | `POST /api/bridge/peer` | `{ "url": "http://IP:8787" }` (rỗng để ngắt) | Trạng thái mới. Chỉ nhận `http://`. |
-| `POST /api/bridge/send` | Như `POST /api/chat/send` của A (`prompt`, `conversationId`, `projectPath`, `model`, `images`) | Ack của A (`ChatSendResponse`). |
+| `POST /api/bridge/send` | Như `POST /api/chat/send` của A (`prompt`, `conversationId`, `projectPath`, `model`, `images`) | Ack của A (`ChatSendResponse`). Tự gắn `remoteProject` (xem mục 19.2); A mount `projectPath` của B về A và chạy agent trên đó. |
 | `POST /api/bridge/stop` | `{ "conversationId" }` | Ack của A (`chat:stop`). |
 | `POST /api/bridge/respond` | Như `POST /api/claude/respond` của A | Proxy phản hồi của A. |
-
+| `GET /api/bridge/meta` | | Proxy `GET /api/meta` của A: `availableModels`, `modelLabels`, `hostname`. Lỗi kết nối: 502. |
+| `GET /api/bridge/sessions` | | Proxy `GET /api/sessions` của A (`{sessions: [...]}`, dạng summary). |
+| `GET /api/bridge/session?id=<id>` | | Proxy `GET /api/session?id=` của A (đầy đủ steps). `id` kiểm tra như `pending`: khác là 400. |
+| `GET /api/bridge/pending?conversationId=<id>` | | Proxy `GET /api/claude/pending?id=` của A: `{ok, conversationId, pending}`, `pending` là `null` khi không có tương tác chờ. `conversationId` chỉ nhận chữ, số, `-`, `_` (khác: 400). |
 Lỗi kết nối tới A trả HTTP 503 (`send`, `stop`) hoặc 502 (`respond`) kèm `{ ok: false, error }`. Lỗi nghiệp vụ của A (ví dụ 409 khi tương tác không còn chờ) được trả nguyên trong body.
 
 Nhãn nguồn: `send` thêm `[Từ máy <hostname máy B>] ` vào đầu `prompt` trước khi gửi tới A.
@@ -587,6 +597,88 @@ Các sự kiện của A được chuyển tiếp với tiền tố `bridge:`: `
 
 - Client Socket.IO tự viết trên `tokio-tungstenite`, không dùng `rust_socketio` 0.6: đã kiểm chứng với server này, bản đó không nhận được payload lớn qua polling và không nhận được gì qua WebSocket (spike ngoài repo).
 - Lệnh gửi tới A dùng ack với thời hạn 30 giây. Khi chưa kết nối, lệnh bị từ chối ngay (không xếp hàng).
+
+---
+
+## 19. Đọc/ghi file qua API (`/api/fs/*`)
+
+Hai phần: (a) `/api/fs/*` là API đọc/ghi file trong hệ sinh thái, mã nguồn `server/src/api/fsops.rs`; (b) mount project của máy khác về máy này qua FUSE, mã nguồn `server/src/fsmount/` (mục 19.2 đến 19.4).
+
+### 19.0. Đăng ký máy chính (`POST /api/fsmount/register`)
+
+Khi máy chính thêm máy này vào cầu nối (`POST /api/bridge/peer`), máy chính gửi `{urls, projectPath, originHost}` tới đây. Máy này kiểm tra FUSE và kết nối tới máy chính (stat thư mục gốc hệ sinh thái của máy chính). Không mount gì. Trả `{ok, origin}`, hoặc 503 với `error`. Máy chính trả thêm `registered` và `registerError` trong phản hồi `POST /api/bridge/peer`.
+
+### 19.1. Route `/api/fs/*`
+
+**Phạm vi:** mọi `path` phải là đường dẫn tuyệt đối, không chứa `..`, và sau khi giải symlink phải nằm trong `ECOSYSTEM_DIR_PATH` (`/home/john/Documents/muop-ecosystem`). Ngoài phạm vi: `403` với `code: "outside_root"`. Xóa hoặc đổi tên symlink xử lý chính symlink, không theo vào đích.
+
+**Không có xác thực** (đồng nhất với các endpoint khác trong LAN). Ai truy cập được cổng 8787 đọc và ghi được file trong phạm vi trên.
+
+| Route | Tham số / body | Phản hồi |
+| :--- | :--- | :--- |
+| `GET /api/fs/stat?path=` | | `{ok, path, name, isDir, size, mtime, mode}` |
+| `GET /api/fs/list?path=` | | `{ok, path, entries: [{name, isDir, size, mtime, mode}]}` (sắp theo tên) |
+| `GET /api/fs/read?path=&offset=&length=` | `length` tối đa 16MB mỗi lần | Nhị phân. Header `X-Fs-Size` (kích thước tệp), `X-Fs-Eof` (`true` khi đã tới cuối) |
+| `PUT /api/fs/write?path=` | body = nội dung tệp (nhị phân) | `{ok, path, size}`. Ghi tệp tạm rồi đổi tên, giữ quyền truy cập cũ |
+| `POST /api/fs/mkdir` | `{path}` | `{ok, path}` |
+| `POST /api/fs/delete` | `{path, recursive}` | `{ok, path}`. `recursive=false` với thư mục chưa rỗng: `409 not_empty` |
+| `POST /api/fs/rename` | `{from, to, overwrite}` | `{ok, from, to}`. `overwrite=true` thay thế đích nếu là tệp (ngữ nghĩa POSIX); đích là thư mục luôn bị từ chối |
+
+**Lỗi:** `{ok: false, code, error}` với mã HTTP: `400` (`invalid`, `is_dir`, `not_dir`), `403` (`outside_root`), `404` (`not_found`), `409` (`exists`, `not_empty`), `500` (`io`).
+
+Ví dụ:
+```bash
+curl "http://192.168.31.96:8787/api/fs/list?path=/home/john/Documents/muop-ecosystem/muop-agent"
+curl -X PUT "http://192.168.31.96:8787/api/fs/write?path=/home/john/Documents/muop-ecosystem/muop-agent/a.txt" --data-binary "hello"
+```
+
+### 19.2. Chạy agent trên project của máy khác (không cần cấu hình)
+
+Máy B chỉ cần biết địa chỉ máy A trong cầu nối (mục 18). Khi B gửi lượt chat qua `POST /api/bridge/send`, B tự gắn vào lượt chat:
+
+```json
+"remoteProject": {
+  "urls": ["http://192.168.31.96:8787", "http://127.0.0.1:8787"],
+  "projectPath": "/home/john/Documents/muop-ecosystem/muop-agent",
+  "originHost": "ASRock-X99-Taichi-Server"
+}
+```
+
+`urls` là các địa chỉ của B (IP LAN trước, loopback sau). `ChatSendRequest` của A nhận trường này (`remote_project`, không bắt buộc). Khi có trường này, A làm như sau trước khi chạy agent:
+
+1. Kiểm tra FUSE: cần `/dev/fuse` và `fusermount3` (gói `fuse3`). Thiếu thì lượt chat lỗi với thông báo rõ.
+2. Chọn địa chỉ: ưu tiên địa chỉ cùng dải `/24` với A, các địa chỉ còn lại giữ thứ tự. Thăm dò `GET /api/fs/stat?path=<projectPath>` (timeout 3 giây). Máy B đáp nhưng từ chối project (không tồn tại, nằm ngoài phạm vi) thì báo lỗi ngay, không thử địa chỉ khác.
+3. Mount: điểm mount là `$HOME/.local/share/muop-agent/mounts/<mã>` với `<mã>` là FNV-1a 64 bit của `originHost` + `projectPath`. Nếu đã có mount sống tới cùng máy gửi thì dùng lại. Mount cũ (máy gửi đổi địa chỉ, phiên chết) được gỡ bằng `fusermount3 -uz` rồi mount lại.
+4. `projectPath` của lượt chat được thay bằng điểm mount. Agent chạy trong điểm mount, mọi thao tác đọc/ghi đi qua `/api/fs/*` của máy gửi và ghi thẳng vào project của máy gửi.
+
+Route `POST /api/fsmount/ensure` chạy đúng bước 1 đến 3 với body là `remoteProject` và trả `{ok, mountPoint, origin}`. Dùng để kiểm tra thủ công; lỗi trả 503 kèm `error`.
+
+| Tình huống | Kết quả |
+| :--- | :--- |
+| Lượt chat không có `remoteProject` | Chạy trên chính máy này, như cũ |
+| Không có `/dev/fuse` hoặc `fusermount3` | Lượt chat `ok:false`, `error` nêu cách cài `fuse3` |
+| Không địa chỉ nào trả lời | `ok:false`, `error` liệt kê số địa chỉ đã thử |
+| `projectPath` không tồn tại trên máy gửi | `ok:false`, `error` lấy từ máy gửi (ví dụ `không tìm thấy`) |
+| Tự gửi lại sau rate limit | Dùng luôn điểm mount đã phân giải, không mount lại theo đường dẫn của máy gửi |
+
+### 19.3. Hành vi của mount
+
+- Đọc: mỗi lần `read` gọi `GET /api/fs/read` theo đoạn. Thuộc tính cache 1 giây.
+- Ghi: file mở để ghi được tải cả file vào bộ nhớ. Sửa trên bộ nhớ, rồi đẩy cả file bằng `PUT /api/fs/write` khi `flush`/`fsync`/`close`. Giới hạn 512MB mỗi file (`EFBIG` nếu vượt).
+- Đổi tên: `POST /api/fs/rename` với `overwrite=true`, trừ khi có `RENAME_NOREPLACE` (khi đó kiểm tra đích trước, có thì `EEXIST`). Các cờ khác như `RENAME_EXCHANGE` bị từ chối (`EINVAL`).
+- Thư mục và xóa: `mkdir`, `delete` (xóa thư mục chưa rỗng bị `ENOTEMPTY`), `unlink` trên thư mục bị `EISDIR`.
+- Mã lỗi từ máy gửi được đổi sang errno: `not_found` → `ENOENT`, `exists` → `EEXIST`, `not_empty` → `ENOTEMPTY`, `is_dir` → `EISDIR`, `not_dir` → `ENOTDIR`, `outside_root` → `EACCES`, còn lại (kể cả mất kết nối) → `EIO`.
+- Quyền: mount dùng `default_permissions`, kernel kiểm tra quyền theo mode trả về từ máy gửi. `chmod`/`chown` được chấp nhận nhưng không gửi lên máy gửi.
+- Truy cập: ACL `owner`, chỉ user chạy server truy cập được mount (không cần `allow_other` hay sửa `/etc/fuse.conf`).
+- Không có `AutoUnmount`: khi server thoát đột ngột, mount sót ở trạng thái `ENOTCONN` cho tới lần `POST /api/fsmount/ensure` hoặc lượt chat kế tiếp dọn nó.
+- Khi máy gửi mất kết nối giữa chừng, thao tác trả `EIO`. Phiên mount được giữ cho tới khi có địa chỉ/project khác hoặc server thoát.
+
+### 19.4. Giới hạn đã biết
+
+- Không có xác thực (LAN tin cậy), giống mọi endpoint khác.
+- Không hỗ trợ xattr, nên `sed -i` có thể in cảnh báo `preserving permissions ... No data available`; lệnh vẫn thành công. Quyền file mới tạo bằng `sed -i`/`mv` là quyền mặc định (0644), không giữ quyền file đích.
+- Tệp rất lớn ghi qua mount sẽ tốn RAM của máy nhận (cả file được đệm).
+- Lệnh git chạy trong điểm mount (ví dụ `git status` của agent) có thể ghi vào `.git` của máy gửi qua mount (đã thấy thư mục `.git` bị đổi thời gian sau lượt chạy thử).
 
 ---
 

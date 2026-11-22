@@ -1,21 +1,9 @@
+import 'dart:async';
 import 'package:material_ui/material_ui.dart';
 
 import 'package:muop_agent/core/di/app_dependencies.dart';
 import 'package:muop_agent/core/theme/app_theme.dart';
 import 'package:muop_agent/features/server_files/domain/server_file_entities.dart';
-
-/// Thư mục và file không cần hiển thị trong explorer (build, cache, phụ thuộc)
-const Set<String> _hiddenNames = {
-  '.git',
-  '.dart_tool',
-  '.idea',
-  '.vscode',
-  'build',
-  'node_modules',
-  'target',
-  'Pods',
-  '.gradle',
-};
 
 /// Trạng thái thay đổi của một file trong phiên làm việc hiện tại
 enum ExplorerChangeStatus { created, modified }
@@ -74,6 +62,9 @@ class _ProjectTreeExplorerState extends State<ProjectTreeExplorer> {
   bool _gitLoaded = false;
   bool _isGitRepo = false;
   int _gitRequest = 0;
+  /// Thư mục explorer đang đăng ký theo dõi trên server (gốc và các thư mục đang mở)
+  final Set<String> _watching = {};
+  StreamSubscription<String>? _changedSub;
 
   /// Màu theo git nếu project là repo; không có git thì dựa vào thay đổi do agent ghi
   Map<String, ExplorerChangeStatus> get _statuses =>
@@ -82,7 +73,15 @@ class _ProjectTreeExplorerState extends State<ProjectTreeExplorer> {
   @override
   void initState() {
     super.initState();
+    _changedSub = AppDependencies.explore.changedRooms.listen(_onRoomChanged);
     _loadRoot();
+  }
+
+  @override
+  void dispose() {
+    _changedSub?.cancel();
+    _releaseAllWatches();
+    super.dispose();
   }
 
   @override
@@ -90,6 +89,7 @@ class _ProjectTreeExplorerState extends State<ProjectTreeExplorer> {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.rootPath != widget.rootPath ||
         oldWidget.serverAddress != widget.serverAddress) {
+      _releaseAllWatches();
       _expandedPaths.clear();
       _loadRoot();
     } else if (_agentStatusChanged(oldWidget.fileStatuses, widget.fileStatuses)) {
@@ -134,6 +134,86 @@ class _ProjectTreeExplorerState extends State<ProjectTreeExplorer> {
     });
   }
 
+  /// Đăng ký theo dõi đúng các thư mục đang hiển thị (gốc và thư mục đang mở); thư mục đã đóng thì bỏ theo dõi
+  void _syncWatch() {
+    final desired = <String>{
+      if (widget.rootPath.isNotEmpty) widget.rootPath,
+      ..._expandedPaths,
+    };
+    for (final path in desired.difference(_watching)) {
+      AppDependencies.explore.watch(path);
+    }
+    for (final path in _watching.difference(desired)) {
+      AppDependencies.explore.unwatch(path);
+    }
+    _watching
+      ..clear()
+      ..addAll(desired);
+  }
+
+  void _releaseAllWatches() {
+    for (final path in _watching) {
+      AppDependencies.explore.unwatch(path);
+    }
+    _watching.clear();
+  }
+
+  /// Server báo một thư mục đang xem đã đổi: nạp lại đúng thư mục đó, giữ nguyên các thư mục con đang mở
+  void _onRoomChanged(String room) {
+    if (!mounted) return;
+    final changed = _watching
+        .where((path) => AppDependencies.explore.roomOf(path) == room)
+        .toList();
+    if (changed.isEmpty) return;
+    for (final path in changed) {
+      _refreshFolder(path);
+    }
+    _loadGitStatus();
+  }
+
+  Future<void> _refreshFolder(String path) async {
+    try {
+      if (path == widget.rootPath) {
+        final fresh = await _fetchChildren(path, 0);
+        if (!mounted) return;
+        setState(() => _roots = _mergeNodes(_roots, fresh));
+        return;
+      }
+      final node = _findNode(_roots, path);
+      if (node == null || !node.expanded || node.loading) return;
+      final fresh = await _fetchChildren(path, node.depth + 1);
+      if (!mounted) return;
+      setState(() => node.children = _mergeNodes(node.children ?? const [], fresh));
+    } catch (_) {
+      // Lỗi đọc tạm thời: giữ danh sách hiện tại, lần thay đổi sau sẽ nạp lại
+    }
+  }
+
+  /// Giữ trạng thái mở và các con đã tải của những thư mục vẫn còn
+  List<_TreeNode> _mergeNodes(List<_TreeNode> old, List<_TreeNode> fresh) {
+    final byPath = {for (final n in old) n.entry.path: n};
+    for (final node in fresh) {
+      final before = byPath[node.entry.path];
+      if (before != null && before.entry.isDir) {
+        node.expanded = before.expanded;
+        node.children = before.children;
+      }
+    }
+    return fresh;
+  }
+
+  _TreeNode? _findNode(List<_TreeNode> nodes, String path) {
+    for (final node in nodes) {
+      if (node.entry.path == path) return node;
+      final children = node.children;
+      if (children != null) {
+        final found = _findNode(children, path);
+        if (found != null) return found;
+      }
+    }
+    return null;
+  }
+
   /// Lấy danh sách con của một thư mục, sắp thư mục trước rồi theo tên
   Future<List<_TreeNode>> _fetchChildren(String path, int depth) async {
     final res = await AppDependencies.serverFiles.fetchServerDirectory(
@@ -145,9 +225,8 @@ class _ProjectTreeExplorerState extends State<ProjectTreeExplorer> {
       throw res.error.isEmpty ? 'Không đọc được thư mục' : res.error;
     }
     final entries = res.entries.where((e) {
-      if (_hiddenNames.contains(e.name)) return false;
-      if (!_showHidden && e.name.startsWith('.')) return false;
-      return true;
+      // Chỉ ẩn file/thư mục có dấu chấm ở đầu tên, trừ khi bật hiện file ẩn
+      return _showHidden || !e.name.startsWith('.');
     }).toList()
       ..sort((a, b) {
         if (a.isDir != b.isDir) return a.isDir ? -1 : 1;
@@ -158,6 +237,7 @@ class _ProjectTreeExplorerState extends State<ProjectTreeExplorer> {
 
   Future<void> _loadRoot() async {
     _loadGitStatus();
+    _syncWatch();
     setState(() {
       _loadingRoot = true;
       _rootError = null;
@@ -197,6 +277,7 @@ class _ProjectTreeExplorerState extends State<ProjectTreeExplorer> {
       node.error = null;
     });
     _expandedPaths.add(node.entry.path);
+    _syncWatch();
     try {
       final children = await _fetchChildren(node.entry.path, node.depth + 1);
       if (!mounted) return;
@@ -224,6 +305,7 @@ class _ProjectTreeExplorerState extends State<ProjectTreeExplorer> {
         node.expanded = false;
         _expandedPaths.remove(node.entry.path);
       });
+      _syncWatch();
       return;
     }
     if (node.children != null) {
@@ -231,6 +313,7 @@ class _ProjectTreeExplorerState extends State<ProjectTreeExplorer> {
         node.expanded = true;
         _expandedPaths.add(node.entry.path);
       });
+      _syncWatch();
       return;
     }
     await _expand(node);

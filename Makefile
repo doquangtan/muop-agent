@@ -1,7 +1,8 @@
-FLUTTER=/home/john/flutter-3.47.7/bin/flutter
-CARGO=/home/john/.cargo/bin/cargo
+# Đường dẫn công cụ theo HOME của user (không cố định theo máy). Ghi đè bằng biến môi trường nếu cần.
+FLUTTER ?= $(HOME)/flutter-3.47.7/bin/flutter
+CARGO ?= $(HOME)/.cargo/bin/cargo
 
-.PHONY: run server build-server build build-linux build-apk build-all analyze restart-linux clean start-daemon stop-daemon restart-daemon status-daemon
+.PHONY: install-desktop-entry run server build-server build build-linux build-apk build-all analyze restart-linux clean start-daemon stop-daemon restart-daemon status-daemon deb
 
 ## Chạy ứng dụng giao diện Flutter trên Linux Desktop
 run:
@@ -14,7 +15,7 @@ server:
 ## Quản lý Daemon Rust Server qua systemd user service
 install-service:
 	@mkdir -p $(HOME)/.config/systemd/user
-	@cp -f service/muop-agent-server.service $(HOME)/.config/systemd/user/muop-agent-server.service 2>/dev/null || true
+	@sed "s|@REPO@|$(CURDIR)|g" service/muop-agent-server.service > $(HOME)/.config/systemd/user/muop-agent-server.service
 	@systemctl --user daemon-reload
 
 start-daemon:
@@ -39,11 +40,24 @@ status-daemon:
 build-server:
 	cd server && $(CARGO) build --release
 
+## Đóng gói server + ứng dụng Linux thành một file .deb (build/deb/)
+deb:
+	FLUTTER=$(FLUTTER) CARGO=$(CARGO) bash packaging/build-deb.sh
+
+## Cài desktop entry + icon cho người dùng hiện tại để dock hiện đúng tên "Mướp Agents" và icon
+install-desktop-entry:
+	@mkdir -p "$(HOME)/.local/share/applications" "$(HOME)/.local/share/icons/hicolor/512x512/apps"
+	@python3 -I -c "from PIL import Image; Image.open('assets/logo.png').convert('RGBA').resize((512,512), Image.LANCZOS).save('$(HOME)/.local/share/icons/hicolor/512x512/apps/vn.muop.agents.png')" 2>/dev/null || cp assets/logo.png "$(HOME)/.local/share/icons/hicolor/512x512/apps/vn.muop.agents.png"
+	@sed 's#^Exec=.*#Exec=$(PWD)/build/linux/x64/release/bundle/muop_agent#' packaging/vn.muop.agents.desktop > "$(HOME)/.local/share/applications/vn.muop.agents.desktop"
+	@update-desktop-database "$(HOME)/.local/share/applications" >/dev/null 2>&1 || true
+	@gtk-update-icon-cache -q -t -f "$(HOME)/.local/share/icons/hicolor" >/dev/null 2>&1 || true
+
 ## Build bản thực thi Linux Desktop Release và tự động restart nếu đang chạy
 build: build-linux
 
 build-linux:
 	$(FLUTTER) build linux --release
+	@$(MAKE) --no-print-directory install-desktop-entry
 	@if pgrep -x "muop_agent" > /dev/null; then \
 		echo "🔄 Phát hiện muop_agent đang chạy trên Linux Desktop. Đang tắt tiến trình cũ và khởi động lại bản build mới..."; \
 		killall muop_agent 2>/dev/null || pkill -x "muop_agent" 2>/dev/null || true; \
