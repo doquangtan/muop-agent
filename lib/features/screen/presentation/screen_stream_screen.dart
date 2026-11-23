@@ -105,6 +105,12 @@ class _ScreenStreamScreenState extends State<ScreenStreamScreen> {
       unawaited(native.setProperty('network-timeout', '10'));
       // Luồng live không seek được: cho phép seek thử để mpv không báo lỗi "Cannot seek" làm luồng bị đóng
       unawaited(native.setProperty('force-seekable', 'yes'));
+      // Android: giải mã phần cứng (MediaCodec) mở trước khi biết kích thước khung, vì SDP không có
+      // width/height nên cấu hình với 0x0 và bị từ chối ("Could not open codec", lặp lại mỗi vài giây).
+      // Luồng RTSP trên Android giải mã bằng phần mềm; các nền tảng khác giữ nguyên.
+      if (defaultTargetPlatform == TargetPlatform.android) {
+        unawaited(native.setProperty('hwdec', 'no'));
+      }
     }
 
     _playerSubs.add(
