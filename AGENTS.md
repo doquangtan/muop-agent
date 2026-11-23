@@ -21,7 +21,7 @@
   - **Android Mobile**: Giao diện di động phản hồi mượt mà, kết nối qua mạng nội bộ LAN WiFi tới máy chủ.
 - **Kiến trúc Hybrid (Pure Flutter Client + Rust Backend Engine)**:
   - **`server/` (Rust Engine)**: Máy chủ dịch vụ siêu nhẹ viết bằng Rust, lắng nghe tại `0.0.0.0:8787`. Đảm nhiệm toàn bộ việc quét CSDL SQLite `conversation_summaries.db`, phân tích logs `transcript.jsonl`, quản lý tiến trình CLI `agy`, và phát Socket.IO realtime.
-  - **`lib/` (Flutter Client)**: Ứng dụng Material 3 đóng vai trò **Pure UI Client 100%**, hoàn toàn không chứa mã truy cập hệ thống file cục bộ. Mọi tương tác đều thông qua giao thức Socket.IO v4 và REST API tới Rust Server.
+  - **`lib/` (Flutter Client)**: Ứng dụng giao diện thuần túy (**Pure UI Client 100%**) xây dựng theo **nguyên tắc Apple Design & Human Interface Guidelines (HIG)** (kết hợp Material 3 styling tokens dưới tầng nền), hoàn toàn không chứa mã truy cập hệ thống file cục bộ. Mọi tương tác đều thông qua giao thức Socket.IO v4 và REST API tới Rust Server.
 
 ---
 
@@ -42,7 +42,7 @@
 ### 2.2. Frontend Client (`lib/`)
 | Phân hệ / Thư viện | Công nghệ / Package | Ghi chú & Phiên bản |
 | :--- | :--- | :--- |
-| **Framework** | Flutter SDK (Dart 3) | Material 3 Dynamic Theming |
+| **Framework** | Flutter SDK (Dart 3) | Apple Design System & Liquid Glass (macOS / HIG) |
 | **Realtime Client** | `socket_io_client: ^3.0.2` | Kết nối WebSocket tới Rust Server `:8787` |
 | **Mạng & HTTP** | Native `dart:io HttpClient` | Giao tiếp REST API phân trang và upload/download |
 | **Đa nền tảng** | Linux Desktop & Android | Bản build Linux Release & APK Release di động |
@@ -163,9 +163,13 @@ muop-agent/
    > # Kết quả bắt buộc: No issues found!
    > ```
    > Tuyệt đối không để tồn tại các cảnh báo `deprecated_member_use`, `unused_local_variable`, `missing_type_arguments`...
-2. **Tuân thủ Material 3 & Tương thích Dark/Light Theme**:
-   - Sử dụng màu từ `Theme.of(context).colorScheme` (ví dụ: `colorScheme.surface`, `colorScheme.primary`, `colorScheme.outlineVariant`).
-   - Tuyệt đối không hardcode màu sắc cố định (như `Colors.white` hoặc `Colors.black`) cho nền hoặc văn bản để tránh lỗi hiển thị khi đổi theme.
+2. **Tuân thủ Chuẩn Apple Design & HIG (Human Interface Guidelines)**:
+   - **Triết lý 2 tầng (Two-layer architecture)**: Phân định rạch ròi giữa *Content Layer* (nội dung tĩnh/danh sách cuộn, không lạm dụng hiệu ứng kính) và *Functional Layer* (các thanh dock, composer island, modal, sheet dùng hiệu ứng **Liquid Glass** với `BackdropFilter.blur`, specular highlight hairline border và đổ bóng mềm).
+   - **Tông màu Xcode Dark Pro & Phân tầng bề mặt (Surface Hierarchy)**:
+     - Nền than chì sâu (`#141519`), phân tách rõ 3 lớp bề mặt: `surfaceContainerLowest/Low` (Window base & Sidebar) → `surfaceContainer` (Canvas & Editor) → `surfaceContainerHigh` (Cards & Floating Glass Island).
+     - Accent xanh Studio Apple (`#4C8DFF`) sắc nét, tương phản cao trên nền tối (đáp ứng tiêu chuẩn WCAG AA tỷ lệ >= 4.5:1).
+   - Sử dụng các token màu ngữ nghĩa từ `context.scheme` và `context.status`. Tuyệt đối không hardcode màu sắc cố định (như `Colors.white` hoặc `Colors.black`) cho nền hoặc văn bản để đảm bảo tương thích hoàn hảo giữa Light và Dark theme.
+   - Khi hệ thống bật `highContrast`, tự động vô hiệu hóa độ trong suốt và chuyển sang các bề mặt đục (Opaque Surfaces) theo đúng khuyến nghị của Apple HIG.
 3. **Quản lý Scroll Position trên `ListView(reverse: true)`**:
    - Lưu ý hệ tọa độ đảo ngược: `pixels = 0.0` là đáy (tin nhắn mới nhất), `pixels = maxScrollExtent` là đỉnh (tin nhắn cũ nhất).
    - Chỉ tự động cuộn xuống đáy (`_scrollToBottom`) khi người dùng đang ở gần đáy (`pixels < 120`). Không bao giờ tự động cuộn khi người dùng đang xem lịch sử phía trên hoặc đang nạp thêm dữ liệu cũ.
@@ -328,9 +332,9 @@ lsof -i :8787
 - Chữ ký cache khối chat (`currentStepsSignature`) phải gồm `streamingText.length`, `thinkingText.length`, `activeStepType` của stream. Khối `liveStreaming` (stream chưa gắn vào lượt) render stream hiện tại từ `widget.activeStream`, không dùng bản chụp trong block. Thiếu hai điều này thì văn bản đang stream không cập nhật khi transcript không đổi (đây là nguyên nhân thẻ agy hiện trống).
 
 ### 8.6. Nợ kỹ thuật đã biết
-- **Phiên bản Flutter**: `Makefile` dùng SDK **3.47.7** (`~/flutter-3.47.7`, git worktree của tag `3.47.7` trong `~/flutter`), không dùng SDK 3.50 mặc định. Lý do: Flutter 3.50 trên Linux bị lỗi chỉ vẽ một phần cửa sổ (đen phần còn lại), đã kiểm chứng 3.47.7 hiển thị đúng; tham khảo [flutter/flutter#191245](https://github.com/flutter/flutter/issues/191245). Khi nâng cấp Flutter, kiểm tra lại lỗi này trước khi đổi.
+- **Phiên bản Flutter**: `Makefile` ưu tiên SDK **3.47.7** (`~/flutter-3.47.7`, git worktree của tag `3.47.7` trong `~/flutter`); nếu không có thì dùng `flutter` trong PATH, rồi `~/flutter/bin/flutter`. Không dùng SDK 3.50 mặc định. Lý do: Flutter 3.50 trên Linux bị lỗi chỉ vẽ một phần cửa sổ (đen phần còn lại), đã kiểm chứng 3.47.7 hiển thị đúng; tham khảo [flutter/flutter#191245](https://github.com/flutter/flutter/issues/191245). Khi nâng cấp Flutter, kiểm tra lại lỗi này trước khi đổi.
 - **Import Material**: dùng `package:material_ui/material_ui.dart` (dependency `material_ui: ^1.11.1`), không dùng `package:flutter/material.dart`. Flutter 3.50 đánh dấu import cũ là deprecated (`deprecated_member_use`); trộn hai import sẽ làm `ThemeData`/`ColorScheme` thành hai class khác nhau.
-- Đã chuyển toàn bộ UI sang Material 3 theme động (`lib/ui/theme/app_theme.dart`): màu lấy từ `context.scheme` và `context.status`, không còn `Colors.<tên>` hay mã hex trong `lib/ui` (trừ bảng seed và màu bóng đổ). Khi thêm màu mới, dùng token; không hardcode.
+- Đã chuyển toàn bộ hệ thống giao diện sang chuẩn **Apple Design System & Xcode Dark Theme** (`lib/core/theme/app_theme.dart`): phong cách than chì sâu, kết hợp các bề mặt **Liquid Glass** mờ (`lib/core/widgets/liquid_glass.dart`), màu lấy từ `context.scheme` và `context.status`, không còn `Colors.<tên>` hay mã hex trong các view (trừ bảng seed và màu bóng đổ). Khi thêm màu mới, dùng token ngữ nghĩa; không hardcode.
 - Màu chủ đạo (seed) chọn ở dashboard (nút palette) chỉ lưu trong bộ nhớ app. Lưu bền vững phụ thuộc quyết định phía client (mục 8.1).
 - Không có test tự động cho UI. `test/widget_test.dart` là mặc định của Flutter.
 - Lệnh `claude` trong `~/.local/bin/claude` có thể là symlink hỏng; server dự phòng bằng `claude` trong PATH (`claude_code::claude_bin`).
@@ -515,7 +519,7 @@ lsof -i :8787
 - **Nút Thoát ở tray** (`server/src/infra/tray.rs`): thoát mã 0. Unit dùng `Restart=on-failure` (repo `service/` và gói), nên systemd không bật lại. Đã kiểm chứng bằng unit thử: thoát 0 → `inactive`, NRestarts=0; thoát mã khác 0 → được khởi động lại.
 
 ### 8.7. Skill liên quan
-- `.agents/skills/apple-design/SKILL.md` (có symlink `.claude/skills/apple-design`): skill review UI theo Apple HIG (cài từ `github.com/dickwu/apple-design-skill`, có `references/hig/*.md`). Skill `design` cũ (quyết định thiết kế riêng của app) đã xóa khỏi working tree; xem lại trong git history nếu cần.
+- `.agents/skills/apple-design/SKILL.md` (có symlink `.claude/skills/apple-design`): skill về chuyển động và cử chỉ (spring, velocity handoff, momentum, rubber-banding, reduced motion, materials). Nguồn `github.com/emilkowalski/skills` (MIT, commit `d23d7f8`, trang giới thiệu `https://open-design.ai/skills/apple-design/`). Bản HIG cũ (`dickwu/apple-design-skill`) đã thay thế. Skill `design` cũ (quyết định thiết kế riêng của app) đã xóa khỏi working tree; xem lại trong git history nếu cần.
 - `.claude/skills/design-uiux/SKILL.md`: nguyên tắc UI/UX khi chỉnh sửa giao diện Flutter.
 
 ### 8.8. Build IPA trên Mac (TrollStore)

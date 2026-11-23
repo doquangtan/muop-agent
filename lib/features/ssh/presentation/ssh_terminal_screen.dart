@@ -1,6 +1,7 @@
 import 'package:material_ui/material_ui.dart';
 
 import 'package:muop_agent/core/widgets/desktop_panel.dart';
+import 'package:muop_agent/core/widgets/glass_scaffold.dart';
 import 'package:muop_agent/core/theme/app_theme.dart';
 import 'package:muop_agent/features/ssh/presentation/ssh_terminal_panel.dart';
 import 'package:xterm/xterm.dart';
@@ -27,20 +28,18 @@ class SshTerminalScreen extends StatelessWidget {
     final scheme = context.scheme;
     final textTheme = Theme.of(context).textTheme;
 
-    return Scaffold(
-      backgroundColor: TerminalThemes.defaultTheme.background,
-      appBar: AppBar(
-        backgroundColor: scheme.surface,
-        title: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(hostName, style: textTheme.titleSmall),
-            Text(
-              hostAddress,
-              style: textTheme.labelSmall?.copyWith(color: scheme.onSurfaceVariant),
-            ),
-          ],
-        ),
+    return GlassScreenScaffold(
+      bodyBackgroundColor: TerminalThemes.defaultTheme.background,
+      titleWidget: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Text(hostName, style: textTheme.titleSmall),
+          Text(
+            hostAddress,
+            style: textTheme.labelSmall?.copyWith(color: scheme.onSurfaceVariant),
+          ),
+        ],
       ),
       body: SshTerminalPanel(
         hostId: hostId,

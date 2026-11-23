@@ -89,3 +89,15 @@ class _ChatFlatBlock {
   final int loadedCount;
   final int totalTurnsCount;
 }
+
+class _CollapsedPromptLayout {
+  const _CollapsedPromptLayout({
+    required this.exceedsFiveLines,
+    required this.hiddenLines,
+    required this.collapsedText,
+  });
+
+  final bool exceedsFiveLines;
+  final int hiddenLines;
+  final String collapsedText;
+}

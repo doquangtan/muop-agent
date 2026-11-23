@@ -280,6 +280,7 @@ pub(super) fn read_steps_page_from_file(
 
     let target_step = before_step.unwrap_or(usize::MAX);
     let mut candidate_deque: VecDeque<AgentStep> = VecDeque::new();
+    let mut fallback_step_index: usize = 0;
 
     for line_res in reader.lines() {
         let line = match line_res {
@@ -298,7 +299,8 @@ pub(super) fn read_steps_page_from_file(
             .get("step_index")
             .and_then(|v| v.as_u64())
             .map(|v| v as usize)
-            .unwrap_or(0);
+            .unwrap_or(fallback_step_index);
+        fallback_step_index += 1;
 
         if step_index >= target_step {
             continue;

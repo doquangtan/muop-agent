@@ -44,17 +44,23 @@ impl RtpSplitter {
 }
 
 /// Kích thước khung đầu ra: hạ về cao [`TARGET_HEIGHT`] và giữ tỉ lệ gốc (không phóng to).
-/// Chiều rộng làm tròn xuống số chẵn, vì bộ mã hoá H.264 yêu cầu như vậy.
+/// Hai cạnh làm tròn xuống bội số của 16 (kích thước macroblock): decoder phần cứng trên Android
+/// (MediaCodec) từ chối luồng có chiều rộng lẻ như 1706 với lỗi "Could not open codec".
 pub fn output_size(src_w: u32, src_h: u32) -> (u32, u32) {
     if src_w == 0 || src_h == 0 {
         // Không rõ kích thước nguồn: dùng 16:9
         return (TARGET_HEIGHT * 16 / 9, TARGET_HEIGHT);
     }
     if src_h <= TARGET_HEIGHT {
-        return (src_w & !1, src_h & !1);
+        return (align16(src_w), align16(src_h));
     }
     let w = (src_w as u64 * TARGET_HEIGHT as u64 / src_h as u64) as u32;
-    ((w & !1).max(2), TARGET_HEIGHT)
+    (align16(w), align16(TARGET_HEIGHT))
+}
+
+/// Làm tròn xuống bội số của 16, tối thiểu 16
+fn align16(v: u32) -> u32 {
+    (v & !15).max(16)
 }
 
 /// Nguồn PipeWire qua fd đã mở bởi portal
@@ -172,9 +178,15 @@ mod tests {
         assert_eq!(output_size(1920, 1080), (1280, 720));
         assert_eq!(output_size(2560, 1600), (1152, 720));
         assert_eq!(output_size(3840, 2160), (1280, 720));
-        // Nguồn nhỏ hơn 720p không bị phóng to
-        assert_eq!(output_size(1280, 600), (1280, 600));
+        // Chiều rộng 1706 (2560x1080 hạ về 720p) làm tròn về bội số của 16
+        assert_eq!(output_size(2560, 1080), (1696, 720));
+        // Nguồn nhỏ hơn 720p không bị phóng to, chỉ căn bội số 16
+        assert_eq!(output_size(1280, 600), (1280, 592));
         assert_eq!(output_size(0, 0), (1280, 720));
+        for (w, h) in [(2560, 1080), (3440, 1440), (1366, 768), (1921, 1081)] {
+            let (ow, oh) = output_size(w, h);
+            assert!(ow % 16 == 0 && oh % 16 == 0, "{w}x{h} -> {ow}x{oh}");
+        }
     }
 
     #[test]

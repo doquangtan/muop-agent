@@ -5,8 +5,10 @@ import 'package:material_ui/material_ui.dart';
 
 import 'package:muop_agent/core/di/app_dependencies.dart';
 import 'package:muop_agent/core/theme/app_theme.dart';
+import 'package:muop_agent/core/theme/chat_theme_painter.dart';
 import 'package:muop_agent/core/widgets/complete_markdown_doc_view.dart';
 import 'package:muop_agent/core/widgets/desktop_panel.dart';
+import 'package:muop_agent/core/widgets/glass_scaffold.dart';
 import 'package:muop_agent/features/lsp/domain/lsp_entities.dart';
 import 'package:muop_agent/features/lsp/presentation/lsp_settings_screen.dart';
 import 'package:muop_agent/features/projects/domain/project_entities.dart';
@@ -195,24 +197,28 @@ class ServerFileBrowserSheet extends ConsumerWidget {
     String workspaceRoot = '',
     String homeDir = '',
   }) {
-    final colorScheme = Theme.of(context).colorScheme;
     return showModalBottomSheet<void>(
       context: context,
       isScrollControlled: true,
       useSafeArea: true,
-      backgroundColor: colorScheme.surfaceContainer,
+      backgroundColor: Colors.transparent,
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
       ),
       builder: (ctx) => FractionallySizedBox(
         heightFactor: 0.90,
-        child: ServerFileBrowserSheet(
-          initialPath: initialPath,
-          projects: projects,
-          sessionFiles: sessionFiles,
-          initialTab: initialTab,
-          workspaceRoot: workspaceRoot,
-          homeDir: homeDir,
+        child: ClipRRect(
+          borderRadius: const BorderRadius.vertical(top: Radius.circular(20)),
+          child: ChatWallpaperSurface(
+            child: ServerFileBrowserSheet(
+              initialPath: initialPath,
+              projects: projects,
+              sessionFiles: sessionFiles,
+              initialTab: initialTab,
+              workspaceRoot: workspaceRoot,
+              homeDir: homeDir,
+            ),
+          ),
         ),
       ),
     );
@@ -225,28 +231,32 @@ class ServerFileBrowserSheet extends ConsumerWidget {
     GroupedFileChange? groupedChange,
     required ValueChanged<String> onDownloadFile,
   }) {
-    final colorScheme = Theme.of(context).colorScheme;
     return showModalBottomSheet<void>(
       context: context,
       isScrollControlled: true,
       useSafeArea: true,
-      backgroundColor: colorScheme.surfaceContainer,
+      backgroundColor: Colors.transparent,
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
       ),
       builder: (ctx) => FractionallySizedBox(
         heightFactor: 0.88,
-        child: Consumer(
-          builder: (_, ref, _) {
-            final serverAddress = ref.watch(serverAddressProvider);
-            return FileDiffAndContentPane(
-              key: ValueKey(serverAddress),
-              serverAddress: serverAddress,
-              filePath: filePath,
-            groupedChange: groupedChange,
-            onDownloadFile: onDownloadFile,
-            );
-          },
+        child: ClipRRect(
+          borderRadius: const BorderRadius.vertical(top: Radius.circular(20)),
+          child: ChatWallpaperSurface(
+            child: Consumer(
+              builder: (_, ref, _) {
+                final serverAddress = ref.watch(serverAddressProvider);
+                return FileDiffAndContentPane(
+                  key: ValueKey(serverAddress),
+                  serverAddress: serverAddress,
+                  filePath: filePath,
+                  groupedChange: groupedChange,
+                  onDownloadFile: onDownloadFile,
+                );
+              },
+            ),
+          ),
         ),
       ),
     );
@@ -487,92 +497,133 @@ class _ServerFileBrowserSheetState extends State<ServerFileBrowserSheetView> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        // 1. Header SFTP & Chuyển Tab
+        // 1. Header SFTP & Chuyển Tab (tách pill nổi đồng bộ thanh header khung chat)
         Padding(
-          padding: EdgeInsets.fromLTRB(isMobile ? 14 : 20, 12, 10, 8),
+          padding: const EdgeInsets.fromLTRB(12, 10, 12, 6),
           child: Row(
             children: [
-              Container(
-                padding: const EdgeInsets.all(7),
-                decoration: BoxDecoration(
-                  color: colorScheme.primaryContainer.withAlpha(140),
-                  borderRadius: BorderRadius.circular(10),
-                ),
-                child: Icon(
-                  Icons.dns_rounded,
-                  size: 18,
-                  color: colorScheme.primary,
-                ),
-              ),
-              const SizedBox(width: 10),
               Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      isMobile
-                          ? 'SFTP & Tệp Thay Đổi'
-                          : 'SFTP File Explorer & Changes — Rust Server',
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: textTheme.titleSmall?.copyWith(
-                        fontWeight: FontWeight.w800,
-                      ),
+                child: GlassHeaderSurface(
+                  borderRadius: 22,
+                  padding: const EdgeInsets.symmetric(horizontal: 10),
+                  child: SizedBox(
+                    width: double.infinity,
+                    height: 44,
+                    child: Row(
+                      children: [
+                        Icon(
+                          Icons.dns_rounded,
+                          size: 17,
+                          color: colorScheme.primary,
+                        ),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: Column(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                isMobile
+                                    ? 'SFTP & Tệp Thay Đổi'
+                                    : 'SFTP File Explorer & Changes',
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: textTheme.titleSmall?.copyWith(
+                                  fontSize: 13.5,
+                                  fontWeight: FontWeight.w700,
+                                  height: 1.15,
+                                ),
+                              ),
+                              Text(
+                                'sftp://${widget.serverAddress}',
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: textTheme.labelSmall?.copyWith(
+                                  fontFamily: 'monospace',
+                                  fontSize: 10,
+                                  color: colorScheme.onSurfaceVariant,
+                                  height: 1.15,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ],
                     ),
-                    Text(
-                      'sftp://${widget.serverAddress}',
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: textTheme.labelSmall?.copyWith(
-                        fontFamily: 'monospace',
-                        fontSize: 10.5,
-                        color: colorScheme.onSurfaceVariant,
-                      ),
-                    ),
-                  ],
+                  ),
                 ),
               ),
-              SegmentedButton<int>(
-                segments: [
-                  ButtonSegment<int>(
-                    value: 0,
-                    icon: const Icon(Icons.folder_special_rounded, size: 15),
-                    label: Text(isMobile ? 'SFTP' : 'Duyệt SFTP'),
+              const SizedBox(width: 8),
+              GlassHeaderSurface(
+                borderRadius: 21,
+                padding: const EdgeInsets.symmetric(horizontal: 6),
+                child: SizedBox(
+                  height: 42,
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      SegmentedButton<int>(
+                        showSelectedIcon: !isMobile,
+                        segments: [
+                          ButtonSegment<int>(
+                            value: 0,
+                            icon: const Icon(
+                              Icons.folder_special_rounded,
+                              size: 15,
+                            ),
+                            label: Text(isMobile ? 'SFTP' : 'Duyệt SFTP'),
+                          ),
+                          ButtonSegment<int>(
+                            value: 1,
+                            icon: const Icon(
+                              Icons.difference_rounded,
+                              size: 15,
+                            ),
+                            label: Text(
+                              isMobile
+                                  ? '${groupedFiles.length}'
+                                  : 'Changes (${groupedFiles.length})',
+                            ),
+                          ),
+                        ],
+                        selected: {_activeTab},
+                        onSelectionChanged: (s) =>
+                            setState(() => _activeTab = s.first),
+                        style: const ButtonStyle(
+                          visualDensity: VisualDensity.compact,
+                        ),
+                      ),
+                      IconButton(
+                        visualDensity: VisualDensity.compact,
+                        icon: const Icon(Icons.account_tree_outlined, size: 18),
+                        tooltip: 'Xem Git Tree & Commit History',
+                        onPressed: () {
+                          ProjectGitHistorySheet.show(
+                            context,
+                            projectPath: _currentPath,
+                          );
+                        },
+                      ),
+                    ],
                   ),
-                  ButtonSegment<int>(
-                    value: 1,
-                    icon: const Icon(Icons.difference_rounded, size: 15),
-                    label: Text('Changes (${groupedFiles.length})'),
-                  ),
-                ],
-                selected: {_activeTab},
-                onSelectionChanged: (s) => setState(() => _activeTab = s.first),
-                style: const ButtonStyle(
-                  visualDensity: VisualDensity.compact,
                 ),
               ),
-              const SizedBox(width: 4),
-              IconButton(
-                visualDensity: VisualDensity.compact,
-                icon: const Icon(Icons.account_tree_outlined, size: 18),
-                tooltip: 'Xem Git Tree & Commit History',
-                onPressed: () {
-                  ProjectGitHistorySheet.show(
-                    context,
-                    projectPath: _currentPath,
-                  );
-                },
-              ),
-              const SizedBox(width: 4),
-              IconButton(
-                visualDensity: VisualDensity.compact,
-                icon: const Icon(Icons.close_rounded),
-                onPressed: () => Navigator.of(context).pop(),
+              const SizedBox(width: 8),
+              GlassHeaderSurface(
+                borderRadius: 21,
+                child: SizedBox(
+                  width: 42,
+                  height: 42,
+                  child: IconButton(
+                    visualDensity: VisualDensity.compact,
+                    icon: const Icon(Icons.close_rounded, size: 20),
+                    onPressed: () => Navigator.of(context).pop(),
+                  ),
+                ),
               ),
             ],
           ),
         ),
-        Divider(height: 1, color: colorScheme.outlineVariant),
 
         // 2. Thanh tiến trình tải file hoặc thao tác hàng loạt
         if (_selectedFilePaths.isNotEmpty && _activeTab == 0)

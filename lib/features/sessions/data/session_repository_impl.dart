@@ -195,7 +195,7 @@ class SessionRepositoryImpl implements SessionRepository {
     try {
       final uri = Uri.parse('$baseUrl/api/session?id=$sessionId');
       final req = await client.getUrl(uri);
-      final resp = await req.close().timeout(const Duration(seconds: 6));
+      final resp = await req.close().timeout(const Duration(seconds: 15));
       if (resp.statusCode == 200) {
         final body = await resp.transform(utf8.decoder).join();
         final map = jsonDecode(body) as Map<String, dynamic>;
@@ -229,7 +229,7 @@ class SessionRepositoryImpl implements SessionRepository {
         },
       );
       final req = await client.getUrl(uri);
-      final resp = await req.close().timeout(const Duration(seconds: 6));
+      final resp = await req.close().timeout(const Duration(seconds: 15));
       if (resp.statusCode == 200) {
         final body = await resp.transform(utf8.decoder).join();
         final map = jsonDecode(body) as Map<String, dynamic>;

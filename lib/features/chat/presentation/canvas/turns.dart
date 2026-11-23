@@ -1,19 +1,23 @@
 part of '../chat_canvas_view.dart';
 
 extension _CanvasExtTurns on _ChatCanvasViewState {
+  static final RegExp _codeBlockRegex = RegExp(
+    r'```([a-zA-Z0-9_-]*)\n([\s\S]*?)```',
+  );
+  static final RegExp _paragraphSplitRegex = RegExp(r'\n\s*\n');
+
   List<_ParsedResponseSegment> _parseResponseIntoGranularSegments(String raw) {
     final cached = _segmentCache[raw];
     if (cached != null) return cached;
 
     final result = <_ParsedResponseSegment>[];
-    final regex = RegExp(r'```([a-zA-Z0-9_-]*)\n([\s\S]*?)```');
     int lastEnd = 0;
 
     void addTextParagraphs(String textChunk) {
       final trimmed = textChunk.trim();
       if (trimmed.isEmpty) return;
       // Chia các đoạn văn dài theo dòng trống (\n\n) để ListView виртуал hóa từng đoạn mượt mà
-      final paragraphs = trimmed.split(RegExp(r'\n\s*\n'));
+      final paragraphs = trimmed.split(_paragraphSplitRegex);
       final buffer = StringBuffer();
       for (final p in paragraphs) {
         if (buffer.length + p.length > 420 && buffer.isNotEmpty) {
@@ -40,7 +44,7 @@ extension _CanvasExtTurns on _ChatCanvasViewState {
       }
     }
 
-    for (final match in regex.allMatches(raw)) {
+    for (final match in _codeBlockRegex.allMatches(raw)) {
       if (match.start > lastEnd) {
         addTextParagraphs(raw.substring(lastEnd, match.start));
       }
@@ -65,23 +69,52 @@ extension _CanvasExtTurns on _ChatCanvasViewState {
     return result;
   }
 
+  /// Đếm số lượt hội thoại mà không cần nhóm file (dùng khi phân trang cuộn).
+  int _countTurnGroups(List<AgentStep> steps) {
+    if (steps.isEmpty) return 0;
+    int count = 0;
+    bool hasOpenGroup = false;
+    for (final step in steps) {
+      if (step.type == 'USER_INPUT') {
+        if (hasOpenGroup) count++;
+        hasOpenGroup = true;
+      } else {
+        hasOpenGroup = true;
+      }
+    }
+    if (hasOpenGroup) count++;
+    return count;
+  }
+
   List<_ChatTurnGroup> _buildTurnGroups(
     List<AgentStep> steps,
     List<FileTouchRecord> allFileTouches,
   ) {
     final groups = <_ChatTurnGroup>[];
+    final touchesByStep = <int, List<FileTouchRecord>>{};
+    for (final f in allFileTouches) {
+      (touchesByStep[f.stepIndex] ??= []).add(f);
+    }
+
     AgentStep? currentUser;
     var currentAgentSteps = <AgentStep>[];
 
     void flushGroup() {
       if (currentUser == null && currentAgentSteps.isEmpty) return;
-      final stepIndices = currentAgentSteps.map((s) => s.stepIndex).toSet();
-      final matchedTouches = allFileTouches
-          .where((f) => stepIndices.contains(f.stepIndex))
-          .toList();
+      final matchedTouches = <FileTouchRecord>[];
+      for (final s in currentAgentSteps) {
+        final list = touchesByStep[s.stepIndex];
+        if (list != null) {
+          matchedTouches.addAll(list);
+        }
+      }
+      // Khóa ổn định theo stepIndex đầu tiên của lượt: nạp thêm lịch sử cũ ở đầu
+      // không làm dịch key hay trạng thái mở rộng của các lượt đang hiển thị.
+      final stableTurnId =
+          currentUser?.stepIndex ?? currentAgentSteps.first.stepIndex;
       groups.add(
         _ChatTurnGroup(
-          turnIndex: groups.length + 1,
+          turnIndex: stableTurnId,
           userStep: currentUser,
           agentSteps: currentAgentSteps,
           groupedFiles: GroupedFileChange.groupRecords(matchedTouches),
@@ -194,21 +227,37 @@ extension _CanvasExtTurns on _ChatCanvasViewState {
     return blocks;
   }
 
-  /// Đổi id model thô thành nhãn ngắn, vd. `claude-haiku-5-5` → `Claude Haiku 5.5`,
-  /// `claude-haiku-4-5-20251001` → `Claude Haiku 4.5`
+  /// Đổi id model thô thành nhãn đọc tự nhiên: tra bảng [widget.modelLabels] trước,
+  /// sau đó định dạng `claude-*` / `gemini-*`.
   String _formatResponseModel(String raw) {
     final id = raw.trim();
-    if (!id.startsWith('claude-')) return id;
-    final parts = id.split('-');
-    if (parts.length < 2) return id;
-    final family = parts[1].isEmpty
-        ? ''
-        : parts[1][0].toUpperCase() + parts[1].substring(1);
-    final version = parts
-        .skip(2)
-        .where((p) => p.isNotEmpty && p.length <= 2 && int.tryParse(p) != null)
-        .join('.');
-    return version.isEmpty ? 'Claude $family' : 'Claude $family $version';
+    if (id.isEmpty) return id;
+    for (final prefix in const ['', 'agy:', 'claude-cli:']) {
+      final label = widget.modelLabels['$prefix$id'];
+      if (label != null && label.isNotEmpty) return label;
+    }
+    if (id.startsWith('claude-')) {
+      final parts = id.split('-');
+      if (parts.length < 2) return id;
+      final family = parts[1].isEmpty
+          ? ''
+          : parts[1][0].toUpperCase() + parts[1].substring(1);
+      final version = parts
+          .skip(2)
+          .where(
+            (p) => p.isNotEmpty && p.length <= 2 && int.tryParse(p) != null,
+          )
+          .join('.');
+      return version.isEmpty ? 'Claude $family' : 'Claude $family $version';
+    }
+    if (id.startsWith('gemini-')) {
+      final parts = id.split('-');
+      return parts
+          .where((p) => p.isNotEmpty)
+          .map((p) => p[0].toUpperCase() + p.substring(1))
+          .join(' ');
+    }
+    return id;
   }
 
   String _lastLinesOf(String text, int count) {

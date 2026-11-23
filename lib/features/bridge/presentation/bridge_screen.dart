@@ -6,6 +6,7 @@ import 'package:material_ui/material_ui.dart';
 import 'package:muop_agent/core/di/app_dependencies.dart';
 import 'package:muop_agent/core/state/server_address_provider.dart';
 import 'package:muop_agent/core/theme/app_theme.dart';
+import 'package:muop_agent/core/widgets/glass_scaffold.dart';
 import 'package:muop_agent/features/bridge/domain/bridge_entities.dart';
 import 'package:muop_agent/features/bridge/domain/bridge_repository.dart';
 
@@ -187,17 +188,15 @@ class _BridgeScreenState extends State<BridgeScreenView> {
       ],
     );
     if (widget.embedded) return content;
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('Cấu hình máy phụ'),
-        actions: [
-          IconButton(
-            tooltip: 'Làm mới trạng thái',
-            onPressed: _refreshStatus,
-            icon: const Icon(Icons.refresh_rounded),
-          ),
-        ],
-      ),
+    return GlassScreenScaffold(
+      title: 'Cấu hình máy phụ',
+      actions: [
+        IconButton(
+          tooltip: 'Làm mới trạng thái',
+          onPressed: _refreshStatus,
+          icon: const Icon(Icons.refresh_rounded),
+        ),
+      ],
       body: content,
     );
   }

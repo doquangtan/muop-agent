@@ -51,7 +51,7 @@ class DesktopConversationRail extends StatelessWidget {
       onExit: (_) => onHoverChanged(false),
       child: Container(
         width: collapsedWidth,
-        color: colorScheme.surfaceContainerLow,
+        color: Colors.transparent,
         child: Column(
           children: [
             const SizedBox(height: 6),

@@ -429,9 +429,7 @@ extension _CanvasExtModelBar on _ChatCanvasViewState {
     );
   }
 
-  /// [2] THANH % USAGE CỦA MODEL AI — Nằm ở giữa phần Task Running và Khung Chat.
-  /// Limit Tuần và Limit Giờ (5h) của provider đang hiển thị (xem `_quotaProvider`).
-  /// Không có dữ liệu thì hiện "Không có dữ liệu quota" kèm lý do, không hiện số mặc định.
+  /// [2] THANH THÔNG TIN GỌN TRÊN ĐỈNH ĐẢO CHAT: Model, Effort, Context % và Quota ngắn gọn
   Widget _buildModelUsageMiddleBar(BuildContext context, bool isMobile) {
     final colorScheme = Theme.of(context).colorScheme;
     final textTheme = Theme.of(context).textTheme;
@@ -445,158 +443,133 @@ extension _CanvasExtModelBar on _ChatCanvasViewState {
     final fiveHourBucket =
         primaryGroup?.fiveHourBucket ?? geminiGroup?.fiveHourBucket;
 
-    return Container(
-      padding: EdgeInsets.symmetric(
-        horizontal: isMobile ? 10 : 12,
-        vertical: isMobile ? 5 : 6,
-      ),
-      decoration: BoxDecoration(
-        color: colorScheme.surfaceContainerLow.withAlpha(220),
-        borderRadius: BorderRadius.circular(10),
-        border: Border.all(color: colorScheme.outlineVariant.withAlpha(160)),
-      ),
+    return Padding(
+      padding: EdgeInsets.symmetric(horizontal: isMobile ? 4 : 6, vertical: 2),
       child: Row(
         children: [
-          // Chọn nhanh Model AI: nhóm theo tên, mức suy luận ở ngay bên cạnh
           _buildModelSelector(colorScheme, textTheme, isMobile),
-
           const SizedBox(width: 6),
-
           _buildContextChip(colorScheme, textTheme, compact: isMobile),
-
-          // Limit Tuần & Limit Giờ (5h), bấm để mở bảng chi tiết
-          Expanded(
-            child: InkWell(
-              borderRadius: BorderRadius.circular(6),
-              onTap: () => _showQuotaSheet(context),
-              child: Row(
-                children: [
-                  if (primaryGroup == null)
-                    Expanded(
-                      child: Tooltip(
-                        message: resolved.error,
-                        child: Text(
-                          quotaLoading
-                              ? 'Đang tải quota…'
-                              : 'Không có dữ liệu quota',
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: textTheme.labelSmall?.copyWith(
-                            fontSize: 10.5,
-                            color: colorScheme.onSurfaceVariant,
-                            fontWeight: FontWeight.w600,
-                          ),
-                        ),
-                      ),
-                    )
-                  else ...[
-                    Expanded(
-                      child: _buildQuotaColumn(
-                        colorScheme,
-                        textTheme,
-                        label: isMobile ? 'Tuần' : 'Limit Tuần',
-                        bucket: weeklyBucket,
-                      ),
-                    ),
-                    const SizedBox(width: 10),
-                    Expanded(
-                      child: _buildQuotaColumn(
-                        colorScheme,
-                        textTheme,
-                        label: isMobile ? '5h' : 'Limit Giờ (5h)',
-                        bucket: fiveHourBucket,
-                      ),
-                    ),
-                  ],
-
-                  if (!isMobile) ...[
-                    const SizedBox(width: 4),
+          const Spacer(),
+          if (widget.onOpenAgentMap != null && !isMobile) ...[
+            InkWell(
+              borderRadius: BorderRadius.circular(10),
+              onTap: widget.onOpenAgentMap,
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 3),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
                     Icon(
-                      Icons.info_outline_rounded,
-                      size: 13.5,
-                      color: colorScheme.onSurfaceVariant,
+                      Icons.hub_outlined,
+                      size: 13,
+                      color: colorScheme.primary,
+                    ),
+                    const SizedBox(width: 4),
+                    Text(
+                      'Agent map',
+                      style: textTheme.labelSmall?.copyWith(
+                        fontWeight: FontWeight.w600,
+                        color: colorScheme.onSurfaceVariant,
+                      ),
                     ),
                   ],
-                ],
+                ),
               ),
             ),
+            const SizedBox(width: 6),
+          ],
+          InkWell(
+            borderRadius: BorderRadius.circular(10),
+            onTap: () => _showQuotaSheet(context),
+            child: primaryGroup == null
+                ? Tooltip(
+                    message: resolved.error,
+                    child: Text(
+                      quotaLoading ? 'Quota…' : 'Quota —',
+                      style: textTheme.labelSmall?.copyWith(
+                        fontSize: 10.5,
+                        color: colorScheme.onSurfaceVariant,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  )
+                : _buildCompactQuotaStrip(
+                    colorScheme,
+                    textTheme,
+                    weeklyBucket: weeklyBucket,
+                    fiveHourBucket: fiveHourBucket,
+                    isMobile: isMobile,
+                  ),
           ),
         ],
       ),
     );
   }
 
-  /// Một cột của thanh quota: nhãn, % còn lại, thanh tiến trình và thời gian reset.
-  /// Thiếu cửa sổ ([bucket] null) thì hiện "—" và thanh rỗng.
-  Widget _buildQuotaColumn(
+  Widget _buildCompactQuotaStrip(
     ColorScheme colorScheme,
     TextTheme textTheme, {
-    required String label,
-    required ModelQuotaBucket? bucket,
+    required ModelQuotaBucket? weeklyBucket,
+    required ModelQuotaBucket? fiveHourBucket,
+    required bool isMobile,
   }) {
-    final pct = bucket?.remainingPercent;
-    final color = pct == null
-        ? colorScheme.onSurfaceVariant
-        : _quotaStatusColor(pct);
-    // Thời gian reset của cột: ngắn dưới thanh %, đầy đủ trong tooltip
-    final reset =
-        bucket == null ? null : formatQuotaResetCompact(bucket.resetTime);
-    final resetFull = bucket == null ? null : formatQuotaReset(bucket.resetTime);
-
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        Row(
-          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+    Widget badge(String label, ModelQuotaBucket? bucket) {
+      final pct = bucket?.remainingPercent;
+      final color = pct == null
+          ? colorScheme.onSurfaceVariant
+          : _quotaStatusColor(pct);
+      final reset =
+          bucket == null ? null : formatQuotaResetCompact(bucket.resetTime);
+      final tooltip = bucket == null
+          ? label
+          : '$label: ${pct?.round() ?? 0}% (reset ${formatQuotaReset(bucket.resetTime)})';
+      return Tooltip(
+        message: tooltip,
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
           children: [
-            Flexible(
-              child: Text(
-                label,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: textTheme.labelSmall?.copyWith(
-                  fontSize: 10,
-                  color: colorScheme.onSurfaceVariant,
-                  fontWeight: FontWeight.w600,
-                ),
-              ),
+            Container(
+              width: 6,
+              height: 6,
+              decoration: BoxDecoration(color: color, shape: BoxShape.circle),
             ),
+            const SizedBox(width: 4),
             Text(
-              pct == null ? '—' : '${pct.round()}%',
+              isMobile
+                  ? (pct == null ? '—' : '${pct.round()}%')
+                  : '$label ${pct == null ? '—' : '${pct.round()}%'}${reset != null ? ' ($reset)' : ''}',
               style: textTheme.labelSmall?.copyWith(
                 fontFamily: 'monospace',
                 fontSize: 10.5,
-                fontWeight: FontWeight.w800,
+                fontWeight: FontWeight.w700,
                 color: color,
               ),
             ),
           ],
         ),
-        const SizedBox(height: 2.5),
-        ClipRRect(
-          borderRadius: BorderRadius.circular(4),
-          child: LinearProgressIndicator(
-            minHeight: 4.5,
-            value: pct == null ? 0 : (pct / 100.0).clamp(0.0, 1.0),
-            backgroundColor: colorScheme.surfaceContainerHighest,
-            valueColor: AlwaysStoppedAnimation<Color>(color),
-          ),
-        ),
-        if (reset != null)
-          Tooltip(
-            message: resetFull ?? '',
+      );
+    }
+
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          badge('Tuần', weeklyBucket),
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 5),
             child: Text(
-              '↻ $reset',
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: textTheme.labelSmall?.copyWith(
-                fontSize: 9,
-                color: colorScheme.onSurfaceVariant,
+              '•',
+              style: TextStyle(
+                fontSize: 10,
+                color: colorScheme.onSurfaceVariant.withAlpha(140),
               ),
             ),
           ),
-      ],
+          badge('5h', fiveHourBucket),
+        ],
+      ),
     );
   }
 

@@ -4,6 +4,7 @@ import 'package:material_ui/material_ui.dart';
 
 import 'package:muop_agent/core/di/app_dependencies.dart';
 import 'package:muop_agent/core/theme/app_theme.dart';
+import 'package:muop_agent/core/widgets/glass_scaffold.dart';
 import 'package:muop_agent/features/agy_auth/domain/agy_auth_repository.dart';
 import 'package:muop_agent/features/chat/presentation/run_command_dialog.dart';
 import 'package:muop_agent/features/claude_auth/domain/claude_auth_repository.dart';
@@ -235,11 +236,9 @@ class _SetupWizardScreenState extends State<SetupWizardScreenView> {
   @override
   Widget build(BuildContext context) {
     final textTheme = Theme.of(context).textTheme;
-    return Scaffold(
-      appBar: AppBar(
-        automaticallyImplyLeading: false,
-        title: const Text('Khởi tạo Mướp Agent'),
-      ),
+    return GlassScreenScaffold(
+      automaticallyImplyLeading: false,
+      title: 'Khởi tạo Mướp Agent',
       body: Center(
         child: ConstrainedBox(
           constraints: const BoxConstraints(maxWidth: 640),

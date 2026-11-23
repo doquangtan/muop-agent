@@ -1,8 +1,10 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:liquid_glass_easy/liquid_glass_easy.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:media_kit/media_kit.dart';
 
 import 'package:muop_agent/core/di/app_dependencies.dart';
+import 'package:muop_agent/core/state/chat_theme_provider.dart';
 import 'package:muop_agent/core/state/server_address_provider.dart';
 import 'package:muop_agent/core/theme/app_theme.dart';
 import 'package:muop_agent/features/dashboard/presentation/dashboard_screen.dart';
@@ -10,11 +12,17 @@ import 'package:muop_agent/features/dashboard/presentation/dashboard_screen.dart
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   MediaKit.ensureInitialized();
-  // Địa chỉ server đã lưu được nạp trước khi dựng màn hình đầu tiên
+  try {
+    await LiquidGlassShaders.ensureLoaded();
+  } catch (_) {}
+  // Địa chỉ server và cấu hình theme đã lưu được nạp trước khi dựng màn hình đầu tiên
   final container = ProviderContainer();
   container
       .read(serverAddressProvider.notifier)
       .change(await AppDependencies.connection.loadSavedServerAddress());
+  container
+      .read(chatThemeProvider.notifier)
+      .hydrate(await ChatThemeNotifier.loadSavedConfig());
   runApp(
     UncontrolledProviderScope(
       container: container,
@@ -23,45 +31,36 @@ Future<void> main() async {
   );
 }
 
-class MuopAgentMonitorApp extends StatefulWidget {
+class MuopAgentMonitorApp extends ConsumerWidget {
   const MuopAgentMonitorApp({super.key});
 
   @override
-  State<MuopAgentMonitorApp> createState() => _MuopAgentMonitorAppState();
-}
+  Widget build(BuildContext context, WidgetRef ref) {
+    final chatConfig = ref.watch(chatThemeProvider);
+    final notifier = ref.read(chatThemeProvider.notifier);
+    final seed = chatConfig.isDark
+        ? chatConfig.preset.accentDark
+        : chatConfig.preset.accentLight;
 
-class _MuopAgentMonitorAppState extends State<MuopAgentMonitorApp> {
-  ThemeMode _themeMode = ThemeMode.dark;
-  Color _seedColor = kDefaultThemeSeed;
-
-  void _toggleTheme() {
-    setState(() {
-      _themeMode = _themeMode == ThemeMode.dark
-          ? ThemeMode.light
-          : ThemeMode.dark;
-    });
-  }
-
-  void _setSeedColor(Color color) {
-    setState(() => _seedColor = color);
-  }
-
-  @override
-  Widget build(BuildContext context) {
     return MaterialApp(
       title: 'Mướp Agents',
       debugShowCheckedModeBanner: false,
-      themeMode: _themeMode,
-      theme: buildAppTheme(seedColor: _seedColor, brightness: Brightness.light),
+      themeMode: chatConfig.isDark ? ThemeMode.dark : ThemeMode.light,
+      theme: buildAppTheme(
+        seedColor: seed,
+        brightness: Brightness.light,
+        chatTheme: chatConfig,
+      ),
       darkTheme: buildAppTheme(
-        seedColor: _seedColor,
+        seedColor: seed,
         brightness: Brightness.dark,
+        chatTheme: chatConfig,
       ),
       home: DashboardScreen(
-        isDarkMode: _themeMode == ThemeMode.dark,
-        onToggleTheme: _toggleTheme,
-        seedColor: _seedColor,
-        onSeedColorChanged: _setSeedColor,
+        isDarkMode: chatConfig.isDark,
+        onToggleTheme: notifier.toggleBrightness,
+        seedColor: seed,
+        onSeedColorChanged: (_) {},
       ),
     );
   }

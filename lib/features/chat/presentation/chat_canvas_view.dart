@@ -2,10 +2,14 @@ import 'dart:async';
 import 'dart:math' as math;
 
 import 'package:file_picker/file_picker.dart';
+import 'package:flutter/rendering.dart' show RenderProxyBox, ScrollCacheExtent;
 import 'package:flutter/services.dart';
+import 'package:liquid_glass_easy/liquid_glass_easy.dart';
 import 'package:material_ui/material_ui.dart';
 
 import 'package:muop_agent/core/theme/app_theme.dart';
+import 'package:muop_agent/core/theme/chat_theme_painter.dart';
+import 'package:muop_agent/core/widgets/liquid_glass.dart';
 import 'package:muop_agent/features/chat/domain/chat_entities.dart';
 import 'package:muop_agent/features/chat/domain/model_groups.dart';
 import 'package:muop_agent/features/bridge/domain/peer_models.dart';
@@ -24,6 +28,7 @@ import 'package:muop_agent/features/sessions/presentation/agent_presentation.dar
 
 part 'canvas/blocks.dart';
 part 'canvas/canvas_models.dart';
+part 'canvas/chat_wallpaper.dart';
 part 'canvas/composer.dart';
 part 'canvas/composer_pill.dart';
 part 'canvas/dialogs.dart';
@@ -88,6 +93,8 @@ class ChatCanvasView extends StatefulWidget {
     this.onOpenCreateProject,
     this.onGitPush,
     this.onOpenGitHistory,
+    this.floatingTopHeader,
+    this.desktopLeftInset = 0.0,
   });
 
   final ConversationSession? session;
@@ -158,7 +165,7 @@ class ChatCanvasView extends StatefulWidget {
   final ValueChanged<PlanArtifactInfo>? onApprovePlan;
   final void Function(PlanArtifactInfo plan, String feedback)? onRejectPlan;
   final ValueChanged<PlanArtifactInfo>? onCancelPlan;
-  final Future<bool> Function()? onLoadOlderHistory;
+  final Future<bool?> Function()? onLoadOlderHistory;
   final Future<List<CustomAgentSpec>?> Function(String projectPath)?
   onFetchClaudeExtensions;
 
@@ -168,6 +175,12 @@ class ChatCanvasView extends StatefulWidget {
   final Future<GitPushResponse> Function(String projectPath, String branch)?
   onGitPush;
   final VoidCallback? onOpenGitHistory;
+
+  /// Thanh header Liquid Glass nổi trên luồng chat (tùy chọn, dùng trong DashboardScreen).
+  final Widget? floatingTopHeader;
+
+  /// Khoảng đệm bên trái trên Desktop để nội dung chat không bị che bởi Sidebar & Explorer nổi.
+  final double desktopLeftInset;
 
   @override
   State<ChatCanvasView> createState() => _ChatCanvasViewState();
@@ -189,11 +202,27 @@ class _ChatCanvasViewState extends State<ChatCanvasView> {
   final Map<String, List<ChatImageAttachment>> _draftImages = {};
   final ScrollController _scrollController = ScrollController();
   final FocusNode _inputFocusNode = FocusNode();
+  final LiquidGlassViewController _glassViewController =
+      LiquidGlassViewController();
 
   int _loadedTurnCount = _pageSize;
   bool _isLoadingMoreTurns = false;
   bool _hasLoadedAllServerHistory = false;
-  bool _showScrollToBottomBtn = false;
+  bool _hasOlderHistoryError = false;
+  bool _pendingServerTurnsExpand = false;
+  final ValueNotifier<bool> _showScrollToBottomNotifier = ValueNotifier<bool>(
+    false,
+  );
+  final ValueNotifier<double> _dockHeightNotifier = ValueNotifier<double>(
+    110.0,
+  );
+  final ValueNotifier<double> _topOverlayHeightNotifier = ValueNotifier<double>(
+    16.0,
+  );
+  late final Listenable _overlayPaddingListenable = Listenable.merge([
+    _dockHeightNotifier,
+    _topOverlayHeightNotifier,
+  ]);
   bool _isTaskRunningExpanded = false;
   String? _dismissedGitAheadHash;
   bool _isPushingGit = false;
@@ -208,6 +237,9 @@ class _ChatCanvasViewState extends State<ChatCanvasView> {
   /// Cache danh sách các đoạn văn/code đã tách để không phải regex lại khi cuộn
   final Map<String, List<_ParsedResponseSegment>> _segmentCache = {};
 
+  /// Cache đo layout thu gọn 5 dòng của prompt người dùng để không phải chạy TextPainter lại khi cuộn
+  final Map<int, _CollapsedPromptLayout> _promptLayoutCache = {};
+
   /// Cache tính toán turns & flat blocks để không bị lag giật mỗi khi gõ phím hoặc rebuild
   String? _lastSessionId;
   // Chữ ký nội dung steps: số lượng không đủ vì snapshot cắt còn 100 step nên
@@ -215,6 +247,9 @@ class _ChatCanvasViewState extends State<ChatCanvasView> {
   int _lastStepsSignature = -1;
   int _lastFilesTouchedCount = -1;
   int _lastLoadedTurnCount = -1;
+  bool _lastIsLoadingMoreTurns = false;
+  bool _lastHasLoadedAllServerHistory = false;
+  bool _lastHasOlderHistoryError = false;
   int _lastExpandedResponseTurnsHash = 0;
   int _lastExpandedPromptTurnsHash = 0;
   List<_ChatTurnGroup> _cachedAllTurns = const [];
@@ -245,6 +280,11 @@ class _ChatCanvasViewState extends State<ChatCanvasView> {
     if (_isTurnRunning(oldWidget) && !_isTurnRunning(widget)) {
       _composerRevealed = false;
     }
+    if (oldWidget.desktopLeftInset != widget.desktopLeftInset) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) _glassViewController.captureOnce();
+      });
+    }
     if (oldId != newId ||
         oldWidget.isNewConversationMode != widget.isNewConversationMode) {
       _switchDraft(oldWidget);
@@ -252,8 +292,12 @@ class _ChatCanvasViewState extends State<ChatCanvasView> {
       _loadedTurnCount = _pageSize;
       _isLoadingMoreTurns = false;
       _hasLoadedAllServerHistory = false;
+      _hasOlderHistoryError = false;
+      _pendingServerTurnsExpand = false;
+      _showScrollToBottomNotifier.value = false;
       _expandedResponseTurns.clear();
       _expandedPromptTurns.clear();
+      _promptLayoutCache.clear();
       _lastSessionId = null;
       _lastStepsSignature = -1;
       _lastFilesTouchedCount = -1;
@@ -264,11 +308,38 @@ class _ChatCanvasViewState extends State<ChatCanvasView> {
       });
     } else {
       // Khi đang ở trong cùng phiên hội thoại mà có thêm bước/tin nhắn mới:
-      final oldStepsCount = oldWidget.session?.steps.length ?? 0;
-      final newStepsCount = widget.session?.steps.length ?? 0;
-      if (newStepsCount > oldStepsCount && !_isLoadingMoreTurns) {
-        // Chỉ tự động cuộn xuống đáy nếu người dùng đang ở gần đáy (pixels < 120) hoặc đang gửi prompt
-        if (_scrollController.hasClients &&
+      final oldSteps = oldWidget.session?.steps ?? const [];
+      final newSteps = widget.session?.steps ?? const [];
+      final oldStepsCount = oldSteps.length;
+      final newStepsCount = newSteps.length;
+      if (oldStepsCount == 0 && newStepsCount > 0) {
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (!mounted) return;
+          _scrollToBottom(animated: false);
+          _maybeLoadOlderTurns();
+        });
+      } else if (newStepsCount > oldStepsCount) {
+        final prependedOlder =
+            newSteps.isNotEmpty &&
+            oldSteps.isNotEmpty &&
+            newSteps.first.stepIndex < oldSteps.first.stepIndex;
+        if (prependedOlder && _pendingServerTurnsExpand) {
+          _pendingServerTurnsExpand = false;
+          final newTotalTurns = _countTurnGroups(newSteps);
+          _loadedTurnCount = math.max(
+            _loadedTurnCount,
+            math.min(newTotalTurns, _loadedTurnCount + _pageSize),
+          );
+          _scheduleOlderTurnsCheck();
+        }
+        final appendedNewer =
+            newSteps.isNotEmpty &&
+            oldSteps.isNotEmpty &&
+            newSteps.last.stepIndex > oldSteps.last.stepIndex;
+        // Chỉ tự động cuộn xuống đáy khi có bước mới ở cuối và người dùng đang ở gần đáy (pixels < 120)
+        if (!_isLoadingMoreTurns &&
+            appendedNewer &&
+            _scrollController.hasClients &&
             _scrollController.position.pixels < 120) {
           WidgetsBinding.instance.addPostFrameCallback((_) {
             if (_scrollController.hasClients) {
@@ -314,6 +385,12 @@ class _ChatCanvasViewState extends State<ChatCanvasView> {
   @override
   void dispose() {
     _scrollController.removeListener(_onScroll);
+    _scrollController.dispose();
+    _promptController.dispose();
+    _inputFocusNode.dispose();
+    _showScrollToBottomNotifier.dispose();
+    _dockHeightNotifier.dispose();
+    _topOverlayHeightNotifier.dispose();
     super.dispose();
   }
 
@@ -336,11 +413,15 @@ class _ChatCanvasViewState extends State<ChatCanvasView> {
     final isTurnRunning = _isTurnRunning(widget);
 
     final currentSessionId = session?.id;
+    final firstStepForSig = (session != null && session.steps.isNotEmpty)
+        ? session.steps.first
+        : null;
     final lastStepForSig = (session != null && session.steps.isNotEmpty)
         ? session.steps.last
         : null;
     final currentStepsSignature = Object.hash(
       session?.steps.length ?? 0,
+      firstStepForSig?.stepIndex,
       lastStepForSig?.stepIndex,
       lastStepForSig?.status,
       lastStepForSig?.content.length,
@@ -372,6 +453,9 @@ class _ChatCanvasViewState extends State<ChatCanvasView> {
         _lastStepsSignature != currentStepsSignature ||
         _lastFilesTouchedCount != currentFilesTouchedCount ||
         _lastLoadedTurnCount != _loadedTurnCount ||
+        _lastIsLoadingMoreTurns != _isLoadingMoreTurns ||
+        _lastHasLoadedAllServerHistory != _hasLoadedAllServerHistory ||
+        _lastHasOlderHistoryError != _hasOlderHistoryError ||
         _lastExpandedResponseTurnsHash != currentResponseTurnsHash ||
         _lastExpandedPromptTurnsHash != currentPromptTurnsHash;
 
@@ -380,6 +464,9 @@ class _ChatCanvasViewState extends State<ChatCanvasView> {
       _lastStepsSignature = currentStepsSignature;
       _lastFilesTouchedCount = currentFilesTouchedCount;
       _lastLoadedTurnCount = _loadedTurnCount;
+      _lastIsLoadingMoreTurns = _isLoadingMoreTurns;
+      _lastHasLoadedAllServerHistory = _hasLoadedAllServerHistory;
+      _lastHasOlderHistoryError = _hasOlderHistoryError;
       _lastExpandedResponseTurnsHash = currentResponseTurnsHash;
       _lastExpandedPromptTurnsHash = currentPromptTurnsHash;
 
@@ -399,80 +486,160 @@ class _ChatCanvasViewState extends State<ChatCanvasView> {
         remainingOlderTurns: remainingOlderTurns,
         totalTurnsCount: _cachedAllTurns.length,
       );
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) _glassViewController.captureOnce();
+      });
     }
 
     final flatBlocks = _cachedFlatBlocks;
 
-    return Column(
+    final Widget backdropLayer = Stack(
+      fit: StackFit.expand,
       children: [
-        // 1. Luồng tin nhắn đã được làm phẳng (flattened) & ảo hóa bằng ListView.builder
-        Expanded(
-          child: RepaintBoundary(
-            child: flatBlocks.isEmpty
-                ? _buildEmptyAntigravityWelcome(context, isMobile)
-                : Stack(
-                    children: [
-                      SelectionArea(
-                        child: ListView.builder(
-                          controller: _scrollController,
-                          reverse: true,
-                          addAutomaticKeepAlives: false,
-                          padding: EdgeInsets.fromLTRB(
-                            isMobile ? 10 : 28,
-                            16,
-                            isMobile ? 10 : 28,
-                            12,
-                          ),
-                          itemCount: flatBlocks.length,
-                          itemBuilder: (context, index) {
-                            final block = flatBlocks[index];
-                            return RepaintBoundary(
-                              key: ValueKey(block.keyId),
-                              child: Center(
-                                child: ConstrainedBox(
-                                  constraints: const BoxConstraints(
-                                    maxWidth: 840,
-                                  ),
-                                  child: _buildFlatBlockItem(
-                                    context,
-                                    block,
-                                    isMobile: isMobile,
-                                  ),
-                                ),
-                              ),
-                            );
-                          },
-                        ),
+        const _TelegramChatWallpaper(),
+        flatBlocks.isEmpty
+            ? Padding(
+                padding: EdgeInsets.only(left: widget.desktopLeftInset),
+                child: _buildEmptyAntigravityWelcome(context, isMobile),
+              )
+            : SelectionArea(
+                child: NotificationListener<ScrollNotification>(
+                  onNotification: (notification) {
+                    if (notification is ScrollStartNotification) {
+                      _glassViewController.startRealtimeCapture();
+                    } else if (notification is ScrollEndNotification) {
+                      _glassViewController.stopRealtimeCapture();
+                    } else if (notification is OverscrollNotification &&
+                        notification.overscroll > 0) {
+                      _maybeLoadOlderTurns();
+                    }
+                    return false;
+                  },
+                  child: ListenableBuilder(
+                    listenable: _overlayPaddingListenable,
+                    builder: (context, _) => ListView.builder(
+                      controller: _scrollController,
+                      reverse: true,
+                      scrollCacheExtent: const ScrollCacheExtent.pixels(600),
+                      addAutomaticKeepAlives: false,
+                      padding: EdgeInsets.fromLTRB(
+                        widget.desktopLeftInset + (isMobile ? 12 : 28),
+                        _topOverlayHeightNotifier.value + 12,
+                        isMobile ? 12 : 28,
+                        // Đệm đáy theo đúng chiều cao thực tế của đảo nổi để tin nhắn cuối không bị che
+                        _dockHeightNotifier.value + 18,
                       ),
+                      itemCount: flatBlocks.length,
+                      itemBuilder: (context, index) {
+                        final block = flatBlocks[index];
+                        return RepaintBoundary(
+                          key: ValueKey(block.keyId),
+                          child: Center(
+                            child: ConstrainedBox(
+                              constraints: const BoxConstraints(maxWidth: 840),
+                              child: _buildFlatBlockItem(
+                                context,
+                                block,
+                                isMobile: isMobile,
+                              ),
+                            ),
+                          ),
+                        );
+                      },
+                    ),
+                  ),
+                ),
+              ),
+      ],
+    );
 
-                      if (_showScrollToBottomBtn)
-                        Positioned(
-                          right: isMobile ? 14 : 28,
-                          bottom: 10,
-                          child: FloatingActionButton.small(
-                            tooltip: 'Cuộn xuống đoạn chat mới nhất',
-                            backgroundColor: colorScheme.primaryContainer,
-                            foregroundColor: colorScheme.onPrimaryContainer,
-                            onPressed: () => _scrollToBottom(animated: true),
-                            child: const Icon(
-                              Icons.arrow_downward_rounded,
-                              size: 18,
+    final topOverlay = Align(
+      alignment: Alignment.topCenter,
+      child: Padding(
+        padding: EdgeInsets.only(left: widget.desktopLeftInset),
+        child: RepaintBoundary(
+          child: _DockSizeMeasurer(
+          onHeightChanged: (h) {
+            if (mounted && (_topOverlayHeightNotifier.value - h).abs() > 0.5) {
+              _topOverlayHeightNotifier.value = h;
+            }
+          },
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              if (widget.floatingTopHeader != null) widget.floatingTopHeader!,
+              _buildTopPinnedGlassBar(context, isMobile, isTurnRunning),
+            ],
+          ),
+        ),
+      ),
+      ),
+    );
+
+    return LiquidGlassView(
+      controller: _glassViewController,
+      pixelRatio: 0.75,
+      realTimeCapture: false,
+      useSync: true,
+      refreshRate: LiquidGlassRefreshRate.high,
+      backgroundWidget: backdropLayer,
+      child: Stack(
+        fit: StackFit.expand,
+        children: [
+          topOverlay,
+          if (flatBlocks.isNotEmpty)
+            ValueListenableBuilder<bool>(
+              valueListenable: _showScrollToBottomNotifier,
+              builder: (context, showBtn, _) {
+                if (!showBtn) return const SizedBox.shrink();
+                return ValueListenableBuilder<double>(
+                  valueListenable: _dockHeightNotifier,
+                  builder: (context, dockHeight, _) => Positioned(
+                    right: isMobile ? 14 : 24,
+                    bottom: dockHeight + 12,
+                    child: Tooltip(
+                      message: 'Cuộn xuống đoạn chat mới nhất',
+                      child: LiquidGlassPill(
+                        cornerRadius: 21,
+                        refractionWidth: 10,
+                        shadowBlur: 10,
+                        child: InkWell(
+                          borderRadius: BorderRadius.circular(21),
+                          onTap: () => _scrollToBottom(animated: true),
+                          child: SizedBox(
+                            width: 42,
+                            height: 42,
+                            child: Icon(
+                              Icons.keyboard_arrow_down_rounded,
+                              size: 24,
+                              color: colorScheme.onSurface,
                             ),
                           ),
                         ),
-                    ],
+                      ),
+                    ),
                   ),
+                );
+              },
+            ),
+          Align(
+            alignment: Alignment.bottomCenter,
+            child: Padding(
+              padding: EdgeInsets.only(left: widget.desktopLeftInset),
+              child: RepaintBoundary(
+                child: _DockSizeMeasurer(
+                  onHeightChanged: (h) {
+                    if (mounted && (_dockHeightNotifier.value - h).abs() > 0.5) {
+                      _dockHeightNotifier.value = h;
+                    }
+                  },
+                  child: _buildBottomDockStack(context, isMobile, isTurnRunning),
+                ),
+              ),
+            ),
           ),
-        ),
-
-        // 2. BOTTOM DOCK:
-        //    [Trên]   Task Running Panel (nằm phía trên khung chat)
-        //    [Giữa]   Thanh % Usage (Limit Tuần / Limit Giờ chuẩn Antigravity)
-        //    [Dưới]   Khung nhập Chat (Composer Box)
-        RepaintBoundary(
-          child: _buildBottomDockStack(context, isMobile, isTurnRunning),
-        ),
-      ],
+        ],
+      ),
     );
   }
 
@@ -480,5 +647,43 @@ class _ChatCanvasViewState extends State<ChatCanvasView> {
     if (n >= 1000000) return '${(n / 1000000).toStringAsFixed(1)}M';
     if (n >= 1000) return '${(n / 1000).round()}K';
     return '$n';
+  }
+}
+
+/// Đo chiều cao thực tế của floating dock để làm vùng đệm đáy cho ListView.
+class _DockSizeMeasurer extends SingleChildRenderObjectWidget {
+  const _DockSizeMeasurer({required this.onHeightChanged, super.child});
+
+  final ValueChanged<double> onHeightChanged;
+
+  @override
+  RenderObject createRenderObject(BuildContext context) =>
+      _RenderDockSizeMeasurer(onHeightChanged);
+
+  @override
+  void updateRenderObject(
+    BuildContext context,
+    _RenderDockSizeMeasurer renderObject,
+  ) {
+    renderObject.onHeightChanged = onHeightChanged;
+  }
+}
+
+class _RenderDockSizeMeasurer extends RenderProxyBox {
+  _RenderDockSizeMeasurer(this.onHeightChanged);
+
+  ValueChanged<double> onHeightChanged;
+  double? _lastHeight;
+
+  @override
+  void performLayout() {
+    super.performLayout();
+    final h = child?.size.height ?? 0.0;
+    if (_lastHeight == null || (h - _lastHeight!).abs() > 0.5) {
+      _lastHeight = h;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        onHeightChanged(h);
+      });
+    }
   }
 }
