@@ -224,6 +224,10 @@ p { margin: 0 0 1em; color: var(--text-dim); }
 .sha { margin-top: 18px; font-size: 0.78rem; color: var(--text-faint); word-break: break-all; }
 .sha code { font-size: 0.74rem; background: none; padding: 0; color: var(--text-dim); }
 .dl-note { margin-top: 20px; font-size: 0.9rem; color: var(--text-faint); }
+.dl-count { font-size: 0.9rem; color: var(--text-dim); margin: 0 0 14px; }
+.dl-count span { font-family: var(--mono); font-weight: 700; color: var(--text); }
+.dl-total { margin: 18px 0 0; font-size: 0.95rem; color: var(--text-dim); }
+.dl-total strong { font-family: var(--mono); color: var(--text); }
 
 /* ---------- Donate ---------- */
 .donate {

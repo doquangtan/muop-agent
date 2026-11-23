@@ -55,4 +55,21 @@
       });
     });
   });
+
+  // Số lượt tải: đọc /stats/downloads.json do sidecar tổng hợp (không có thì giữ "—")
+  var dlNodes = document.querySelectorAll("[data-dl]");
+  var dlTotal = document.querySelector("[data-dl-total]");
+  if (dlNodes.length || dlTotal) {
+    fetch("/stats/downloads.json", { cache: "no-store" })
+      .then(function (r) { if (!r.ok) throw new Error("HTTP " + r.status); return r.json(); })
+      .then(function (d) {
+        var fmt = function (n) { return Number(n || 0).toLocaleString("vi-VN"); };
+        dlNodes.forEach(function (el) {
+          var f = d.files && d.files[el.getAttribute("data-dl")];
+          el.textContent = f ? fmt(f.total) : "0";
+        });
+        if (dlTotal) dlTotal.textContent = fmt(d.total);
+      })
+      .catch(function () { /* giữ "—" khi chưa có số liệu hoặc mở file trực tiếp */ });
+  }
 })();

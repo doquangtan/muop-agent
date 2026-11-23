@@ -1,18 +1,32 @@
 # Chạy website Mướp Agents bằng nginx nhẹ, không cần build image.
 #
-#   docker compose up -d          # khởi động, mở http://localhost:446
+#   docker compose up -d               # khởi động, mở http://localhost:446
 #   WEB_PORT=8080 docker compose up -d # đổi cổng host (mặc định 446)
-#   docker compose down           # dừng
+#   docker compose down                # dừng
 #
+# Đếm lượt tải: nginx ghi log chỉ các request tải file từ host công khai (xem deploy/nginx.conf),
+# service dl-stats tổng hợp thành /stats/downloads.json, website hiển thị số liệu đó.
 # Website chỉ là trang tĩnh. Server Mướp Agents (cổng 8787) chạy riêng trên máy có agent.
 
 name: muop-web
 
 services:
+  # Chạy một lần: cấp quyền ghi cho nginx (uid 101) vào volume log và số liệu
+  dl-init:
+    image: busybox:1.36
+    command: sh -c "mkdir -p /logs /stats && chown -R 101:101 /logs && chmod 755 /logs /stats"
+    restart: "no"
+    volumes:
+      - dl-logs:/logs
+      - dl-stats:/stats
+
   web:
     image: nginxinc/nginx-unprivileged:1.27-alpine
     container_name: muop-web
     restart: unless-stopped
+    depends_on:
+      dl-init:
+        condition: service_completed_successfully
     ports:
       - "${WEB_PORT:-446}:8080"
     volumes:
@@ -20,6 +34,9 @@ services:
       - ./:/usr/share/nginx/html:ro
       # Cấu hình nginx tối giản (thay nginx.conf mặc định của image)
       - ./deploy/nginx.conf:/etc/nginx/nginx.conf:ro
+      # Log lượt tải (ghi) và số liệu đã tổng hợp (chỉ đọc)
+      - dl-logs:/var/log/nginx-dl
+      - dl-stats:/usr/share/nginx/stats:ro
     # Giới hạn tài nguyên: website tĩnh chỉ cần vài MB RAM
     mem_limit: 32m
     cpus: 0.25
@@ -38,3 +55,35 @@ services:
       options:
         max-size: "1m"
         max-file: "1"
+
+  # Tổng hợp lượt tải từ log nginx, mỗi 5 phút (stdlib Python, RAM thấp)
+  dl-stats:
+    image: python:3.12-alpine
+    container_name: muop-dl-stats
+    restart: unless-stopped
+    depends_on:
+      dl-init:
+        condition: service_completed_successfully
+    command: ["python3", "/app/count_downloads.py"]
+    environment:
+      INTERVAL_SECONDS: "300"
+    volumes:
+      - ./deploy/stats:/app:ro
+      - dl-logs:/logs
+      - dl-stats:/stats
+    mem_limit: 64m
+    cpus: 0.1
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: json-file
+      options:
+        max-size: "1m"
+        max-file: "1"
+
+volumes:
+  dl-logs:
+  dl-stats:

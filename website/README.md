@@ -10,7 +10,8 @@ website/
 ├── api.html                   # Tài liệu API (dựng từ assets/js/api-data.js)
 ├── docker-compose.yml         # Chạy website bằng nginx nhẹ (cổng host 446)
 ├── deploy/
-│   └── nginx.conf             # Cấu hình nginx tối giản dùng cho compose
+│   ├── nginx.conf             # Cấu hình nginx tối giản dùng cho compose
+│   └── stats/count_downloads.py  # Tổng hợp lượt tải từ log nginx
 └── assets/
     ├── css/style.css          # Giao diện dùng chung (nền than chì, accent cam)
     ├── js/api-data.js         # Dữ liệu toàn bộ endpoint REST, sự kiện Socket.IO, RTSP
@@ -42,6 +43,27 @@ docker compose down                  # dừng
 ```
 
 Các file ẩn, `deploy/` và `docker-compose.yml` không được phục vụ qua HTTP. Thêm hoặc sửa nội dung website chỉ cần sửa file trong thư mục này; không cần khởi động lại container.
+
+## Đếm lượt tải
+
+Trang "Tải về" hiển thị số lượt tải của từng bản. Cách hoạt động:
+
+1. nginx ghi log các request tải file trong `/assets/downloads/` **chỉ khi host là domain công khai** (`agents.muop.vn`, khai báo trong `deploy/nginx.conf`). Truy cập qua localhost hoặc LAN không được ghi. Log không chứa IP, user-agent hay referer.
+2. Service `dl-stats` (`deploy/stats/count_downloads.py`) đọc phần log mới mỗi 5 phút và ghi `/stats/downloads.json`.
+3. Trang chủ đọc `/stats/downloads.json` và hiển thị số liệu. Nếu chưa có file, hiển thị "—".
+
+Một lượt tải = một request `GET` trả `200` cho file. HEAD, tải tiếp (`206`) và 404 không được tính.
+
+**Đổi domain:** sửa dòng `agents.muop.vn 1;` trong `deploy/nginx.conf`, rồi `docker compose up -d --force-recreate web`. Nếu Cloudflare hoặc Origin Rule đổi header `Host` gửi tới origin, phải khớp với giá trị đó.
+
+**Không cache file tải:** nginx trả `Cache-Control: no-store` cho `/assets/downloads/`, nên trình duyệt và Cloudflare không cache file. Nhờ vậy mọi lượt tải đều tới máy chủ và được đếm. Nếu bạn đã bật Cache Rule riêng cho domain, hãy đặt bypass cho `/assets/downloads/*`.
+
+**Giới hạn:**
+- Đây là số lượt tải thành công, không phải số người dùng duy nhất.
+- Lượt tải của chính bạn từ domain công khai cũng được đếm.
+- Số liệu tính theo giờ của máy chủ; "last30" là 30 ngày gần nhất.
+
+Xem số liệu trực tiếp: `curl https://agents.muop.vn/stats/downloads.json`.
 
 ## Khi API thay đổi
 
