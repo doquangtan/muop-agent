@@ -66,84 +66,120 @@ extension _CanvasExtTaskPanel on _ChatCanvasViewState {
     }
 
     // Khi không có task nào đang chạy nhưng có file đã thay đổi:
-    // Hiển thị thanh tóm tắt file changes gọn gàng, không hiện "0 tasks running"
+    // Hiển thị thanh ghim kiểu Pinned Message (có vạch nhấn bên trái, gọn 1 dòng)
     if (activeTaskCount == 0) {
-      return Container(
-        margin: const EdgeInsets.only(bottom: 6),
-        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 7),
-        decoration: BoxDecoration(
-          color: colorScheme.surfaceContainerHigh.withAlpha(240),
-          borderRadius: BorderRadius.circular(12),
-          border: Border.all(
-            color: colorScheme.outlineVariant.withAlpha(60),
-            width: 0.8,
-          ),
-        ),
-        child: Row(
-          children: [
-            Icon(
-              Icons.check_circle_outline_rounded,
-              size: 15,
-              color: context.status.success,
-            ),
-            const SizedBox(width: 8),
-            Flexible(
-              child: Text(
-                '${groupedSessionFiles.length} tệp đã cập nhật',
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: textTheme.bodySmall?.copyWith(
-                  fontSize: 12.5,
-                  fontWeight: FontWeight.w500,
-                  color: colorScheme.onSurfaceVariant,
-                ),
-              ),
-            ),
-            if (totalAdded > 0 || totalRemoved > 0) ...[
-              const SizedBox(width: 6),
-              Text(
-                '+$totalAdded',
-                style: TextStyle(
-                  fontFamily: 'monospace',
-                  fontSize: 10,
-                  fontWeight: FontWeight.w700,
-                  color: context.status.success,
-                ),
-              ),
-              const SizedBox(width: 3),
-              Text(
-                '-$totalRemoved',
-                style: TextStyle(
-                  fontFamily: 'monospace',
-                  fontSize: 10,
-                  fontWeight: FontWeight.w700,
-                  color: context.scheme.error,
-                ),
-              ),
-            ],
-            const Spacer(),
-            InkWell(
-              borderRadius: BorderRadius.circular(6),
-              onTap: widget.onOpenChangesTab,
-              child: Container(
-                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+      return LiquidGlassPill(
+        cornerRadius: 16,
+        refractionWidth: 12,
+        shadowBlur: 8,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
+          child: Row(
+            children: [
+              Container(
+                width: 2.5,
+                height: 22,
                 decoration: BoxDecoration(
-                  color: colorScheme.primaryContainer.withAlpha(100),
-                  borderRadius: BorderRadius.circular(6),
-                  border: Border.all(color: colorScheme.primary.withAlpha(80)),
+                  color: context.status.success,
+                  borderRadius: BorderRadius.circular(2),
                 ),
-                child: Text(
-                  'Review',
-                  style: TextStyle(
-                    fontSize: 10.5,
-                    fontWeight: FontWeight.w700,
-                    color: colorScheme.primary,
+              ),
+              const SizedBox(width: 9),
+              Expanded(
+                child: Row(
+                  children: [
+                    Flexible(
+                      child: Text(
+                        groupedSessionFiles.isNotEmpty
+                            ? '${groupedSessionFiles.length} tệp đã cập nhật'
+                            : 'Tệp vừa tải xuống',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: textTheme.bodySmall?.copyWith(
+                          fontSize: 12.5,
+                          fontWeight: FontWeight.w600,
+                          color: colorScheme.onSurface,
+                        ),
+                      ),
+                    ),
+                    if (totalAdded > 0 || totalRemoved > 0) ...[
+                      const SizedBox(width: 8),
+                      Text(
+                        '+$totalAdded',
+                        style: TextStyle(
+                          fontFamily: 'monospace',
+                          fontSize: 10.5,
+                          fontWeight: FontWeight.w700,
+                          color: context.status.success,
+                        ),
+                      ),
+                      const SizedBox(width: 4),
+                      Text(
+                        '-$totalRemoved',
+                        style: TextStyle(
+                          fontFamily: 'monospace',
+                          fontSize: 10.5,
+                          fontWeight: FontWeight.w700,
+                          color: context.scheme.error,
+                        ),
+                      ),
+                    ],
+                  ],
+                ),
+              ),
+              if (lastDownloaded != null &&
+                  lastDownloaded.trim().isNotEmpty) ...[
+                const SizedBox(width: 6),
+                InkWell(
+                  borderRadius: BorderRadius.circular(8),
+                  onTap: () => widget.onOpenDownloadedFile(lastDownloaded),
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 8,
+                      vertical: 4,
+                    ),
+                    decoration: BoxDecoration(
+                      color: context.status.success.withAlpha(32),
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: Text(
+                      'Mở tệp',
+                      style: TextStyle(
+                        fontSize: 11,
+                        fontWeight: FontWeight.w700,
+                        color: context.status.success,
+                      ),
+                    ),
                   ),
                 ),
-              ),
-            ),
-            const SizedBox(width: 8),
-          ],
+              ],
+              if (groupedSessionFiles.isNotEmpty) ...[
+                const SizedBox(width: 6),
+                InkWell(
+                  borderRadius: BorderRadius.circular(8),
+                  onTap: widget.onOpenChangesTab,
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 9,
+                      vertical: 4,
+                    ),
+                    decoration: BoxDecoration(
+                      color: colorScheme.primary.withAlpha(32),
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: Text(
+                      'Review',
+                      style: TextStyle(
+                        fontSize: 11,
+                        fontWeight: FontWeight.w700,
+                        color: colorScheme.primary,
+                      ),
+                    ),
+                  ),
+                ),
+              ],
+            ],
+          ),
         ),
       );
     }
@@ -323,39 +359,42 @@ extension _CanvasExtTaskPanel on _ChatCanvasViewState {
         ? session.projectPath
         : widget.workspaceRoot;
 
-    return Container(
-      margin: const EdgeInsets.only(bottom: 6),
-      decoration: BoxDecoration(
-        color: colorScheme.surfaceContainerHigh.withAlpha(240),
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(
-          color: colorScheme.outlineVariant.withAlpha(60),
-          width: 0.8,
-        ),
-      ),
+    return LiquidGlassPill(
+      cornerRadius: 16,
+      refractionWidth: 12,
+      shadowBlur: 8,
       child: Column(
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          // [Header Row] Giống hệt Antigravity: "1 task running" + chevron
+          // [Header Row] Thanh ghim gọn kiểu Pinned Message: "1 task running" + chevron
           InkWell(
-            borderRadius: BorderRadius.circular(12),
+            borderRadius: BorderRadius.circular(16),
             onTap: () => _applyState(
               () => _isTaskRunningExpanded = !_isTaskRunningExpanded,
             ),
             child: Padding(
-              padding: const EdgeInsets.fromLTRB(14, 9, 14, 5),
+              padding: const EdgeInsets.fromLTRB(12, 8, 12, 8),
               child: Row(
                 children: [
+                  Container(
+                    width: 2.5,
+                    height: 18,
+                    decoration: BoxDecoration(
+                      color: colorScheme.primary,
+                      borderRadius: BorderRadius.circular(2),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
                   Flexible(
                     child: Text(
                       taskTitle,
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
                       style: textTheme.bodySmall?.copyWith(
-                        fontSize: 13,
-                        fontWeight: FontWeight.w400,
-                        color: colorScheme.onSurfaceVariant,
+                        fontSize: 12.5,
+                        fontWeight: FontWeight.w600,
+                        color: colorScheme.onSurface,
                       ),
                     ),
                   ),

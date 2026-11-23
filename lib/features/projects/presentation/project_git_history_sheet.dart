@@ -3,6 +3,7 @@ import 'package:material_ui/material_ui.dart';
 
 import 'package:muop_agent/core/di/app_dependencies.dart';
 import 'package:muop_agent/core/theme/app_theme.dart';
+import 'package:muop_agent/core/widgets/glass_scaffold.dart';
 import 'package:muop_agent/features/projects/domain/project_entities.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:muop_agent/core/state/server_address_provider.dart';
@@ -246,99 +247,94 @@ class _ProjectGitHistorySheetState extends State<ProjectGitHistorySheetView> {
             ? _history!.projectName
             : widget.projectPath.split('/').last);
 
-    return Scaffold(
-      backgroundColor: colorScheme.surface,
-      appBar: AppBar(
-        backgroundColor: colorScheme.surfaceContainerHigh,
-        elevation: 0,
-        titleSpacing: 0,
-        leading: IconButton(
-          icon: const Icon(Icons.close_rounded),
-          onPressed: () => Navigator.of(context).pop(),
-          tooltip: 'Đóng',
-        ),
-        title: Row(
-          children: [
-            Container(
-              padding: const EdgeInsets.all(6),
-              decoration: BoxDecoration(
-                color: context.scheme.tertiary.withAlpha(25),
-                borderRadius: BorderRadius.circular(8),
-              ),
-              child: Icon(
-                Icons.account_tree_rounded,
-                size: 18,
-                color: context.scheme.tertiary,
-              ),
+    return GlassScreenScaffold(
+      titleSpacing: 0,
+      leading: IconButton(
+        icon: const Icon(Icons.close_rounded),
+        onPressed: () => Navigator.of(context).pop(),
+        tooltip: 'Đóng',
+      ),
+      titleWidget: Row(
+        children: [
+          Container(
+            padding: const EdgeInsets.all(6),
+            decoration: BoxDecoration(
+              color: context.scheme.tertiary.withAlpha(25),
+              borderRadius: BorderRadius.circular(8),
             ),
-            const SizedBox(width: 10),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Row(
-                    children: [
-                      Text(
-                        'Git Tree & Commit History',
-                        style: textTheme.titleMedium?.copyWith(
-                          fontWeight: FontWeight.w700,
-                        ),
+            child: Icon(
+              Icons.account_tree_rounded,
+              size: 18,
+              color: context.scheme.tertiary,
+            ),
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    Text(
+                      'Git Tree & Commit History',
+                      style: textTheme.titleMedium?.copyWith(
+                        fontWeight: FontWeight.w700,
                       ),
-                      const SizedBox(width: 8),
-                      Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1.5),
-                        decoration: BoxDecoration(
-                          color: colorScheme.primaryContainer,
-                          borderRadius: BorderRadius.circular(4),
-                        ),
-                        child: Text(
-                          projectName,
-                          style: TextStyle(
-                            fontSize: 11,
-                            fontWeight: FontWeight.w700,
-                            color: colorScheme.onPrimaryContainer,
-                          ),
-                        ),
-                      ),
-                    ],
-                  ),
-                  Text(
-                    widget.projectPath,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: TextStyle(
-                      fontFamily: 'monospace',
-                      fontSize: 10.5,
-                      color: colorScheme.onSurfaceVariant.withAlpha(180),
                     ),
+                    const SizedBox(width: 8),
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1.5),
+                      decoration: BoxDecoration(
+                        color: colorScheme.primaryContainer,
+                        borderRadius: BorderRadius.circular(4),
+                      ),
+                      child: Text(
+                        projectName,
+                        style: TextStyle(
+                          fontSize: 11,
+                          fontWeight: FontWeight.w700,
+                          color: colorScheme.onPrimaryContainer,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+                Text(
+                  widget.projectPath,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    fontFamily: 'monospace',
+                    fontSize: 10.5,
+                    color: colorScheme.onSurfaceVariant.withAlpha(180),
                   ),
-                ],
-              ),
+                ),
+              ],
             ),
-          ],
-        ),
-        actions: [
-          // Nút Push to Remote nếu có
-          IconButton(
-            icon: _isPushing
-                ? const SizedBox(
-                    width: 16,
-                    height: 16,
-                    child: CircularProgressIndicator(strokeWidth: 2),
-                  )
-                : const Icon(Icons.cloud_upload_outlined, size: 20),
-            tooltip: 'Push lên Remote Git',
-            onPressed: _isPushing ? null : _triggerPush,
           ),
-          // Nút Refresh
-          IconButton(
-            icon: const Icon(Icons.refresh_rounded, size: 20),
-            tooltip: 'Tải lại Git Tree',
-            onPressed: _isLoading ? null : _loadHistory,
-          ),
-          const SizedBox(width: 8),
         ],
       ),
+      actions: [
+        // Nút Push to Remote nếu có
+        IconButton(
+          icon: _isPushing
+              ? const SizedBox(
+                  width: 16,
+                  height: 16,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                )
+              : const Icon(Icons.cloud_upload_outlined, size: 20),
+          tooltip: 'Push lên Remote Git',
+          onPressed: _isPushing ? null : _triggerPush,
+        ),
+        // Nút Refresh
+        IconButton(
+          icon: const Icon(Icons.refresh_rounded, size: 20),
+          tooltip: 'Tải lại Git Tree',
+          onPressed: _isLoading ? null : _loadHistory,
+        ),
+        const SizedBox(width: 8),
+      ],
       body: _buildBody(context, isDesktop),
     );
   }
@@ -1303,42 +1299,37 @@ class _MobileCommitDetailSheetState extends State<_MobileCommitDetailSheetView> 
       maxChildSize: 0.96,
       builder: (ctx, scroll) => ClipRRect(
         borderRadius: const BorderRadius.vertical(top: Radius.circular(20)),
-        child: Scaffold(
-          backgroundColor: colorScheme.surface,
-          appBar: AppBar(
-            backgroundColor: colorScheme.surfaceContainerHigh,
-            elevation: 0,
-            leading: IconButton(
-              icon: const Icon(Icons.keyboard_arrow_down_rounded, size: 28),
-              onPressed: () => Navigator.of(context).pop(),
-              tooltip: 'Đóng',
-            ),
-            title: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  'Chi tiết Commit',
-                  style: textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w700),
-                ),
-                Text(
-                  widget.commit.shortHash,
-                  style: TextStyle(
-                    fontFamily: 'monospace',
-                    fontSize: 11,
-                    color: colorScheme.primary,
-                  ),
-                ),
-              ],
-            ),
-            actions: [
-              IconButton(
-                icon: const Icon(Icons.refresh_rounded, size: 20),
-                tooltip: 'Tải lại',
-                onPressed: _isLoading ? null : _fetchDetail,
+        child: GlassScreenScaffold(
+          leading: IconButton(
+            icon: const Icon(Icons.keyboard_arrow_down_rounded, size: 28),
+            onPressed: () => Navigator.of(context).pop(),
+            tooltip: 'Đóng',
+          ),
+          titleWidget: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                'Chi tiết Commit',
+                style: textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w700),
               ),
-              const SizedBox(width: 8),
+              Text(
+                widget.commit.shortHash,
+                style: TextStyle(
+                  fontFamily: 'monospace',
+                  fontSize: 11,
+                  color: colorScheme.primary,
+                ),
+              ),
             ],
           ),
+          actions: [
+            IconButton(
+              icon: const Icon(Icons.refresh_rounded, size: 20),
+              tooltip: 'Tải lại',
+              onPressed: _isLoading ? null : _fetchDetail,
+            ),
+            const SizedBox(width: 8),
+          ],
           body: _buildBody(context),
         ),
       ),

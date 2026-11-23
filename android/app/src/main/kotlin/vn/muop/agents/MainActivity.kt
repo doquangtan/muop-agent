@@ -30,6 +30,7 @@ class MainActivity : FlutterActivity() {
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, channelName)
             .setMethodCallHandler { call, result ->
                 when (call.method) {
+                    "getFilesDir" -> result.success(filesDir.absolutePath)
                     "openFile" -> openFile(call.argument<String>("path") ?: "", result)
                     "saveToDownloads" -> saveToDownloads(
                         call.argument<String>("path") ?: "",

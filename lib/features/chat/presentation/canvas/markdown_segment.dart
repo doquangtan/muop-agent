@@ -21,9 +21,17 @@ class _AntigravityMarkdownSegment extends StatelessWidget {
   final void Function(String url, String label) onLinkTap;
   final bool isMobile;
 
+  static final RegExp _bulletPattern = RegExp(r'^(\s*)([-*•+])\s+(.*)$');
+  static final RegExp _numberPattern = RegExp(r'^(\s*)(\d+)\.\s+(.*)$');
+
   @override
   Widget build(BuildContext context) {
     final colorScheme = Theme.of(context).colorScheme;
+    final screenWidth = MediaQuery.sizeOf(context).width;
+    final maxCodeWidth = (screenWidth - (isMobile ? 80 : 180)).clamp(
+      160.0,
+      720.0,
+    );
 
     final lines = text.split('\n');
     final children = <Widget>[];
@@ -107,6 +115,7 @@ class _AntigravityMarkdownSegment extends StatelessWidget {
                         colorScheme: colorScheme,
                         onLinkTap: onLinkTap,
                         isMobile: isMobile,
+                        maxCodeWidth: maxCodeWidth,
                       ),
                     ),
                   ),
@@ -151,6 +160,7 @@ class _AntigravityMarkdownSegment extends StatelessWidget {
                   colorScheme: colorScheme,
                   onLinkTap: onLinkTap,
                   isMobile: isMobile,
+                  maxCodeWidth: maxCodeWidth,
                 ),
               ),
             ),
@@ -160,7 +170,7 @@ class _AntigravityMarkdownSegment extends StatelessWidget {
       }
 
       // 4. Bullet List (- , * , • )
-      final bulletMatch = RegExp(r'^(\s*)([-*•+])\s+(.*)$').firstMatch(line);
+      final bulletMatch = _bulletPattern.firstMatch(line);
       if (bulletMatch != null) {
         final indentSpaces = bulletMatch.group(1)?.length ?? 0;
         final content = bulletMatch.group(3) ?? '';
@@ -199,6 +209,7 @@ class _AntigravityMarkdownSegment extends StatelessWidget {
                         colorScheme: colorScheme,
                         onLinkTap: onLinkTap,
                         isMobile: isMobile,
+                        maxCodeWidth: maxCodeWidth,
                       ),
                     ),
                   ),
@@ -211,7 +222,7 @@ class _AntigravityMarkdownSegment extends StatelessWidget {
       }
 
       // 5. Numbered List (1. , 2. )
-      final numberMatch = RegExp(r'^(\s*)(\d+)\.\s+(.*)$').firstMatch(line);
+      final numberMatch = _numberPattern.firstMatch(line);
       if (numberMatch != null) {
         final indentSpaces = numberMatch.group(1)?.length ?? 0;
         final numStr = numberMatch.group(2) ?? '1';
@@ -253,6 +264,7 @@ class _AntigravityMarkdownSegment extends StatelessWidget {
                         colorScheme: colorScheme,
                         onLinkTap: onLinkTap,
                         isMobile: isMobile,
+                        maxCodeWidth: maxCodeWidth,
                       ),
                     ),
                   ),
@@ -281,6 +293,7 @@ class _AntigravityMarkdownSegment extends StatelessWidget {
                 colorScheme: colorScheme,
                 onLinkTap: onLinkTap,
                 isMobile: isMobile,
+                maxCodeWidth: maxCodeWidth,
               ),
             ),
           ),
@@ -310,6 +323,7 @@ class _AntigravityMarkdownSegment extends StatelessWidget {
     required ColorScheme colorScheme,
     required void Function(String url, String label) onLinkTap,
     required bool isMobile,
+    required double maxCodeWidth,
   }) {
     final spans = <InlineSpan>[];
     int lastIndex = 0;
@@ -391,10 +405,14 @@ class _AntigravityMarkdownSegment extends StatelessWidget {
       } else if (match.group(4) != null) {
         // Inline code `code`
         final codeText = match.group(5) ?? '';
-        final screenWidth = MediaQuery.sizeOf(context).width;
-        final maxCodeWidth = (screenWidth - (isMobile ? 80 : 180)).clamp(
-          160.0,
-          720.0,
+        final codeWidget = Text(
+          codeText,
+          style: TextStyle(
+            fontFamily: 'monospace',
+            fontSize: 12.5,
+            fontWeight: FontWeight.w600,
+            color: context.status.warning,
+          ),
         );
 
         spans.add(
@@ -416,18 +434,13 @@ class _AntigravityMarkdownSegment extends StatelessWidget {
               ),
               child: ConstrainedBox(
                 constraints: BoxConstraints(maxWidth: maxCodeWidth),
-                child: SingleChildScrollView(
-                  scrollDirection: Axis.horizontal,
-                  child: Text(
-                    codeText,
-                    style: TextStyle(
-                      fontFamily: 'monospace',
-                      fontSize: 12.5,
-                      fontWeight: FontWeight.w600,
-                      color: context.status.warning,
-                    ),
-                  ),
-                ),
+                // Chỉ bọc SingleChildScrollView khi đoạn code dài, tránh cấp phát Scrollable thừa cho chip ngắn
+                child: codeText.length > 48
+                    ? SingleChildScrollView(
+                        scrollDirection: Axis.horizontal,
+                        child: codeWidget,
+                      )
+                    : codeWidget,
               ),
             ),
           ),

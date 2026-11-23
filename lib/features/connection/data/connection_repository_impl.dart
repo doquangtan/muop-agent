@@ -4,6 +4,7 @@ import 'dart:io';
 
 import 'package:muop_agent/core/config/server_config.dart';
 import 'package:muop_agent/core/network/socket_gateway.dart';
+import 'package:muop_agent/core/storage/local_config_store.dart';
 import 'package:muop_agent/features/connection/domain/connection_entities.dart';
 import 'package:muop_agent/features/connection/domain/connection_repository.dart';
 import 'package:muop_agent/features/connection/domain/lan_scan.dart';
@@ -13,20 +14,11 @@ class ConnectionRepositoryImpl implements ConnectionRepository {
   final SocketGateway _gateway;
   ConnectionRepositoryImpl(this._gateway);
 
-  File get _configFile =>
-      File('${Directory.systemTemp.path}/muop_agent_remote_config.json');
+  static const String _configFileName = 'muop_agent_remote_config.json';
 
-  /// Đọc file cấu hình: `serverAddress` (địa chỉ đang dùng) và `servers` (danh sách đã kết nối).
-  /// File cũ chỉ có `serverAddress` vẫn đọc được.
-  Future<Map<String, dynamic>> _readConfig() async {
-    try {
-      if (await _configFile.exists()) {
-        final decoded = jsonDecode(await _configFile.readAsString());
-        if (decoded is Map<String, dynamic>) return decoded;
-      }
-    } catch (_) {}
-    return <String, dynamic>{};
-  }
+  /// Đọc file cấu hình bền vững: `serverAddress` (địa chỉ đang dùng) và `servers` (danh sách đã kết nối).
+  Future<Map<String, dynamic>> _readConfig() =>
+      LocalConfigStore.readJson(_configFileName);
 
   List<String> _servers(Map<String, dynamic> config) {
     final list = <String>[];
@@ -39,17 +31,12 @@ class ConnectionRepositoryImpl implements ConnectionRepository {
     return list;
   }
 
-  Future<void> _writeConfig(String address, List<String> servers) async {
-    try {
-      await _configFile.writeAsString(
-        jsonEncode({
-          'serverAddress': address,
-          'servers': servers,
-          'updatedAt': DateTime.now().toIso8601String(),
-        }),
-      );
-    } catch (_) {}
-  }
+  Future<void> _writeConfig(String address, List<String> servers) =>
+      LocalConfigStore.writeJson(_configFileName, {
+        'serverAddress': address,
+        'servers': servers,
+        'updatedAt': DateTime.now().toIso8601String(),
+      });
 
   @override
   Future<String> loadSavedServerAddress() async {

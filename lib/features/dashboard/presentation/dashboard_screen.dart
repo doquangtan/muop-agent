@@ -4,7 +4,11 @@ import 'package:material_ui/material_ui.dart';
 import 'package:muop_agent/core/config/server_config.dart';
 import 'package:muop_agent/core/di/app_dependencies.dart';
 import 'package:muop_agent/core/theme/app_theme.dart';
+import 'package:muop_agent/core/theme/chat_theme_painter.dart';
+import 'package:muop_agent/features/dashboard/presentation/widgets/chat_theme_picker_sheet.dart';
 import 'package:muop_agent/core/widgets/desktop_panel.dart';
+import 'package:muop_agent/core/widgets/glass_scaffold.dart';
+import 'package:muop_agent/core/widgets/liquid_glass.dart';
 import 'package:muop_agent/core/widgets/resizable_split.dart';
 import 'package:muop_agent/features/bridge/domain/bridge_entities.dart';
 import 'package:muop_agent/features/bridge/domain/bridge_repository.dart';
@@ -490,14 +494,7 @@ class _DashboardScreenState extends ConsumerState<DashboardScreenView> {
         final mergedFiles = _mergeFilesTouched(existing.filesTouched, updated.filesTouched);
         final mergedLanes = _carryLanes(existing.subagentLanes, updated);
 
-        List<AgentStep> finalSteps;
-        if (existing.steps.isNotEmpty && existing.steps.length > updated.steps.length) {
-          finalSteps = _mergeNewerSteps(existing.steps, updated.steps);
-        } else if (updated.steps.isEmpty && existing.steps.isNotEmpty) {
-          finalSteps = existing.steps;
-        } else {
-          finalSteps = updated.steps;
-        }
+        final finalSteps = _preserveOlderSteps(existing.steps, updated.steps);
 
         final merged = updated.copyWith(
           steps: finalSteps,
@@ -566,12 +563,7 @@ class _DashboardScreenState extends ConsumerState<DashboardScreenView> {
       }
       final mergedFiles = _mergeFilesTouched(existing.filesTouched, s.filesTouched);
       final mergedLanes = _carryLanes(existing.subagentLanes, s);
-      List<AgentStep>? steps;
-      if (existing.steps.isNotEmpty && existing.steps.length > s.steps.length) {
-        steps = _mergeNewerSteps(existing.steps, s.steps);
-      } else if (s.steps.isEmpty && existing.steps.isNotEmpty) {
-        steps = existing.steps;
-      }
+      final steps = _preserveOlderSteps(existing.steps, s.steps);
       merged.add(
         s.copyWith(
           steps: steps,
@@ -711,7 +703,11 @@ class _DashboardScreenState extends ConsumerState<DashboardScreenView> {
     setState(() {
       final idx = _sessions.indexWhere((s) => s.id == sessionId);
       if (idx >= 0) {
-        _sessions[idx] = detailed;
+        final existing = _sessions[idx];
+        _sessions[idx] = detailed.copyWith(
+          steps: _preserveOlderSteps(existing.steps, detailed.steps),
+          filesTouched: _mergeFilesTouched(existing.filesTouched, detailed.filesTouched),
+        );
       }
     });
   }
@@ -886,6 +882,15 @@ class _DashboardScreenState extends ConsumerState<DashboardScreenView> {
           : 'claude-cli:claude-sonnet-5-5';
     }
 
+    // Conversation máy phụ luôn chọn model của máy phụ (lịch sử có thể cho model máy chính)
+    final openIsPeer = !_isNewConversationMode &&
+        _selectedSessionId != null &&
+        _peerSessionIds.contains(_selectedSessionId);
+    if (openIsPeer && !isPeerModel(_selectedModel)) {
+      final peerDefault = _peerDefaultFor(provider);
+      if (peerDefault.isNotEmpty) _selectedModel = peerDefault;
+    }
+
     // Đồng bộ agent dựa trên session
     _selectedAgent = _getAgentForSession(currentSess);
 
@@ -914,10 +919,24 @@ class _DashboardScreenState extends ConsumerState<DashboardScreenView> {
   String get _sendModel {
     final cid = _selectedSessionId;
     if (!_isNewConversationMode && cid != null && _peerSessionIds.contains(cid)) {
+      // Model người dùng vừa chọn trong menu (kèm mức suy nghĩ) là model máy phụ thì dùng nó
+      if (isPeerModel(_effectiveModel)) return _effectiveModel;
       final remembered = _activeSession?.selectedModel ?? '';
       if (isPeerModel(remembered)) return remembered;
+      final fallback = _peerDefaultFor(_activeSource);
+      if (fallback.isNotEmpty) return fallback;
     }
     return _effectiveModel;
+  }
+
+  /// Model máy phụ mặc định cho provider (mức Medium của nhóm đầu tiên). Rỗng nếu máy phụ chưa có model.
+  String _peerDefaultFor(String source) {
+    final peers = [
+      for (final m in _availableModels)
+        if (isPeerModel(m) && _sourceFromModel(m) == source) m,
+    ];
+    if (peers.isEmpty) return '';
+    return peers.firstWhere((m) => m.endsWith('-$kDefaultModelEffort'), orElse: () => peers.first);
   }
 
   void _bindPeerStreams() {
@@ -1062,13 +1081,26 @@ class _DashboardScreenState extends ConsumerState<DashboardScreenView> {
     );
   }
 
+  /// Conversation đang mở, tra đúng theo id (không rơi về phần tử đầu như [_activeSession])
+  ConversationSession? get _openConversationExact {
+    final id = _selectedSessionId;
+    if (_isNewConversationMode || id == null || id.isEmpty) return null;
+    for (final s in _sessions) {
+      if (s.id == id) return s;
+    }
+    return null;
+  }
+
   Future<void> _handleSendPrompt(
     String promptText,
     List<ChatImageAttachment> images,
   ) async {
-    final targetProjectPath = _activeChatProject?.path ??
-        _activeSession?.projectPath ??
-        _serverWorkspaceRoot;
+    // Lượt gửi vào conversation đang mở phải đi đúng project của conversation đó,
+    // không theo dropdown project (có thể đang chọn project khác).
+    final openConv = _openConversationExact;
+    final targetProjectPath = (openConv != null && openConv.projectPath.isNotEmpty)
+        ? openConv.projectPath
+        : (_activeChatProject?.path ?? _serverWorkspaceRoot);
     final targetConvId =
         _isNewConversationMode ? '' : (_selectedSessionId ?? '');
 
@@ -1361,46 +1393,65 @@ class _DashboardScreenState extends ConsumerState<DashboardScreenView> {
     );
   }
 
-  Future<bool> _handleLoadOlderHistory() async {
+  Future<bool?> _handleLoadOlderHistory() async {
     final active = _activeSession;
-    if (active == null) return false;
+    // Đợi nạp xong chi tiết ban đầu thay vì gửi beforeStep=null và khóa nhầm phân trang
+    if (active == null || active.steps.isEmpty) return true;
 
-    // Tìm stepIndex nhỏ nhất hiện có trong phiên để nạp trang 30 bước phía trước
-    int earliestStep = 999999999;
+    // Tìm stepIndex nhỏ nhất hiện có trong phiên để nạp trang 50 bước phía trước
+    int earliestStep = active.steps.first.stepIndex;
     for (final s in active.steps) {
       if (s.stepIndex < earliestStep) {
         earliestStep = s.stepIndex;
       }
     }
-    if (earliestStep == 999999999) earliestStep = 0;
+    if (earliestStep <= 0) return false;
 
     final page = await _sessionsRepo.fetchSessionStepsPage(
       address: _serverAddress,
       sessionId: active.id,
-      beforeStepIndex: earliestStep > 0 ? earliestStep : null,
-      limit: 30,
+      beforeStepIndex: earliestStep,
+      limit: 50,
     );
 
-    if (!mounted || page == null) return false;
+    if (!mounted) return null;
+    if (page == null) return null;
 
     var addedSteps = false;
     if (page.steps.isNotEmpty) {
-      final existingIds = active.steps.map((s) => s.stepIndex).toSet();
-      final olderSteps =
-          page.steps.where((s) => !existingIds.contains(s.stepIndex)).toList();
-      if (olderSteps.isNotEmpty) {
-        addedSteps = true;
-        final merged = [...olderSteps, ...active.steps];
-        merged.sort((a, b) => a.stepIndex.compareTo(b.stepIndex));
-        setState(() {
-          final idx = _sessions.indexWhere((s) => s.id == active.id);
-          if (idx >= 0) {
-            _sessions[idx] = active.copyWith(steps: merged);
+      setState(() {
+        final idx = _sessions.indexWhere((s) => s.id == active.id);
+        if (idx >= 0) {
+          final current = _sessions[idx];
+          final existingIds = current.steps.map((s) => s.stepIndex).toSet();
+          final olderSteps = page.steps
+              .where((s) => !existingIds.contains(s.stepIndex))
+              .toList();
+          if (olderSteps.isNotEmpty) {
+            addedSteps = true;
+            final merged = [...olderSteps, ...current.steps]
+              ..sort((a, b) => a.stepIndex.compareTo(b.stepIndex));
+            _sessions[idx] = current.copyWith(steps: merged);
           }
-        });
-      }
+        }
+      });
     }
     return page.hasMore && addedSteps;
+  }
+
+  /// Giữ các step cũ đã nạp bằng phân trang khi nhận snapshot/detail mới hơn (chỉ chứa 100 step cuối).
+  List<AgentStep> _preserveOlderSteps(
+    List<AgentStep> existing,
+    List<AgentStep> incoming,
+  ) {
+    if (incoming.isEmpty) return existing;
+    if (existing.isEmpty) return incoming;
+    final existingFirst = existing.first.stepIndex;
+    final incomingFirst = incoming.first.stepIndex;
+    if (existingFirst < incomingFirst || existing.length > incoming.length) {
+      return _mergeNewerSteps(existing, incoming);
+    }
+    return incoming;
   }
 
   void _openAgentMapScreen() {
@@ -2017,16 +2068,33 @@ class _DashboardScreenState extends ConsumerState<DashboardScreenView> {
     final isMobile = width < 760;
     final activeSession = _activeSession;
 
+    final bool isChatWaitingOrDisconnected =
+        (_isLoading && activeSession == null && !_isNewConversationMode) ||
+        (!_isRemoteConnected && !_isSocketLive && activeSession == null);
+
     final Widget scaffoldBody;
     if (isMobile) {
-      scaffoldBody = SafeArea(
-        child: _buildMainColumn(
-          context,
-          activeSession,
-          isMobile: true,
-          content: _buildChatArea(context, activeSession),
-        ),
-      );
+      scaffoldBody = isChatWaitingOrDisconnected
+          ? SafeArea(
+              child: _buildMainColumn(
+                context,
+                activeSession,
+                isMobile: true,
+                content: _buildChatArea(context, activeSession),
+              ),
+            )
+          : SafeArea(
+              top: false,
+              child: _buildChatArea(
+                context,
+                activeSession,
+                floatingHeader: _buildFloatingGlassTopHeader(
+                  context,
+                  activeSession,
+                  isMobile: true,
+                ),
+              ),
+            );
     } else {
       scaffoldBody = PanelScope(
         open: _openPanel,
@@ -2113,8 +2181,60 @@ class _DashboardScreenState extends ConsumerState<DashboardScreenView> {
     );
   }
 
-  /// Layout desktop: rail conversation (thu gọn / ghim) → explorer cây thư mục → vùng chính
-  /// chia đôi có thanh kéo (viewer file | chat). Rail mở rộng khi hover được vẽ đè lên các cột.
+  /// Khung nổi Liquid Glass cho Sidebar & Explorer trên Desktop (mờ trong suốt để thấy hình nền blur phía sau).
+  Widget _buildFloatingDesktopGlassPanel({
+    Key? key,
+    required BuildContext context,
+    required Widget child,
+    double blur = 14,
+    bool elevatedOverlay = false,
+  }) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final baseAlpha = elevatedOverlay
+        ? (isDark ? 0.46 : 0.56)
+        : (isDark ? 0.28 : 0.36);
+    final highlightAlpha = elevatedOverlay
+        ? (isDark ? 0.52 : 0.64)
+        : (isDark ? 0.36 : 0.46);
+    final baseTint = isDark
+        ? const Color(0xFF131924)
+        : const Color(0xFFF6F9FF);
+    final topTint = isDark
+        ? const Color(0xFF222C3D)
+        : const Color(0xFFFFFFFF);
+
+    return RepaintBoundary(
+      child: LiquidGlassContainer(
+        key: key,
+        borderRadius: BorderRadius.circular(18),
+        blur: blur,
+        fillColor: baseTint.withValues(alpha: baseAlpha),
+        gradient: LinearGradient(
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+          colors: [
+            topTint.withValues(alpha: highlightAlpha),
+            baseTint.withValues(alpha: baseAlpha),
+          ],
+        ),
+        borderColor: isDark
+            ? Colors.white.withValues(alpha: 0.20)
+            : Colors.white.withValues(alpha: 0.72),
+        borderWidth: 1.0,
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withValues(alpha: isDark ? 0.36 : 0.12),
+            blurRadius: 22,
+            offset: const Offset(0, 8),
+          ),
+        ],
+        child: child,
+      ),
+    );
+  }
+
+  /// Layout desktop: nền chat tràn full màn hình; Sidebar/Rail & Explorer nổi Liquid Glass phía trên.
+  /// Vùng nội dung chat tự chừa khoảng đệm trái để không bị panel nổi che khuất.
   Widget _buildDesktopLayout(
     BuildContext context,
     ConversationSession? activeSession,
@@ -2125,6 +2245,25 @@ class _DashboardScreenState extends ConsumerState<DashboardScreenView> {
     final showExplorer = _panelPages.isEmpty && (_explorerOverride ?? width >= 1200);
     final viewerOpen = _viewerFilePath != null;
     final projectRoot = _activeChatProject?.path ?? activeSession?.projectPath ?? '';
+    final useFloatingHeader =
+        _panelPages.isEmpty &&
+        !viewerOpen &&
+        !(_isLoading && activeSession == null && !_isNewConversationMode) &&
+        (_isRemoteConnected || _isSocketLive || activeSession != null);
+
+    const double outerMargin = 12.0;
+    const double sidebarWidth = 280.0;
+    const double explorerWidth = 240.0;
+    const double panelGap = 10.0;
+    final double sidebarLeftExtent =
+        outerMargin +
+        (_showDesktopSidebar
+            ? sidebarWidth
+            : DesktopConversationRail.collapsedWidth);
+    final double explorerLeft = sidebarLeftExtent + panelGap;
+    final double leftOverlayWidth = showExplorer
+        ? explorerLeft + explorerWidth + 6.0
+        : sidebarLeftExtent + 6.0;
 
     final railConversations = [
       for (final s in _filteredSessions)
@@ -2139,107 +2278,143 @@ class _DashboardScreenState extends ConsumerState<DashboardScreenView> {
 
     return Stack(
       children: [
+        if (!useFloatingHeader)
+          const Positioned.fill(child: ChatWallpaperSurface()),
+        // Key cố định: explorer/sidebar ẩn/hiện không làm state chat bị dựng lại
         Positioned.fill(
-          child: Row(
-            children: [
-              if (_showDesktopSidebar)
-                SizedBox(
-                  width: 280,
-                  child: RepaintBoundary(
-                    child: _buildAntigravitySidebar(context, isMobileDrawer: false),
-                  ),
-                )
-              else
-                MouseRegion(
-                  onEnter: (_) => setState(() => _railHovered = true),
-                  onExit: (_) => setState(() => _railHovered = false),
-                  child: DesktopConversationRail(
-                    conversations: railConversations,
-                    selectedId: _isNewConversationMode ? null : _selectedSessionId,
-                    onSelect: (id) {
-                      final session = _sessions.where((s) => s.id == id).firstOrNull;
-                      if (session != null) _selectConversation(session);
-                    },
-                    onNewConversation: () => _startNewConversationInProject(_activeChatProject),
-                    onHoverChanged: (hovered) => setState(() => _railHovered = hovered),
-                    isPinned: _showDesktopSidebar,
-                    onTogglePin: () => setState(() => _showDesktopSidebar = !_showDesktopSidebar),
-                  ),
-                ),
-              VerticalDivider(width: 1, color: colorScheme.outlineVariant),
-              if (showExplorer) ...[
-                SizedBox(
-                  width: 240,
-                  child: RepaintBoundary(
-                    child: projectRoot.isEmpty
-                        ? Center(
-                            child: Padding(
-                              padding: const EdgeInsets.all(16),
-                              child: Text(
-                                'Chọn một project để xem cây thư mục',
-                                textAlign: TextAlign.center,
-                                style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                                      color: colorScheme.onSurfaceVariant,
-                                    ),
-                              ),
-                            ),
+          key: const ValueKey('desktop-main'),
+          child: Padding(
+            padding: EdgeInsets.only(
+              left: useFloatingHeader ? 0.0 : leftOverlayWidth,
+            ),
+            child: _buildMainColumn(
+              context,
+              activeSession,
+              isMobile: false,
+              hideHeader: useFloatingHeader || _panelPages.isNotEmpty,
+              // Header chat giữ nguyên ở trên khi mở panel/split viewer; khi ở màn chat thuần thì dùng header nổi Liquid Glass
+              content: _buildPanelStack(
+                chat: ResizableSplitView(
+                  showLeft: viewerOpen,
+                  left: viewerOpen
+                      ? FileDiffAndContentPane(
+                          key: ValueKey(_viewerFilePath),
+                          serverAddress: _serverAddress,
+                          filePath: _viewerFilePath!,
+                          onDownloadFile: _downloadFileDirectly,
+                          onClose: () =>
+                              setState(() => _viewerFilePath = null),
+                        )
+                      : const SizedBox.shrink(),
+                  right: _buildChatArea(
+                    context,
+                    activeSession,
+                    desktopLeftInset:
+                        useFloatingHeader ? leftOverlayWidth : 0.0,
+                    floatingHeader: useFloatingHeader
+                        ? _buildFloatingGlassTopHeader(
+                            context,
+                            activeSession,
+                            isMobile: false,
                           )
-                        : ProjectTreeExplorer(
-                            serverAddress: _serverAddress,
-                            rootPath: projectRoot,
-                            selectedFilePath: _viewerFilePath,
-                            fileStatuses: _explorerFileStatuses(activeSession),
-                            onOpenFile: (path) => setState(() => _viewerFilePath = path),
-                            onCollapse: () => setState(() => _explorerOverride = false),
-                          ),
-                  ),
-                ),
-                VerticalDivider(width: 1, color: colorScheme.outlineVariant),
-              ],
-              // Key cố định: explorer ẩn/hiện không được làm Navigator (và state chat bên trong) bị dựng lại
-              Expanded(
-                key: const ValueKey('desktop-main'),
-                child: _buildMainColumn(
-                  context,
-                  activeSession,
-                  isMobile: false,
-                  // Header chat giữ nguyên ở trên; trang panel (SSH/Docker/Màn hình...) mount vào vùng content bên dưới
-                  content: _buildPanelStack(
-                    chat: ResizableSplitView(
-                    showLeft: viewerOpen,
-                    left: viewerOpen
-                        ? FileDiffAndContentPane(
-                            key: ValueKey(_viewerFilePath),
-                            serverAddress: _serverAddress,
-                            filePath: _viewerFilePath!,
-                            onDownloadFile: _downloadFileDirectly,
-                            onClose: () => setState(() => _viewerFilePath = null),
-                          )
-                        : const SizedBox.shrink(),
-                    right: _buildChatArea(context, activeSession),
-                  )
+                        : null,
                   ),
                 ),
               ),
-            ],
+            ),
           ),
         ),
-        // Rail mở rộng khi hover: nổi lên trên, không đẩy nội dung
+        // Sidebar / Rail nổi Liquid Glass bên trái
+        Positioned(
+          top: outerMargin,
+          bottom: outerMargin,
+          left: outerMargin,
+          width: _showDesktopSidebar
+              ? sidebarWidth
+              : DesktopConversationRail.collapsedWidth,
+          child: _buildFloatingDesktopGlassPanel(
+            key: Key(
+              _showDesktopSidebar
+                  ? 'desktop-floating-sidebar'
+                  : 'desktop-floating-rail',
+            ),
+            context: context,
+            child: _showDesktopSidebar
+                ? _buildAntigravitySidebar(context, isMobileDrawer: false)
+                : MouseRegion(
+                    onEnter: (_) => setState(() => _railHovered = true),
+                    onExit: (_) => setState(() => _railHovered = false),
+                    child: DesktopConversationRail(
+                      conversations: railConversations,
+                      selectedId:
+                          _isNewConversationMode ? null : _selectedSessionId,
+                      onSelect: (id) {
+                        final session =
+                            _sessions.where((s) => s.id == id).firstOrNull;
+                        if (session != null) _selectConversation(session);
+                      },
+                      onNewConversation: () =>
+                          _startNewConversationInProject(_activeChatProject),
+                      onHoverChanged: (hovered) =>
+                          setState(() => _railHovered = hovered),
+                      isPinned: _showDesktopSidebar,
+                      onTogglePin: () => setState(
+                        () => _showDesktopSidebar = !_showDesktopSidebar,
+                      ),
+                    ),
+                  ),
+          ),
+        ),
+        // Explorer cây thư mục nổi Liquid Glass cạnh Sidebar/Rail
+        if (showExplorer)
+          Positioned(
+            top: outerMargin,
+            bottom: outerMargin,
+            left: explorerLeft,
+            width: explorerWidth,
+            child: _buildFloatingDesktopGlassPanel(
+              key: const Key('desktop-floating-explorer'),
+              context: context,
+              child: projectRoot.isEmpty
+                  ? Center(
+                      child: Padding(
+                        padding: const EdgeInsets.all(16),
+                        child: Text(
+                          'Chọn một project để xem cây thư mục',
+                          textAlign: TextAlign.center,
+                          style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                            color: colorScheme.onSurfaceVariant,
+                          ),
+                        ),
+                      ),
+                    )
+                  : ProjectTreeExplorer(
+                      serverAddress: _serverAddress,
+                      rootPath: projectRoot,
+                      selectedFilePath: _viewerFilePath,
+                      fileStatuses: _explorerFileStatuses(activeSession),
+                      onOpenFile: (path) =>
+                          setState(() => _viewerFilePath = path),
+                      onCollapse: () =>
+                          setState(() => _explorerOverride = false),
+                    ),
+            ),
+          ),
+        // Rail mở rộng khi hover: nổi lên trên cùng, không đẩy nội dung
         if (_railHovered && !_showDesktopSidebar)
           Positioned(
-            left: 0,
-            top: 0,
-            bottom: 0,
-            width: 280,
+            top: outerMargin,
+            bottom: outerMargin,
+            left: outerMargin,
+            width: sidebarWidth,
             child: MouseRegion(
               onEnter: (_) => setState(() => _railHovered = true),
               onExit: (_) => setState(() => _railHovered = false),
-              child: Material(
-                elevation: 8,
-                color: colorScheme.surfaceContainerLow,
-                child: RepaintBoundary(
-                  child: _buildAntigravitySidebar(context, isMobileDrawer: false),
-                ),
+              child: _buildFloatingDesktopGlassPanel(
+                context: context,
+                blur: 18,
+                elevatedOverlay: true,
+                child: _buildAntigravitySidebar(context, isMobileDrawer: false),
               ),
             ),
           ),
@@ -2292,8 +2467,11 @@ class _DashboardScreenState extends ConsumerState<DashboardScreenView> {
     ConversationSession? activeSession, {
     required bool isMobile,
     required Widget content,
+    bool hideHeader = false,
   }) {
-    final colorScheme = Theme.of(context).colorScheme;
+    if (hideHeader) {
+      return RepaintBoundary(child: content);
+    }
     return RepaintBoundary(
       child: Column(
         children: [
@@ -2302,7 +2480,6 @@ class _DashboardScreenState extends ConsumerState<DashboardScreenView> {
             activeSession,
             isMobile: isMobile,
           ),
-          Divider(height: 1, color: colorScheme.outlineVariant),
           if (_pendingAIQuestions.isNotEmpty) _buildAIQuestionBanner(context),
           Expanded(child: content),
         ],
@@ -2310,15 +2487,387 @@ class _DashboardScreenState extends ConsumerState<DashboardScreenView> {
     );
   }
 
+  /// Thanh Header Liquid Glass nổi kiểu Telegram iOS (trôi đè trên luồng chat)
+  Widget _buildFloatingGlassTopHeader(
+    BuildContext context,
+    ConversationSession? activeSession, {
+    required bool isMobile,
+  }) {
+    final colorScheme = Theme.of(context).colorScheme;
+    final textTheme = Theme.of(context).textTheme;
+    final topInset = isMobile ? MediaQuery.paddingOf(context).top : 0.0;
+
+    final title = _isNewConversationMode
+        ? 'New Conversation'
+        : (activeSession?.title ?? 'Mướp Agents');
+    final projectName = _activeChatProject?.name ??
+        activeSession?.projectName ??
+        'Chưa chọn project';
+    final liveColor = _isSocketLive || _isRemoteConnected
+        ? context.status.success
+        : context.status.warning;
+
+    Widget glassIconBtn({
+      required IconData icon,
+      required String tooltip,
+      required VoidCallback onTap,
+      Color? iconColor,
+    }) {
+      return Tooltip(
+        message: tooltip,
+        child: LiquidGlassPill(
+          cornerRadius: 21,
+          refractionWidth: 10,
+          shadowBlur: 10,
+          child: InkWell(
+            borderRadius: BorderRadius.circular(21),
+            onTap: onTap,
+            child: SizedBox(
+              width: 42,
+              height: 42,
+              child: Icon(
+                icon,
+                size: 20,
+                color: iconColor ?? colorScheme.onSurface,
+              ),
+            ),
+          ),
+        ),
+      );
+    }
+
+    final centerPill = LiquidGlassPill(
+      cornerRadius: 23,
+      refractionWidth: 12,
+      shadowBlur: 10,
+      child: InkWell(
+        borderRadius: BorderRadius.circular(23),
+        onTap: _openSettings,
+        child: SizedBox(
+          width: double.infinity,
+          height: 44,
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 10),
+            child: Row(
+              children: [
+                ClipRRect(
+                  borderRadius: BorderRadius.circular(14),
+                  child: Image.asset(
+                    'assets/images/logo.png',
+                    width: 28,
+                    height: 28,
+                    fit: BoxFit.cover,
+                  ),
+                ),
+                const SizedBox(width: 9),
+                Expanded(
+                  child: Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        title,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: textTheme.titleSmall?.copyWith(
+                          fontSize: isMobile ? 13.5 : 14,
+                          fontWeight: FontWeight.w700,
+                          color: colorScheme.onSurface,
+                          height: 1.15,
+                        ),
+                      ),
+                      const SizedBox(height: 1),
+                      Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Container(
+                            width: 6,
+                            height: 6,
+                            decoration: BoxDecoration(
+                              color: liveColor,
+                              shape: BoxShape.circle,
+                            ),
+                          ),
+                          const SizedBox(width: 5),
+                          Flexible(
+                            child: Text(
+                              isMobile
+                                  ? '$projectName • ${_isSocketLive ? "Live" : "Offline"}'
+                                  : '$projectName • ${_isSocketLive ? "Socket.IO • $_serverAddress" : _serverAddress}',
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: textTheme.labelSmall?.copyWith(
+                                fontSize: 10.5,
+                                fontWeight: FontWeight.w600,
+                                color: colorScheme.onSurfaceVariant,
+                                height: 1.15,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+
+    final Widget rightPill;
+    if (isMobile) {
+      rightPill = LiquidGlassPill(
+        cornerRadius: 21,
+        refractionWidth: 10,
+        shadowBlur: 10,
+        child: PopupMenuButton<String>(
+          tooltip: 'Tùy chọn & Công cụ',
+          padding: EdgeInsets.zero,
+          constraints: const BoxConstraints(minWidth: 42, minHeight: 42),
+          icon: Icon(
+            Icons.more_vert_rounded,
+            size: 20,
+            color: colorScheme.onSurface,
+          ),
+          onSelected: (value) {
+            switch (value) {
+              case 'new':
+                _startNewConversationInProject(_activeChatProject);
+                break;
+              case 'agent_map':
+                _openAgentMapScreen();
+                break;
+              case 'sftp':
+                _openServerFileBrowser(initialTab: 0);
+                break;
+              case 'git':
+                _openActiveGitHistory();
+                break;
+              case 'theme':
+                widget.onToggleTheme();
+                break;
+              case 'palette':
+                _showThemeColorPicker(context);
+                break;
+              case 'settings':
+                _openSettings();
+                break;
+            }
+          },
+          itemBuilder: (ctx) => [
+            const PopupMenuItem(
+              value: 'new',
+              child: ListTile(
+                dense: true,
+                contentPadding: EdgeInsets.zero,
+                leading: Icon(Icons.add_rounded, size: 19),
+                title: Text('Cuộc hội thoại mới'),
+              ),
+            ),
+            const PopupMenuItem(
+              value: 'agent_map',
+              child: ListTile(
+                dense: true,
+                contentPadding: EdgeInsets.zero,
+                leading: Icon(Icons.hub_outlined, size: 19),
+                title: Text('Agent map'),
+              ),
+            ),
+            const PopupMenuItem(
+              value: 'sftp',
+              child: ListTile(
+                dense: true,
+                contentPadding: EdgeInsets.zero,
+                leading: Icon(Icons.folder_special_outlined, size: 19),
+                title: Text('Duyệt SFTP Server'),
+              ),
+            ),
+            const PopupMenuItem(
+              value: 'git',
+              child: ListTile(
+                dense: true,
+                contentPadding: EdgeInsets.zero,
+                leading: Icon(Icons.account_tree_outlined, size: 19),
+                title: Text('Git Tree & History'),
+              ),
+            ),
+            const PopupMenuDivider(),
+            PopupMenuItem(
+              value: 'theme',
+              child: ListTile(
+                dense: true,
+                contentPadding: EdgeInsets.zero,
+                leading: Icon(
+                  widget.isDarkMode
+                      ? Icons.light_mode_outlined
+                      : Icons.dark_mode_outlined,
+                  size: 19,
+                ),
+                title: Text(
+                  widget.isDarkMode ? 'Chế độ Sáng' : 'Chế độ Tối',
+                ),
+              ),
+            ),
+            PopupMenuItem(
+              value: 'palette',
+              child: ListTile(
+                dense: true,
+                contentPadding: EdgeInsets.zero,
+                leading: Icon(
+                  Icons.palette_outlined,
+                  size: 19,
+                  color: colorScheme.primary,
+                ),
+                title: const Text('Giao diện & Hình nền'),
+              ),
+            ),
+            const PopupMenuItem(
+              value: 'settings',
+              child: ListTile(
+                dense: true,
+                contentPadding: EdgeInsets.zero,
+                leading: Icon(Icons.settings_outlined, size: 19),
+                title: Text('Cài đặt Server'),
+              ),
+            ),
+          ],
+        ),
+      );
+    } else {
+      rightPill = LiquidGlassPill(
+        cornerRadius: 21,
+        refractionWidth: 10,
+        shadowBlur: 10,
+        child: SizedBox(
+          height: 42,
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const SizedBox(width: 4),
+              IconButton(
+                tooltip: 'New Conversation',
+                visualDensity: VisualDensity.compact,
+                onPressed: () =>
+                    _startNewConversationInProject(_activeChatProject),
+                icon: const Icon(Icons.add_rounded, size: 20),
+              ),
+              IconButton(
+                tooltip: 'Duyệt SFTP & Tải File từ Rust Server',
+                visualDensity: VisualDensity.compact,
+                onPressed: () => _openServerFileBrowser(initialTab: 0),
+                icon: const Icon(Icons.folder_special_outlined, size: 18),
+              ),
+              IconButton(
+                tooltip: 'Xem Git Tree & Lịch sử Commit',
+                visualDensity: VisualDensity.compact,
+                onPressed: _openActiveGitHistory,
+                icon: const Icon(Icons.account_tree_outlined, size: 18),
+              ),
+              IconButton(
+                tooltip: 'Giao diện & Hình nền',
+                visualDensity: VisualDensity.compact,
+                onPressed: () => _showThemeColorPicker(context),
+                icon: Icon(
+                  Icons.palette_outlined,
+                  size: 18,
+                  color: context.scheme.primary,
+                ),
+              ),
+              IconButton(
+                tooltip: 'Đổi giao diện Sáng/Tối',
+                visualDensity: VisualDensity.compact,
+                onPressed: widget.onToggleTheme,
+                icon: Icon(
+                  widget.isDarkMode
+                      ? Icons.light_mode_outlined
+                      : Icons.dark_mode_outlined,
+                  size: 18,
+                ),
+              ),
+              const SizedBox(width: 4),
+            ],
+          ),
+        ),
+      );
+    }
+
+    return Padding(
+      padding: EdgeInsets.fromLTRB(
+        isMobile ? 10 : 16,
+        topInset + (isMobile ? 6 : 10),
+        isMobile ? 10 : 16,
+        0,
+      ),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Row(
+            children: [
+              glassIconBtn(
+                icon: isMobile ? Icons.menu_rounded : Icons.view_sidebar_outlined,
+                tooltip: isMobile ? 'Mở danh sách Project' : 'Ẩn/Hiện Sidebar',
+                onTap: () {
+                  if (isMobile) {
+                    _scaffoldKey.currentState?.openDrawer();
+                  } else {
+                    setState(() => _showDesktopSidebar = !_showDesktopSidebar);
+                  }
+                },
+              ),
+              if (!isMobile) ...[
+                const SizedBox(width: 8),
+                glassIconBtn(
+                  icon: (_explorerOverride ??
+                          MediaQuery.sizeOf(context).width >= 1200)
+                      ? Icons.account_tree_rounded
+                      : Icons.account_tree_outlined,
+                  tooltip: 'Ẩn/Hiện explorer thư mục',
+                  onTap: () => setState(() {
+                    _explorerOverride = !(_explorerOverride ??
+                        MediaQuery.sizeOf(context).width >= 1200);
+                  }),
+                ),
+              ],
+              const SizedBox(width: 8),
+              Expanded(child: centerPill),
+              const SizedBox(width: 8),
+              rightPill,
+            ],
+          ),
+          if (_pendingAIQuestions.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.only(top: 6),
+              child: _buildAIQuestionBanner(context),
+            ),
+        ],
+      ),
+    );
+  }
+
   /// Nội dung chat: trạng thái tải / mất kết nối, hoặc ChatCanvasView
-  Widget _buildChatArea(BuildContext context, ConversationSession? activeSession) {
+  Widget _buildChatArea(
+    BuildContext context,
+    ConversationSession? activeSession, {
+    Widget? floatingHeader,
+    double desktopLeftInset = 0.0,
+  }) {
     if (_isLoading && activeSession == null && !_isNewConversationMode) {
-      return const Center(child: CircularProgressIndicator());
+      return Padding(
+        padding: EdgeInsets.only(left: desktopLeftInset),
+        child: const Center(child: CircularProgressIndicator()),
+      );
     }
     if (!_isRemoteConnected && !_isSocketLive && activeSession == null) {
-      return _buildDisconnectedView(context);
+      return Padding(
+        padding: EdgeInsets.only(left: desktopLeftInset),
+        child: _buildDisconnectedView(context),
+      );
     }
     return ChatCanvasView(
+      floatingTopHeader: floatingHeader,
+      desktopLeftInset: desktopLeftInset,
       workspaceRoot: _serverWorkspaceRoot,
                 session: activeSession,
                 projects: _projects,
@@ -2346,6 +2895,12 @@ class _DashboardScreenState extends ConsumerState<DashboardScreenView> {
                 pendingClaudeInteraction: _pendingClaudeInteraction,
                 onRespondClaudeInteraction: _respondClaudeInteraction,
                 onSelectProject: (p) {
+                  // Đang mở conversation: đổi project = chuyển sang conversation mới trong project đó,
+                  // để project hiển thị luôn khớp với nơi prompt được gửi.
+                  if (_openConversationExact != null) {
+                    _startNewConversationInProject(p);
+                    return;
+                  }
                   setState(() => _activeChatProject = p);
                 },
                 onSelectAgent: (a) {
@@ -2389,7 +2944,7 @@ class _DashboardScreenState extends ConsumerState<DashboardScreenView> {
     );
   }
 
-  /// Thanh Header tối giản chuẩn Antigravity
+  /// Thanh Header tối giản nổi kiểu viên kính giống thanh Header khung chat (dùng khi mở split viewer / mất kết nối).
   Widget _buildMinimalTopHeader(
     BuildContext context,
     ConversationSession? activeSession, {
@@ -2404,20 +2959,42 @@ class _DashboardScreenState extends ConsumerState<DashboardScreenView> {
     final projectName = _activeChatProject?.name ??
         activeSession?.projectName ??
         'Chưa chọn project';
+    final live = _isSocketLive || _isRemoteConnected;
 
-    return Container(
-      height: isMobile ? 46 : 50,
-      padding: EdgeInsets.symmetric(horizontal: isMobile ? 6 : 12),
-      color: colorScheme.surface,
+    Widget circlePillBtn({
+      required IconData icon,
+      required String tooltip,
+      required VoidCallback onPressed,
+    }) {
+      return Tooltip(
+        message: tooltip,
+        child: GlassHeaderSurface(
+          borderRadius: 21,
+          child: InkWell(
+            borderRadius: BorderRadius.circular(21),
+            onTap: onPressed,
+            child: SizedBox(
+              width: 42,
+              height: 42,
+              child: Icon(icon, size: 20, color: colorScheme.onSurface),
+            ),
+          ),
+        ),
+      );
+    }
+
+    return Padding(
+      padding: EdgeInsets.fromLTRB(
+        isMobile ? 10 : 16,
+        isMobile ? 6 : 10,
+        isMobile ? 10 : 16,
+        6,
+      ),
       child: Row(
         children: [
-          IconButton(
+          circlePillBtn(
             tooltip: isMobile ? 'Mở danh sách Project' : 'Ẩn/Hiện Sidebar',
-            visualDensity: VisualDensity.compact,
-            icon: Icon(
-              isMobile ? Icons.menu_rounded : Icons.view_sidebar_outlined,
-              size: 20,
-            ),
+            icon: isMobile ? Icons.menu_rounded : Icons.view_sidebar_outlined,
             onPressed: () {
               if (isMobile) {
                 _scaffoldKey.currentState?.openDrawer();
@@ -2427,176 +3004,147 @@ class _DashboardScreenState extends ConsumerState<DashboardScreenView> {
             },
           ),
           if (!isMobile) ...[
-            IconButton(
+            const SizedBox(width: 8),
+            circlePillBtn(
               tooltip: 'Ẩn/Hiện explorer thư mục',
-              visualDensity: VisualDensity.compact,
-              icon: Icon(
-                (_explorerOverride ?? MediaQuery.sizeOf(context).width >= 1200)
-                    ? Icons.account_tree_rounded
-                    : Icons.account_tree_outlined,
-                size: 20,
-              ),
+              icon: (_explorerOverride ?? MediaQuery.sizeOf(context).width >= 1200)
+                  ? Icons.account_tree_rounded
+                  : Icons.account_tree_outlined,
               onPressed: () => setState(() {
-                _explorerOverride = !(_explorerOverride ?? MediaQuery.sizeOf(context).width >= 1200);
+                _explorerOverride = !(_explorerOverride ??
+                    MediaQuery.sizeOf(context).width >= 1200);
               }),
-            ),
-            const SizedBox(width: 4),
-          ],
-          const SizedBox(width: 4),
-          ClipRRect(
-            borderRadius: BorderRadius.circular(5),
-            child: Image.asset(
-              'assets/images/logo.png',
-              width: 22,
-              height: 22,
-              fit: BoxFit.contain,
-            ),
-          ),
-          if (!isMobile) ...[
-            const SizedBox(width: 6),
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-              decoration: BoxDecoration(
-                color: colorScheme.surfaceContainerHighest,
-                borderRadius: BorderRadius.circular(6),
-              ),
-              child: Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Icon(
-                    Icons.folder_outlined,
-                    size: 13,
-                    color: colorScheme.primary,
-                  ),
-                  const SizedBox(width: 5),
-                  Text(
-                    projectName,
-                    style: textTheme.labelSmall?.copyWith(
-                      fontWeight: FontWeight.w700,
-                      color: colorScheme.onSurface,
-                    ),
-                  ),
-                ],
-              ),
             ),
           ],
           const SizedBox(width: 8),
           Expanded(
-            child: Column(
-              mainAxisAlignment: MainAxisAlignment.center,
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  title,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: textTheme.titleSmall?.copyWith(
-                    fontSize: isMobile ? 13 : 14,
-                    fontWeight: FontWeight.w700,
-                    color: colorScheme.onSurface,
-                  ),
-                ),
-                if (isMobile)
-                  Text(
-                    projectName,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: textTheme.labelSmall?.copyWith(
-                      fontSize: 10,
-                      color: colorScheme.primary,
-                      fontWeight: FontWeight.w700,
+            child: GlassHeaderSurface(
+              borderRadius: 22,
+              padding: const EdgeInsets.symmetric(horizontal: 10),
+              child: InkWell(
+                borderRadius: BorderRadius.circular(22),
+                onTap: _openSettings,
+                child: SizedBox(
+                  width: double.infinity,
+                  height: 44,
+                  child: Row(
+                    children: [
+                      ClipRRect(
+                        borderRadius: BorderRadius.circular(13),
+                        child: Image.asset(
+                          'assets/images/logo.png',
+                          width: 26,
+                          height: 26,
+                          fit: BoxFit.cover,
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      Expanded(
+                            child: Column(
+                              mainAxisAlignment: MainAxisAlignment.center,
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  title,
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: textTheme.titleSmall?.copyWith(
+                                    fontSize: isMobile ? 13 : 14,
+                                    fontWeight: FontWeight.w700,
+                                    color: colorScheme.onSurface,
+                                    height: 1.15,
+                                  ),
+                                ),
+                                Row(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    Container(
+                                      width: 6,
+                                      height: 6,
+                                      decoration: BoxDecoration(
+                                        color: live
+                                            ? context.status.success
+                                            : context.status.warning,
+                                        shape: BoxShape.circle,
+                                      ),
+                                    ),
+                                    const SizedBox(width: 4),
+                                    Flexible(
+                                      child: Text(
+                                        projectName,
+                                        maxLines: 1,
+                                        overflow: TextOverflow.ellipsis,
+                                        style: textTheme.labelSmall?.copyWith(
+                                          fontSize: 10.5,
+                                          color: colorScheme.onSurfaceVariant,
+                                          fontWeight: FontWeight.w600,
+                                          height: 1.15,
+                                        ),
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ],
+                            ),
+                          ),
+                        ],
+                      ),
                     ),
                   ),
-              ],
-            ),
-          ),
-          const SizedBox(width: 6),
-
-          // Trạng thái kết nối Socket.IO với Rust Server
-          InkWell(
-            borderRadius: BorderRadius.circular(8),
-            onTap: _openSettings,
-            child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 4),
-              decoration: BoxDecoration(
-                color: (_isSocketLive ? context.status.success : context.status.warning)
-                    .withAlpha(25),
-                borderRadius: BorderRadius.circular(8),
-                border: Border.all(
-                  color: (_isSocketLive ? context.status.success : context.status.warning)
-                      .withAlpha(90),
                 ),
               ),
+          const SizedBox(width: 8),
+          GlassHeaderSurface(
+            borderRadius: 21,
+            child: SizedBox(
+              height: 42,
               child: Row(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  Container(
-                    width: 6.5,
-                    height: 6.5,
-                    decoration: BoxDecoration(
-                      color: _isSocketLive || _isRemoteConnected
-                          ? context.status.success
-                          : context.status.warning,
-                      shape: BoxShape.circle,
+                  const SizedBox(width: 4),
+                  IconButton(
+                    tooltip: 'New Conversation',
+                    visualDensity: VisualDensity.compact,
+                    onPressed: () =>
+                        _startNewConversationInProject(_activeChatProject),
+                    icon: const Icon(Icons.add_rounded, size: 20),
+                  ),
+                  IconButton(
+                    tooltip: 'Duyệt SFTP & Tải File từ Rust Server',
+                    visualDensity: VisualDensity.compact,
+                    onPressed: () => _openServerFileBrowser(initialTab: 0),
+                    icon: const Icon(Icons.folder_special_outlined, size: 18),
+                  ),
+                  IconButton(
+                    tooltip: 'Xem Git Tree & Lịch sử Commit',
+                    visualDensity: VisualDensity.compact,
+                    onPressed: _openActiveGitHistory,
+                    icon: const Icon(Icons.account_tree_outlined, size: 18),
+                  ),
+                  IconButton(
+                    tooltip: 'Giao diện & Hình nền',
+                    visualDensity: VisualDensity.compact,
+                    onPressed: () => _showThemeColorPicker(context),
+                    icon: Icon(
+                      Icons.palette_outlined,
+                      size: 18,
+                      color: context.scheme.primary,
+                    ),
+                  ),
+                  IconButton(
+                    tooltip: 'Đổi giao diện Sáng/Tối',
+                    visualDensity: VisualDensity.compact,
+                    onPressed: widget.onToggleTheme,
+                    icon: Icon(
+                      widget.isDarkMode
+                          ? Icons.light_mode_outlined
+                          : Icons.dark_mode_outlined,
+                      size: 18,
                     ),
                   ),
                   const SizedBox(width: 4),
-                  Text(
-                    isMobile
-                        ? (_isSocketLive ? 'Live' : 'IP')
-                        : (_isSocketLive
-                            ? 'Socket.IO • $_serverAddress'
-                            : _serverAddress),
-                    style: textTheme.labelSmall?.copyWith(
-                      fontSize: 10.5,
-                      fontWeight: FontWeight.w700,
-                      color: _isSocketLive || _isRemoteConnected
-                          ? context.status.success
-                          : context.status.warning,
-                    ),
-                  ),
                 ],
               ),
-            ),
-          ),
-          const SizedBox(width: 2),
-          IconButton(
-            tooltip: 'Duyệt SFTP & Tải File từ Rust Server',
-            visualDensity: VisualDensity.compact,
-            onPressed: () => _openServerFileBrowser(initialTab: 0),
-            icon: const Icon(Icons.folder_special_outlined, size: 19),
-          ),
-          IconButton(
-            tooltip: "Xem Git Tree & Lịch sử Commit",
-            visualDensity: VisualDensity.compact,
-            onPressed: _openActiveGitHistory,
-            icon: const Icon(Icons.account_tree_outlined, size: 19),
-          ),
-          IconButton(
-            tooltip: 'New Conversation',
-            visualDensity: VisualDensity.compact,
-            onPressed: () => _startNewConversationInProject(_activeChatProject),
-            icon: const Icon(Icons.add_rounded, size: 20),
-          ),
-          IconButton(
-            tooltip: 'Chọn màu chủ đạo',
-            visualDensity: VisualDensity.compact,
-            onPressed: () => _showThemeColorPicker(context),
-            icon: Icon(
-              Icons.palette_outlined,
-              size: 18,
-              color: context.scheme.primary,
-            ),
-          ),
-          IconButton(
-            tooltip: 'Đổi giao diện Sáng/Tối',
-            visualDensity: VisualDensity.compact,
-            onPressed: widget.onToggleTheme,
-            icon: Icon(
-              widget.isDarkMode
-                  ? Icons.light_mode_outlined
-                  : Icons.dark_mode_outlined,
-              size: 18,
             ),
           ),
         ],
@@ -2604,84 +3152,9 @@ class _DashboardScreenState extends ConsumerState<DashboardScreenView> {
     );
   }
 
-  /// Bottom sheet chọn màu chủ đạo (seed) — toàn bộ bảng màu M3 được sinh lại từ màu này
+  /// Bottom sheet đổi theme widget User, widget AI phản hồi và 6 kiểu hình nền
   void _showThemeColorPicker(BuildContext context) {
-    showModalBottomSheet<void>(
-      context: context,
-      showDragHandle: true,
-      builder: (sheetContext) {
-        final scheme = Theme.of(sheetContext).colorScheme;
-        return SafeArea(
-          child: Padding(
-            padding: const EdgeInsets.fromLTRB(20, 4, 20, 20),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  'Màu chủ đạo',
-                  style: Theme.of(sheetContext).textTheme.titleMedium?.copyWith(
-                        fontWeight: FontWeight.w700,
-                      ),
-                ),
-                const SizedBox(height: 4),
-                Text(
-                  'Bảng màu giao diện được sinh tự động từ màu đã chọn.',
-                  style: Theme.of(sheetContext).textTheme.bodySmall?.copyWith(
-                        color: scheme.onSurfaceVariant,
-                      ),
-                ),
-                const SizedBox(height: 16),
-                Wrap(
-                  spacing: 14,
-                  runSpacing: 14,
-                  children: [
-                    for (final preset in kThemeSeedPresets)
-                      Tooltip(
-                        message: preset.name,
-                        child: InkWell(
-                          customBorder: const CircleBorder(),
-                          onTap: () {
-                            widget.onSeedColorChanged(preset.color);
-                            Navigator.of(sheetContext).pop();
-                          },
-                          child: Container(
-                            width: 44,
-                            height: 44,
-                            decoration: BoxDecoration(
-                              shape: BoxShape.circle,
-                              color: preset.color,
-                              border: Border.all(
-                                color: preset.color.toARGB32() ==
-                                        widget.seedColor.toARGB32()
-                                    ? scheme.onSurface
-                                    : Colors.transparent,
-                                width: 2.5,
-                              ),
-                            ),
-                            child: preset.color.toARGB32() ==
-                                    widget.seedColor.toARGB32()
-                                ? Icon(
-                                    Icons.check_rounded,
-                                    color: ThemeData.estimateBrightnessForColor(
-                                              preset.color,
-                                            ) ==
-                                            Brightness.dark
-                                        ? Colors.white
-                                        : Colors.black,
-                                  )
-                                : null,
-                          ),
-                        ),
-                      ),
-                  ],
-                ),
-              ],
-            ),
-          ),
-        );
-      },
-    );
+    showChatThemePickerSheet(context);
   }
 
   /// Sidebar trái chuẩn Antigravity: phân nhóm theo Project Workspace
@@ -2841,7 +3314,11 @@ class _DashboardScreenState extends ConsumerState<DashboardScreenView> {
               prefixIcon: const Icon(Icons.search_rounded, size: 16),
               isDense: true,
               filled: true,
-              fillColor: colorScheme.surfaceContainerHighest.withAlpha(160),
+              fillColor: colorScheme.onSurface.withValues(
+                alpha: Theme.of(context).brightness == Brightness.dark
+                    ? 0.08
+                    : 0.06,
+              ),
               contentPadding: const EdgeInsets.symmetric(vertical: 8),
               border: OutlineInputBorder(
                 borderRadius: BorderRadius.circular(8),
@@ -2856,16 +3333,20 @@ class _DashboardScreenState extends ConsumerState<DashboardScreenView> {
           padding: const EdgeInsets.fromLTRB(14, 2, 10, 4),
           child: Row(
             children: [
-              Text(
-                'WORKSPACES',
-                style: textTheme.labelSmall?.copyWith(
-                  fontWeight: FontWeight.w800,
-                  fontSize: 10,
-                  letterSpacing: 0.8,
-                  color: colorScheme.onSurfaceVariant.withAlpha(160),
+              Expanded(
+                child: Text(
+                  'WORKSPACES',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: textTheme.labelSmall?.copyWith(
+                    fontWeight: FontWeight.w800,
+                    fontSize: 10,
+                    letterSpacing: 0.8,
+                    color: colorScheme.onSurfaceVariant.withAlpha(160),
+                  ),
                 ),
               ),
-              const Spacer(),
+              const SizedBox(width: 6),
               InkWell(
                 borderRadius: BorderRadius.circular(4),
                 onTap: () => _showCreateProjectDialog(context),

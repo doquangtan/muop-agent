@@ -1,17 +1,14 @@
 part of '../chat_canvas_view.dart';
 
 extension _CanvasExtDock on _ChatCanvasViewState {
-  /// Cụm Dock phía dưới sắp xếp theo đúng thứ tự:
-  /// 0. Plan Approval Card (Nếu có kế hoạch đang chờ duyệt)
-  /// 1. Task Running Panel (Phía trên)
-  /// 2. % Model Usage Bar chuẩn Antigravity (Ở giữa Task Running và Khung Chat)
-  /// 3. Khung nhập Chat (Phía dưới cùng)
-  Widget _buildBottomDockStack(
+  /// Thanh ghim nổi phía trên (ngay dưới Header, giống Pinned Message của Telegram):
+  /// - Kế hoạch chờ duyệt / Câu hỏi Claude / Retry / Cảnh báo gián đoạn / Git push
+  /// - Hoặc thanh tóm tắt task đang chạy / số tệp đã cập nhật
+  Widget _buildTopPinnedGlassBar(
     BuildContext context,
     bool isMobile,
     bool isTurnRunning,
   ) {
-    final colorScheme = Theme.of(context).colorScheme;
     final pendingPlans =
         widget.session?.pendingPlans.where((p) => p.requestFeedback).toList() ??
         const [];
@@ -22,7 +19,6 @@ extension _CanvasExtDock on _ChatCanvasViewState {
         claudeInteraction.conversationId == widget.session?.id &&
         !isTurnRunning;
 
-    final keyboardOpen = MediaQuery.viewInsetsOf(context).bottom > 0;
     final retry = widget.pendingRetry;
     final retryCancel = widget.onCancelRetry;
     final showRetry =
@@ -30,127 +26,155 @@ extension _CanvasExtDock on _ChatCanvasViewState {
         retryCancel != null &&
         retry.conversationId == widget.session?.id;
 
-    return Container(
-      padding: EdgeInsets.fromLTRB(
-        isMobile ? 8 : 24,
-        4,
-        isMobile ? 8 : 24,
-        isMobile ? 8 : 14,
-      ),
-      decoration: BoxDecoration(
-        color: colorScheme.surface,
-        border: Border(
-          top: BorderSide(
-            color: colorScheme.outlineVariant.withAlpha(110),
-            width: 0.8,
+    final gitSync =
+        widget.session?.gitSyncStatus ??
+        widget.selectedProject?.gitSyncStatus ??
+        widget.projects
+            .where(
+              (p) =>
+                  p.name == widget.session?.projectName ||
+                  p.path == widget.session?.projectPath,
+            )
+            .firstOrNull
+            ?.gitSyncStatus;
+    final showGitPushPrompt =
+        gitSync != null &&
+        gitSync.isAhead &&
+        gitSync.aheadCount > 0 &&
+        _dismissedGitAheadHash != gitSync.lastCommitHash;
+
+    final showInterrupted =
+        widget.session != null &&
+        (widget.session!.isInterrupted ||
+            widget.session!.status == AgentStatus.interrupted);
+
+    final taskPanel = _buildTaskRunningPanel(context, isMobile, isTurnRunning);
+
+    final children = <Widget>[
+      if (pendingPlans.isNotEmpty)
+        for (final plan in pendingPlans)
+          Padding(
+            padding: const EdgeInsets.only(bottom: 6),
+            child: _buildPlanBanner(context, plan),
+          ),
+      if (showRetry)
+        Padding(
+          padding: const EdgeInsets.only(bottom: 6),
+          child: RetryBanner(
+            retry: retry,
+            onCancel: retryCancel,
+            isMobile: isMobile,
           ),
         ),
+      if (showClaudeInteraction)
+        Padding(
+          padding: const EdgeInsets.only(bottom: 6),
+          child: _buildClaudeInteractionBanner(context, claudeInteraction),
+        ),
+      if (showInterrupted)
+        _buildInterruptedNoticeBanner(context, widget.session!, isMobile),
+      if (showGitPushPrompt)
+        Padding(
+          padding: const EdgeInsets.only(bottom: 6),
+          child: _buildGitPushPromptCard(context, gitSync, isMobile),
+        ),
+      taskPanel,
+    ];
+
+    return Padding(
+      padding: EdgeInsets.fromLTRB(
+        isMobile ? 10 : 16,
+        6,
+        isMobile ? 10 : 16,
+        0,
       ),
-      child: Center(
-        child: ConstrainedBox(
-          constraints: const BoxConstraints(maxWidth: 840),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              // [0] KẾ HOẠCH ĐANG CHỜ PHÊ DUYỆT (PLAN APPROVAL CARD)
-              if (pendingPlans.isNotEmpty) ...[
-                for (final plan in pendingPlans)
-                  Padding(
-                    padding: const EdgeInsets.only(bottom: 6),
-                    child: _buildPlanBanner(context, plan),
+      child: SizedBox(
+        width: double.infinity,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: children,
+        ),
+      ),
+    );
+  }
+
+  /// Đảo chat Liquid Glass nổi căn giữa đáy màn hình (gọn nhẹ kiểu thanh Message của Telegram)
+  Widget _buildBottomDockStack(
+    BuildContext context,
+    bool isMobile,
+    bool isTurnRunning,
+  ) {
+    final keyboardOpen = MediaQuery.viewInsetsOf(context).bottom > 0;
+    final cornerRadius = isMobile ? 24.0 : 26.0;
+
+    final islandBody = Padding(
+      padding: EdgeInsets.fromLTRB(
+        isMobile ? 8 : 12,
+        isMobile ? 6 : 8,
+        isMobile ? 8 : 12,
+        isMobile ? 6 : 8,
+      ),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          if (!(isMobile && keyboardOpen) &&
+              !(isTurnRunning && !_composerRevealed)) ...[
+            _buildModelUsageMiddleBar(context, isMobile),
+            Divider(
+              height: 10,
+              thickness: 0.6,
+              color: Theme.of(context).brightness == Brightness.dark
+                  ? Colors.white.withValues(alpha: 0.10)
+                  : Colors.black.withValues(alpha: 0.08),
+            ),
+          ],
+          if (isTurnRunning && !_composerRevealed)
+            _buildHiddenComposerBar(context)
+          else ...[
+            if (isTurnRunning)
+              Align(
+                alignment: Alignment.centerRight,
+                child: TextButton.icon(
+                  onPressed: () =>
+                      _applyState(() => _composerRevealed = false),
+                  icon: const Icon(
+                    Icons.keyboard_arrow_down_rounded,
+                    size: 16,
                   ),
-              ],
-
-              // [0.2] CÂU HỎI / KẾ HOẠCH ĐANG CHỜ CỦA CLAUDE CODE CLI (mở dialog khi bấm)
-              if (showRetry)
-                RetryBanner(
-                  retry: retry,
-                  onCancel: retryCancel,
-                  isMobile: isMobile,
-                ),
-              if (showClaudeInteraction)
-                Padding(
-                  padding: const EdgeInsets.only(bottom: 6),
-                  child: _buildClaudeInteractionBanner(
-                    context,
-                    claudeInteraction,
+                  label: const Text('Ẩn khung chat'),
+                  style: TextButton.styleFrom(
+                    visualDensity: VisualDensity.compact,
+                    padding: const EdgeInsets.symmetric(horizontal: 8),
                   ),
                 ),
-
-              // [0.3] CẢNH BÁO TIẾN TRÌNH AGY BỊ GIÁN ĐOẠN (SERVER RESTART / CRASH)
-              if (widget.session != null &&
-                  (widget.session!.isInterrupted ||
-                      widget.session!.status == AgentStatus.interrupted))
-                _buildInterruptedNoticeBanner(
-                  context,
-                  widget.session!,
-                  isMobile,
-                ),
-
-              // [0.5] KHUNG XÁC NHẬN PUSH LÊN SERVER SAU KHI AGENT COMMIT XONG
-              () {
-                final gitSync =
-                    widget.session?.gitSyncStatus ??
-                    widget.selectedProject?.gitSyncStatus ??
-                    widget.projects
-                        .where(
-                          (p) =>
-                              p.name == widget.session?.projectName ||
-                              p.path == widget.session?.projectPath,
-                        )
-                        .firstOrNull
-                        ?.gitSyncStatus;
-                final showGitPushPrompt =
-                    gitSync != null &&
-                    gitSync.isAhead &&
-                    gitSync.aheadCount > 0 &&
-                    _dismissedGitAheadHash != gitSync.lastCommitHash;
-                if (!showGitPushPrompt) return const SizedBox.shrink();
-                return Padding(
-                  padding: const EdgeInsets.only(bottom: 6),
-                  child: _buildGitPushPromptCard(context, gitSync, isMobile),
-                );
-              }(),
-
-              // [1] PHẦN TRÊN: TASK RUNNING PANEL (+ Nút Mở tệp vừa tải về)
-              _buildTaskRunningPanel(context, isMobile, isTurnRunning),
-              const SizedBox(height: 5),
-
-              // [2] PHẦN GIỮA: % USAGE CỦA MODEL AI (LIMIT TUẦN / LIMIT GIỜ ANTIGRAVITY)
-              // Mobile: ẩn khi bàn phím mở để vùng chat có đủ chỗ
-              if (!(isMobile && keyboardOpen)) ...[
-                _buildModelUsageMiddleBar(context, isMobile),
-                const SizedBox(height: 5),
-              ],
-
-              // [2.5] HÀNG CÔNG CỤ (Agent map, SFTP, Git Tree): luôn hiện, kể cả khi khung chat ẩn
-              Padding(
-                padding: const EdgeInsets.only(bottom: 6),
-                child: _buildComposerToolRow(context, isMobile),
               ),
+            _buildAntigravityComposer(context, isMobile, isTurnRunning),
+          ],
+        ],
+      ),
+    );
 
-              // [3] PHẦN DƯỚI: KHUNG NHẬP CHAT (ẩn khi đang chạy, bấm để hiện)
-              if (isTurnRunning && !_composerRevealed)
-                _buildHiddenComposerBar(context)
-              else ...[
-                if (isTurnRunning)
-                  Align(
-                    alignment: Alignment.centerRight,
-                    child: TextButton.icon(
-                      onPressed: () =>
-                          _applyState(() => _composerRevealed = false),
-                      icon: const Icon(
-                        Icons.keyboard_arrow_down_rounded,
-                        size: 18,
-                      ),
-                      label: const Text('Ẩn khung chat'),
-                    ),
-                  ),
-                _buildAntigravityComposer(context, isMobile, isTurnRunning),
-              ],
-            ],
+    // Không bọc thêm Align ở đây vì _DockSizeMeasurer bên ngoài cần đo đúng chiều cao thực tế của đảo nổi.
+    return Padding(
+      padding: EdgeInsets.fromLTRB(
+        isMobile ? 10 : 16,
+        0,
+        isMobile ? 10 : 16,
+        isMobile ? 10 : 14,
+      ),
+      child: SizedBox(
+        width: double.infinity,
+        child: LiquidGlassLens(
+          key: const Key('chat-dock-island'),
+          style: buildChatLiquidGlassStyle(
+            context,
+            cornerRadius: cornerRadius,
+            refractionWidth: 18.0,
+            shadowBlur: 14.0,
           ),
+          child: islandBody,
         ),
       ),
     );
@@ -199,13 +223,21 @@ extension _CanvasExtDock on _ChatCanvasViewState {
   Widget _buildHiddenComposerBar(BuildContext context) {
     final colorScheme = Theme.of(context).colorScheme;
     final textTheme = Theme.of(context).textTheme;
+    final isDark = Theme.of(context).brightness == Brightness.dark;
 
     return Container(
       padding: const EdgeInsets.fromLTRB(14, 6, 6, 6),
       decoration: BoxDecoration(
-        color: colorScheme.surfaceContainer,
+        color: isDark
+            ? Colors.black.withValues(alpha: 0.22)
+            : Colors.white.withValues(alpha: 0.42),
         borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: colorScheme.outlineVariant, width: 1.1),
+        border: Border.all(
+          color: isDark
+              ? Colors.white.withValues(alpha: 0.12)
+              : Colors.white.withValues(alpha: 0.65),
+          width: 0.9,
+        ),
       ),
       child: Row(
         children: [

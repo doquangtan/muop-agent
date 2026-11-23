@@ -3,6 +3,7 @@ import 'package:material_ui/material_ui.dart';
 import 'package:muop_agent/core/di/app_dependencies.dart';
 import 'package:muop_agent/core/theme/app_theme.dart';
 import 'package:muop_agent/core/widgets/desktop_panel.dart';
+import 'package:muop_agent/core/widgets/glass_scaffold.dart';
 import 'package:muop_agent/features/ssh/domain/ssh_entities.dart';
 import 'package:muop_agent/features/ssh/presentation/ssh_terminal_screen.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -171,17 +172,15 @@ class _SshHostsScreenState extends State<SshHostsScreenView> {
     final scheme = context.scheme;
     final textTheme = Theme.of(context).textTheme;
 
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('Máy SSH'),
-        actions: [
-          IconButton(
-            tooltip: 'Tải lại',
-            onPressed: _loading ? null : _reload,
-            icon: const Icon(Icons.refresh_rounded),
-          ),
-        ],
-      ),
+    return GlassScreenScaffold(
+      title: 'Máy SSH',
+      actions: [
+        IconButton(
+          tooltip: 'Tải lại',
+          onPressed: _loading ? null : _reload,
+          icon: const Icon(Icons.refresh_rounded),
+        ),
+      ],
       floatingActionButton: FloatingActionButton.extended(
         onPressed: () => _openForm(),
         icon: const Icon(Icons.add_rounded),
@@ -229,8 +228,14 @@ class _SshHostsScreenState extends State<SshHostsScreenView> {
                         final host = _hosts[i];
                         final isKey = host.authType == 'key';
                         return Material(
-                          color: scheme.surfaceContainerLow,
-                          borderRadius: BorderRadius.circular(12),
+                          color: context.glassCardColor,
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(16),
+                            side: BorderSide(
+                              color: context.glassCardBorder,
+                              width: 0.85,
+                            ),
+                          ),
                           child: ListTile(
                             onTap: () => _openTerminal(host),
                             onLongPress: () => _openTerminal(host, forceNew: true),

@@ -1,5 +1,6 @@
 # Đường dẫn công cụ theo HOME của user (không cố định theo máy). Ghi đè bằng biến môi trường nếu cần.
-FLUTTER ?= $(HOME)/flutter-3.47.7/bin/flutter
+# Ưu tiên Flutter 3.47.7; không có thì dùng Flutter hiện hành (flutter trong PATH, rồi ~/flutter)
+FLUTTER ?= $(shell if [ -x $(HOME)/flutter-3.47.7/bin/flutter ]; then echo $(HOME)/flutter-3.47.7/bin/flutter; elif command -v flutter >/dev/null 2>&1; then command -v flutter; else echo $(HOME)/flutter/bin/flutter; fi)
 CARGO ?= $(HOME)/.cargo/bin/cargo
 
 .PHONY: install-desktop-entry run server build-server build build-linux build-apk build-all analyze restart-linux clean start-daemon stop-daemon restart-daemon status-daemon deb

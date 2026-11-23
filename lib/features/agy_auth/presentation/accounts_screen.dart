@@ -4,6 +4,7 @@ import 'package:material_ui/material_ui.dart';
 
 import 'package:muop_agent/core/di/app_dependencies.dart';
 import 'package:muop_agent/core/theme/app_theme.dart';
+import 'package:muop_agent/core/widgets/glass_scaffold.dart';
 import 'package:muop_agent/features/accounts_common/presentation/account_widgets.dart';
 import 'package:muop_agent/features/agy_auth/domain/agy_auth_entities.dart';
 import 'package:muop_agent/features/agy_auth/domain/agy_auth_repository.dart';
@@ -277,22 +278,20 @@ class _AccountsScreenState extends State<AccountsScreenView> {
             ],
           );
     if (widget.embedded) return content;
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('Tài khoản'),
-        actions: [
-          IconButton(
-            tooltip: 'Kiểm tra lại',
-            onPressed: _loading || _busy
-                ? null
-                : () {
-                    _claudeKey.currentState?.reload();
-                    _reload();
-                  },
-            icon: const Icon(Icons.refresh_rounded),
-          ),
-        ],
-      ),
+    return GlassScreenScaffold(
+      title: 'Tài khoản',
+      actions: [
+        IconButton(
+          tooltip: 'Kiểm tra lại',
+          onPressed: _loading || _busy
+              ? null
+              : () {
+                  _claudeKey.currentState?.reload();
+                  _reload();
+                },
+          icon: const Icon(Icons.refresh_rounded),
+        ),
+      ],
       body: content,
     );
   }

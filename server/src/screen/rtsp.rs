@@ -5,6 +5,7 @@
 //! - Hỗ trợ: OPTIONS, DESCRIBE, SETUP, PLAY, PAUSE, GET_PARAMETER, TEARDOWN.
 //! - Không có xác thực: chỉ dùng trong mạng LAN tin cậy.
 
+use base64::{engine::general_purpose::STANDARD, Engine as _};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -26,10 +27,20 @@ const PACKET_BUFFER: usize = 4096;
 
 pub type Packet = Arc<Vec<u8>>;
 
+/// SPS và PPS của luồng hiện tại. Đưa vào SDP (`sprop-parameter-sets`) để decoder phần cứng
+/// (MediaCodec trên Android) có cấu hình trước khi nhận khung. ffmpeg trên máy tính tự đọc từ luồng
+/// nên không cần, nhưng thiếu thì Android báo "Could not open codec".
+#[derive(Default)]
+struct ParamSets {
+    sps: Option<Vec<u8>>,
+    pps: Option<Vec<u8>>,
+}
+
 /// Điểm trung gian giữa tiến trình quay màn hình và các client RTSP
 #[derive(Default)]
 pub struct RtspHub {
     live: Mutex<Option<broadcast::Sender<Packet>>>,
+    params: Mutex<ParamSets>,
 }
 
 impl RtspHub {
@@ -43,7 +54,33 @@ impl RtspHub {
         if let Ok(mut live) = self.live.lock() {
             *live = Some(tx.clone());
         }
+        if let Ok(mut params) = self.params.lock() {
+            *params = ParamSets::default();
+        }
         tx
+    }
+
+    /// Ghi lại SPS/PPS đầu tiên gặp trong gói RTP (đơn hoặc trong STAP-A)
+    pub fn observe(&self, packet: &[u8]) {
+        let Ok(mut params) = self.params.lock() else {
+            return;
+        };
+        if params.sps.is_some() && params.pps.is_some() {
+            return;
+        }
+        for nal in nal_units(packet) {
+            match nal.first().map(|b| b & 0x1f) {
+                Some(7) if params.sps.is_none() => params.sps = Some(nal.to_vec()),
+                Some(8) if params.pps.is_none() => params.pps = Some(nal.to_vec()),
+                _ => {}
+            }
+        }
+    }
+
+    /// SPS và PPS đã biết, nếu có cả hai
+    pub fn param_sets(&self) -> Option<(Vec<u8>, Vec<u8>)> {
+        let params = self.params.lock().ok()?;
+        Some((params.sps.clone()?, params.pps.clone()?))
     }
 
     /// Kết thúc lượt phát: client đang xem sẽ bị đóng, client mới không vào được
@@ -149,7 +186,19 @@ fn is_stream_path(uri: &str) -> bool {
 }
 
 /// SDP của luồng H.264 (RTP/AVP, payload động). SPS/PPS đi kèm trong gói RTP.
-pub fn sdp() -> String {
+/// SDP của luồng. Với SPS/PPS đã biết thì kèm `profile-level-id` và `sprop-parameter-sets`.
+pub fn sdp_with(param_sets: Option<(&[u8], &[u8])>) -> String {
+    let fmtp_extra = match param_sets {
+        Some((sps, pps)) if sps.len() >= 4 => format!(
+            ";profile-level-id={:02X}{:02X}{:02X};sprop-parameter-sets={},{}",
+            sps[1],
+            sps[2],
+            sps[3],
+            STANDARD.encode(sps),
+            STANDARD.encode(pps)
+        ),
+        _ => String::new(),
+    };
     format!(
         "v=0\r\n\
          o=- 0 0 IN IP4 127.0.0.1\r\n\
@@ -158,10 +207,36 @@ pub fn sdp() -> String {
          m=video 0 RTP/AVP {pt}\r\n\
          c=IN IP4 0.0.0.0\r\n\
          a=rtpmap:{pt} H264/90000\r\n\
-         a=fmtp:{pt} packetization-mode=1\r\n\
+         a=fmtp:{pt} packetization-mode=1{fmtp_extra}\r\n\
          a=control:streamid=0\r\n",
         pt = RTP_PAYLOAD_TYPE
     )
+}
+
+/// Các NAL unit trong một gói RTP: gói đơn (1-23) hoặc STAP-A (24). Các dạng khác trả về rỗng.
+fn nal_units(packet: &[u8]) -> Vec<&[u8]> {
+    if packet.len() <= 12 {
+        return Vec::new();
+    }
+    let payload = &packet[12..];
+    match payload[0] & 0x1f {
+        1..=23 => vec![payload],
+        24 => {
+            let mut out = Vec::new();
+            let mut pos = 1;
+            while pos + 2 <= payload.len() {
+                let len = u16::from_be_bytes([payload[pos], payload[pos + 1]]) as usize;
+                pos += 2;
+                if pos + len > payload.len() {
+                    break;
+                }
+                out.push(&payload[pos..pos + len]);
+                pos += len;
+            }
+            out
+        }
+        _ => Vec::new(),
+    }
 }
 
 fn new_session_id() -> String {
@@ -252,7 +327,11 @@ fn handle_request(
                     ("Content-Type", "application/sdp".to_string()),
                     ("Content-Base", base),
                 ],
-                &sdp(),
+                &sdp_with(
+                    hub.param_sets()
+                        .as_ref()
+                        .map(|(sps, pps)| (sps.as_slice(), pps.as_slice())),
+                ),
             )
         }
         "SETUP" => {
@@ -377,7 +456,13 @@ async fn handle_client(stream: TcpStream, hub: Arc<RtspHub>) -> std::io::Result<
                     _ => break,
                 };
                 last_activity = Instant::now();
+                let was_playing = playing.is_some();
                 let outcome = handle_request(&req, &hub, &mut session, &mut playing);
+                // Vừa bắt đầu nhận luồng (PLAY): đang ở giữa GOP, phải chờ khung khoá kế tiếp
+                // trước khi gửi gói, nếu không decoder phía client gặp P-frame thiếu tham chiếu.
+                if !was_playing && playing.is_some() {
+                    resync = true;
+                }
                 wr.write_all(outcome.response.as_bytes()).await?;
                 if outcome.close {
                     break;
@@ -478,9 +563,52 @@ mod tests {
 
     #[test]
     fn sdp_describes_h264_over_dynamic_payload() {
-        let s = sdp();
+        let s = sdp_with(None);
         assert!(s.contains("m=video 0 RTP/AVP 96"));
         assert!(s.contains("a=rtpmap:96 H264/90000"));
+        assert!(!s.contains("sprop-parameter-sets"));
+    }
+
+    #[test]
+    fn sdp_carries_sps_and_pps_when_known() {
+        let sps = [0x67u8, 0x42, 0xc0, 0x20, 0x01];
+        let pps = [0x68u8, 0xce, 0x3c, 0x80];
+        let s = sdp_with(Some((&sps, &pps)));
+        assert!(s.contains("profile-level-id=42C020"));
+        assert!(s.contains(&format!(
+            "sprop-parameter-sets={},{}",
+            STANDARD.encode(sps),
+            STANDARD.encode(pps)
+        )));
+    }
+
+    /// Gói STAP-A gồm SPS + PPS + IDR (dạng config-interval=1 của rtph264pay)
+    fn stap_a_with_params() -> Vec<u8> {
+        let sps = [0x67u8, 0x42, 0xc0, 0x20, 0x01];
+        let pps = [0x68u8, 0xce, 0x3c, 0x80];
+        let idr = [0x65u8, 0x88, 0x84];
+        let mut pkt = vec![0x80, 96, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1];
+        pkt.push(0x18); // STAP-A
+        for nal in [&sps[..], &pps[..], &idr[..]] {
+            pkt.extend_from_slice(&(nal.len() as u16).to_be_bytes());
+            pkt.extend_from_slice(nal);
+        }
+        pkt
+    }
+
+    #[test]
+    fn hub_learns_param_sets_from_stap_a_packet() {
+        let hub = RtspHub::new();
+        assert!(hub.param_sets().is_none());
+        let _ = hub.go_live();
+        hub.observe(&stap_a_with_params());
+        let (sps, pps) = hub.param_sets().expect("SPS và PPS phải được ghi nhận");
+        assert_eq!(sps, vec![0x67, 0x42, 0xc0, 0x20, 0x01]);
+        assert_eq!(pps, vec![0x68, 0xce, 0x3c, 0x80]);
+        // Lượt phát mới xoá tham số cũ
+        hub.go_offline();
+        let _ = hub.go_live();
+        assert!(hub.param_sets().is_none());
     }
 
     #[tokio::test]

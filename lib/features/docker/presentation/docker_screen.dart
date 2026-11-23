@@ -4,6 +4,7 @@ import 'package:material_ui/material_ui.dart';
 import 'package:muop_agent/core/di/app_dependencies.dart';
 import 'package:muop_agent/core/theme/app_theme.dart';
 import 'package:muop_agent/core/widgets/desktop_panel.dart';
+import 'package:muop_agent/core/widgets/glass_scaffold.dart';
 import 'package:muop_agent/features/docker/domain/docker_entities.dart';
 import 'package:muop_agent/features/ssh/domain/ssh_entities.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -130,17 +131,15 @@ class _DockerHostsScreenState extends State<DockerHostsScreenView> {
     final scheme = context.scheme;
     final textTheme = Theme.of(context).textTheme;
 
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('Docker'),
-        actions: [
-          IconButton(
-            tooltip: 'Tải lại',
-            onPressed: _loading ? null : _reload,
-            icon: const Icon(Icons.refresh_rounded),
-          ),
-        ],
-      ),
+    return GlassScreenScaffold(
+      title: 'Docker',
+      actions: [
+        IconButton(
+          tooltip: 'Tải lại',
+          onPressed: _loading ? null : _reload,
+          icon: const Icon(Icons.refresh_rounded),
+        ),
+      ],
       body: _loading
           ? const Center(child: CircularProgressIndicator())
           : _loadError != null
@@ -198,8 +197,14 @@ class _DockerHostsScreenState extends State<DockerHostsScreenView> {
                             : '${host.address} · phiên đang chạy · '
                                 '${live.containers.length} container';
                         return Material(
-                          color: scheme.surfaceContainerLow,
-                          borderRadius: BorderRadius.circular(12),
+                          color: context.glassCardColor,
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(16),
+                            side: BorderSide(
+                              color: context.glassCardBorder,
+                              width: 0.85,
+                            ),
+                          ),
                           child: ListTile(
                             onTap: opening ? null : () => _openHost(host),
                             leading: CircleAvatar(
@@ -463,34 +468,31 @@ class _DockerSessionScreenState extends State<DockerSessionScreenView> {
     final error = _linkError ??
         (_session.error.isNotEmpty ? _session.error : null);
 
-    return Scaffold(
-      appBar: AppBar(
-        backgroundColor: scheme.surface,
-        title: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text('Docker · ${widget.hostName}', style: textTheme.titleSmall),
-            Text(
-              widget.hostAddress,
-              style: textTheme.labelSmall
-                  ?.copyWith(color: scheme.onSurfaceVariant),
-            ),
-          ],
-        ),
-        actions: [
-          IconButton(
-            tooltip: 'Quét lại',
-            onPressed: _working || _ended ? null : () => _refresh(manual: true),
-            icon: const Icon(Icons.refresh_rounded),
+    return GlassScreenScaffold(
+      titleWidget: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text('Docker · ${widget.hostName}', style: textTheme.titleSmall),
+          Text(
+            widget.hostAddress,
+            style: textTheme.labelSmall
+                ?.copyWith(color: scheme.onSurfaceVariant),
           ),
-          if (!_ended)
-            IconButton(
-              tooltip: 'Kết thúc phiên',
-              onPressed: _working ? null : _endSession,
-              icon: Icon(Icons.power_settings_new_rounded, color: scheme.error),
-            ),
         ],
       ),
+      actions: [
+        IconButton(
+          tooltip: 'Quét lại',
+          onPressed: _working || _ended ? null : () => _refresh(manual: true),
+          icon: const Icon(Icons.refresh_rounded),
+        ),
+        if (!_ended)
+          IconButton(
+            tooltip: 'Kết thúc phiên',
+            onPressed: _working ? null : _endSession,
+            icon: Icon(Icons.power_settings_new_rounded, color: scheme.error),
+          ),
+      ],
       body: Column(
         children: [
           if (_working) const LinearProgressIndicator(minHeight: 2),
@@ -779,8 +781,11 @@ class _ContainerTile extends StatelessWidget {
     return Padding(
       padding: const EdgeInsets.only(bottom: 8),
       child: Material(
-        color: scheme.surfaceContainerLow,
-        borderRadius: BorderRadius.circular(12),
+        color: context.glassCardColor,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(16),
+          side: BorderSide(color: context.glassCardBorder, width: 0.85),
+        ),
         child: Padding(
           padding: const EdgeInsets.fromLTRB(14, 8, 4, 8),
           child: Row(
@@ -1006,37 +1011,34 @@ class _DockerLogsScreenState extends State<DockerLogsScreen> {
       statusColor = status.success;
     }
 
-    return Scaffold(
-      appBar: AppBar(
-        backgroundColor: scheme.surface,
-        title: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text('Logs · ${widget.container.name}', style: textTheme.titleSmall),
-            Text(
-              '${widget.hostName} · ${widget.container.image}',
-              style: textTheme.labelSmall
-                  ?.copyWith(color: scheme.onSurfaceVariant),
-              overflow: TextOverflow.ellipsis,
-            ),
-          ],
-        ),
-        actions: [
-          IconButton(
-            tooltip: _follow ? 'Đang bám theo dòng mới' : 'Bám theo dòng mới',
-            onPressed: () => setState(() => _follow = !_follow),
-            icon: Icon(
-              Icons.vertical_align_bottom_rounded,
-              color: _follow ? scheme.primary : null,
-            ),
-          ),
-          IconButton(
-            tooltip: 'Xóa màn hình',
-            onPressed: () => setState(_lines.clear),
-            icon: const Icon(Icons.cleaning_services_outlined),
+    return GlassScreenScaffold(
+      titleWidget: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text('Logs · ${widget.container.name}', style: textTheme.titleSmall),
+          Text(
+            '${widget.hostName} · ${widget.container.image}',
+            style: textTheme.labelSmall
+                ?.copyWith(color: scheme.onSurfaceVariant),
+            overflow: TextOverflow.ellipsis,
           ),
         ],
       ),
+      actions: [
+        IconButton(
+          tooltip: _follow ? 'Đang bám theo dòng mới' : 'Bám theo dòng mới',
+          onPressed: () => setState(() => _follow = !_follow),
+          icon: Icon(
+            Icons.vertical_align_bottom_rounded,
+            color: _follow ? scheme.primary : null,
+          ),
+        ),
+        IconButton(
+          tooltip: 'Xóa màn hình',
+          onPressed: () => setState(_lines.clear),
+          icon: const Icon(Icons.cleaning_services_outlined),
+        ),
+      ],
       body: Column(
         children: [
           if (_opening) const LinearProgressIndicator(minHeight: 2),

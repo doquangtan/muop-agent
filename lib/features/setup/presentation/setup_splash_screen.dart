@@ -2,6 +2,8 @@ import 'package:material_ui/material_ui.dart';
 
 import 'package:muop_agent/core/di/app_dependencies.dart';
 import 'package:muop_agent/core/theme/app_theme.dart';
+import 'package:muop_agent/core/widgets/glass_scaffold.dart';
+import 'package:muop_agent/core/widgets/liquid_glass.dart';
 import 'package:muop_agent/features/agy_auth/domain/agy_auth_repository.dart';
 import 'package:muop_agent/features/setup/domain/setup_entities.dart';
 import 'package:muop_agent/features/setup/domain/setup_repository.dart';
@@ -92,14 +94,23 @@ class _SetupSplashScreenState extends State<SetupSplashScreen> {
   Widget build(BuildContext context) {
     final scheme = context.scheme;
     final textTheme = Theme.of(context).textTheme;
-    return Scaffold(
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    return GlassScreenScaffold(
       body: Center(
         child: Padding(
           padding: const EdgeInsets.all(24),
           child: ConstrainedBox(
-            constraints: const BoxConstraints(maxWidth: 480),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
+            constraints: const BoxConstraints(maxWidth: 460),
+            child: LiquidGlassContainer(
+              borderRadius: BorderRadius.circular(24),
+              blur: 16,
+              fillColor: (isDark
+                      ? const Color(0xFF141821)
+                      : const Color(0xFFF6F9FF))
+                  .withValues(alpha: isDark ? 0.42 : 0.56),
+              padding: const EdgeInsets.symmetric(horizontal: 28, vertical: 30),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
               children: [
                 Icon(Icons.travel_explore_rounded, size: 56, color: scheme.primary),
                 const SizedBox(height: 16),
@@ -151,6 +162,7 @@ class _SetupSplashScreenState extends State<SetupSplashScreen> {
                   ),
                 ],
               ],
+            ),
             ),
           ),
         ),

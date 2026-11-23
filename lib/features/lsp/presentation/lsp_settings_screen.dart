@@ -2,6 +2,7 @@ import 'package:material_ui/material_ui.dart';
 
 import 'package:muop_agent/core/di/app_dependencies.dart';
 import 'package:muop_agent/core/theme/app_theme.dart';
+import 'package:muop_agent/core/widgets/glass_scaffold.dart';
 import 'package:muop_agent/features/lsp/domain/lsp_entities.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:muop_agent/core/state/server_address_provider.dart';
@@ -144,17 +145,15 @@ class _LspSettingsScreenState extends State<LspSettingsScreenView> {
         ],
       );
     }
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('Cài đặt LSP'),
-        actions: [
-          IconButton(
-            tooltip: 'Kiểm tra lại',
-            onPressed: _loading ? null : _reload,
-            icon: const Icon(Icons.refresh_rounded),
-          ),
-        ],
-      ),
+    return GlassScreenScaffold(
+      title: 'Cài đặt LSP',
+      actions: [
+        IconButton(
+          tooltip: 'Kiểm tra lại',
+          onPressed: _loading ? null : _reload,
+          icon: const Icon(Icons.refresh_rounded),
+        ),
+      ],
       body: body,
     );
   }
@@ -243,8 +242,11 @@ class _LspLanguageCardState extends State<_LspLanguageCard> {
     final chipColor = ready ? status.success : scheme.error;
 
     return Material(
-      color: scheme.surfaceContainerLow,
-      borderRadius: BorderRadius.circular(12),
+      color: context.glassCardColor,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(14),
+        side: BorderSide(color: context.glassCardBorder, width: 0.85),
+      ),
       child: Padding(
         padding: const EdgeInsets.all(14),
         child: Column(

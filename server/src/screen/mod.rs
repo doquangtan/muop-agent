@@ -187,8 +187,9 @@ impl ScreenManager {
         let generation = self.generation.fetch_add(1, Ordering::Relaxed) + 1;
         let packets = self.hub.go_live();
         let manager = self.clone();
+        let hub = self.hub.clone();
         let reader = tokio::spawn(async move {
-            read_packets(stdout, packets).await;
+            read_packets(stdout, packets, hub).await;
             manager.capture_ended(generation).await;
         });
 
@@ -289,7 +290,11 @@ async fn end_running(mut r: Running) {
 }
 
 /// Đọc các gói RTP từ GStreamer và đẩy vào hub cho mọi client RTSP
-async fn read_packets(stdout: tokio::process::ChildStdout, out: broadcast::Sender<rtsp::Packet>) {
+async fn read_packets(
+    stdout: tokio::process::ChildStdout,
+    out: broadcast::Sender<rtsp::Packet>,
+    hub: Arc<rtsp::RtspHub>,
+) {
     use tokio::io::AsyncReadExt;
     let mut stdout = stdout;
     let mut splitter = capture::RtpSplitter::default();
@@ -299,6 +304,7 @@ async fn read_packets(stdout: tokio::process::ChildStdout, out: broadcast::Sende
             Ok(0) | Err(_) => break,
             Ok(n) => {
                 for packet in splitter.push(&chunk[..n]) {
+                    hub.observe(&packet);
                     // Không có client nào thì send trả lỗi: bỏ qua, luồng vẫn chạy
                     let _ = out.send(Arc::new(packet));
                 }

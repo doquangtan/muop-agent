@@ -3,6 +3,7 @@ import 'package:material_ui/material_ui.dart';
 
 import 'package:muop_agent/core/di/app_dependencies.dart';
 import 'package:muop_agent/core/state/server_address_provider.dart';
+import 'package:muop_agent/core/widgets/glass_scaffold.dart';
 import 'package:muop_agent/features/agy_auth/presentation/accounts_screen.dart';
 import 'package:muop_agent/features/bridge/presentation/bridge_screen.dart';
 import 'package:muop_agent/features/lsp/presentation/lsp_settings_screen.dart';
@@ -19,19 +20,19 @@ class SettingsScreen extends ConsumerWidget {
     final address = ref.watch(serverAddressProvider);
     return DefaultTabController(
       length: 5,
-      child: Scaffold(
-        appBar: AppBar(
-          title: const Text('Cài đặt'),
-          bottom: const TabBar(
-            isScrollable: true,
-            tabs: [
-              Tab(text: 'Máy chủ'),
-              Tab(text: 'Thư mục project'),
-              Tab(text: 'LSP'),
-              Tab(text: 'Cầu nối'),
-              Tab(text: 'Tài khoản'),
-            ],
-          ),
+      child: GlassScreenScaffold(
+        title: 'Cài đặt',
+        bottom: const TabBar(
+          isScrollable: true,
+          dividerColor: Colors.transparent,
+          padding: EdgeInsets.symmetric(horizontal: 10),
+          tabs: [
+            Tab(text: 'Máy chủ'),
+            Tab(text: 'Thư mục project'),
+            Tab(text: 'LSP'),
+            Tab(text: 'Cầu nối'),
+            Tab(text: 'Tài khoản'),
+          ],
         ),
         body: TabBarView(
           children: [

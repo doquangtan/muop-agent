@@ -8,6 +8,7 @@ import 'package:media_kit_video/media_kit_video.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import 'package:muop_agent/core/di/app_dependencies.dart';
+import 'package:muop_agent/core/widgets/glass_scaffold.dart';
 import 'package:muop_agent/features/screen/domain/screen_entities.dart';
 
 /// Thử lại khi luồng RTSP lỗi (server vừa khởi động lại, mạng chập chờn...)
@@ -316,14 +317,12 @@ class _ScreenStreamScreenState extends State<ScreenStreamScreen> {
       onPopInvokedWithResult: (didPop, _) {
         if (!didPop && showZoomed) _setZoomed(false);
       },
-      child: Scaffold(
-        appBar: showZoomed
-            ? null
-            : AppBar(title: const Text('Màn hình máy chủ')),
-        body: showZoomed
-            ? _buildZoomed(colorScheme)
-            : _buildPanel(colorScheme, textTheme, url, icon, message),
-      ),
+      child: showZoomed
+          ? Scaffold(body: _buildZoomed(colorScheme))
+          : GlassScreenScaffold(
+              title: 'Màn hình máy chủ',
+              body: _buildPanel(colorScheme, textTheme, url, icon, message),
+            ),
     );
   }
 

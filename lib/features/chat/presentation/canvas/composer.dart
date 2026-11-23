@@ -182,53 +182,25 @@ extension _CanvasExtComposer on _ChatCanvasViewState {
     return KeyEventResult.handled;
   }
 
-  /// Hàng công cụ nằm ngay trên khung chat: Agent map, duyệt SFTP và Git Tree.
-  /// Tách khỏi khung chat để vẫn dùng được khi khung chat đang ẩn (lúc agent đang chạy).
-  Widget _buildComposerToolRow(BuildContext context, bool isMobile) {
-    final colorScheme = Theme.of(context).colorScheme;
-    return SingleChildScrollView(
-      scrollDirection: Axis.horizontal,
-      child: Row(
-        children: [
-          if (widget.onOpenAgentMap != null) ...[
-            InkWell(
-              borderRadius: BorderRadius.circular(8),
-              onTap: widget.onOpenAgentMap,
-              child: _ComposerPill(
-                icon: Icons.hub_outlined,
-                label: isMobile ? 'Agent' : 'Agent map',
-                colorScheme: colorScheme,
-              ),
-            ),
-            const SizedBox(width: 5),
-          ],
-          InkWell(
-            borderRadius: BorderRadius.circular(8),
-            onTap: widget.onOpenFileBrowser,
-            child: _ComposerPill(
-              icon: Icons.dns_outlined,
-              label: isMobile ? 'SFTP' : 'Duyệt SFTP Server',
-              colorScheme: colorScheme,
-            ),
-          ),
-          if (widget.onOpenGitHistory != null) ...[
-            const SizedBox(width: 5),
-            InkWell(
-              borderRadius: BorderRadius.circular(8),
-              onTap: widget.onOpenGitHistory,
-              child: _ComposerPill(
-                icon: Icons.account_tree_outlined,
-                label: isMobile ? 'Git Tree' : 'Git Tree & History',
-                colorScheme: colorScheme,
-              ),
-            ),
-          ],
-        ],
+  Widget _compactFieldIconButton({
+    required String tooltip,
+    required VoidCallback? onPressed,
+    required Widget icon,
+  }) {
+    return IconButton(
+      tooltip: tooltip,
+      onPressed: onPressed,
+      style: IconButton.styleFrom(
+        minimumSize: const Size(32, 32),
+        maximumSize: const Size(32, 32),
+        padding: EdgeInsets.zero,
+        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
       ),
+      icon: icon,
     );
   }
 
-  /// [3] KHUNG NHẬP CHAT HỢP NHẤT (COMPOSER BOX) — Nằm dưới cùng
+  /// [3] KHUNG NHẬP CHAT GỌN KIỂU TELEGRAM LIQUID GLASS — Toàn bộ icon nằm trong TextField
   Widget _buildAntigravityComposer(
     BuildContext context,
     bool isMobile,
@@ -236,258 +208,420 @@ extension _CanvasExtComposer on _ChatCanvasViewState {
   ) {
     final colorScheme = Theme.of(context).colorScheme;
     final textTheme = Theme.of(context).textTheme;
+    final isDark = Theme.of(context).brightness == Brightness.dark;
     final activeProjectName =
         widget.selectedProject?.name ??
         widget.session?.projectName ??
         'Chưa chọn project';
 
-    return Container(
-      decoration: BoxDecoration(
-        color: colorScheme.surfaceContainer,
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: colorScheme.outlineVariant, width: 1.1),
-        boxShadow: [
-          BoxShadow(
-            color: context.scheme.shadow.withAlpha(14),
-            blurRadius: 10,
-            offset: const Offset(0, 3),
-          ),
-        ],
+    final fieldBorder = OutlineInputBorder(
+      borderRadius: BorderRadius.circular(22),
+      borderSide: BorderSide(
+        color: colorScheme.onSurface.withValues(alpha: isDark ? 0.12 : 0.08),
+        width: 0.7,
       ),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          if (widget.blockedReason != null)
-            Padding(
-              padding: const EdgeInsets.fromLTRB(14, 10, 14, 0),
-              child: Row(
-                children: [
-                  Icon(Icons.cloud_off_rounded, size: 18, color: colorScheme.error),
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: Text(
-                      widget.blockedReason!,
-                      key: const Key('composer-blocked'),
-                      style: textTheme.bodySmall?.copyWith(color: colorScheme.error),
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          if (_pendingImages.isNotEmpty)
-            _buildPendingImagesStrip(colorScheme, isMobile),
+    );
+    final focusedBorder = OutlineInputBorder(
+      borderRadius: BorderRadius.circular(22),
+      borderSide: BorderSide(
+        color: colorScheme.primary.withValues(alpha: 0.55),
+        width: 1.0,
+      ),
+    );
+
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        if (widget.blockedReason != null)
           Padding(
-            padding: EdgeInsets.fromLTRB(
-              isMobile ? 12 : 16,
-              isMobile ? 6 : 8,
-              isMobile ? 12 : 16,
-              2,
-            ),
-            child: RepaintBoundary(
-              child: Focus(
-                onKeyEvent: isMobile ? null : _handleComposerKeyEvent,
-                child: TextField(
-                  controller: _promptController,
-                  focusNode: _inputFocusNode,
-                  enabled: widget.blockedReason == null,
-                  minLines: 4,
-                  maxLines: 10,
-                  keyboardType: TextInputType.multiline,
-                  autocorrect: false,
-                  enableSuggestions: true,
-                  textInputAction: TextInputAction.newline,
-                  style: textTheme.bodyMedium?.copyWith(
-                    height: 1.38,
-                    fontSize: isMobile ? 13.5 : 14,
-                    color: colorScheme.onSurface,
-                  ),
-                  decoration: InputDecoration(
-                    hintText: isMobile
-                        ? 'Nhập tin nhắn cho Agent ($activeProjectName)...'
-                        : 'Ask anything in $activeProjectName, or type / for workflows...',
-                    hintStyle: textTheme.bodyMedium?.copyWith(
-                      fontSize: isMobile ? 13 : 13.5,
-                      color: colorScheme.onSurfaceVariant.withAlpha(155),
-                    ),
-                    border: InputBorder.none,
-                    isDense: true,
-                    contentPadding: const EdgeInsets.symmetric(vertical: 5),
-                  ),
-                ),
-              ),
-            ),
-          ),
-          Padding(
-            padding: const EdgeInsets.fromLTRB(8, 2, 8, 6),
+            padding: const EdgeInsets.fromLTRB(10, 4, 10, 4),
             child: Row(
               children: [
+                Icon(Icons.cloud_off_rounded, size: 16, color: colorScheme.error),
+                const SizedBox(width: 6),
                 Expanded(
-                  child: SingleChildScrollView(
-                    scrollDirection: Axis.horizontal,
-                    child: Row(
-                      children: [
-                        InkWell(
-                          borderRadius: BorderRadius.circular(8),
-                          onTap: () => _showSlashCommandsPicker(context),
-                          child: _ComposerPill(
-                            icon: Icons.terminal_rounded,
-                            label: '/',
-                            colorScheme: colorScheme,
-                          ),
-                        ),
-                        const SizedBox(width: 5),
-
-                        PopupMenuButton<dynamic>(
-                          tooltip: 'Chọn Project Workspace',
-                          onSelected: (val) {
-                            if (val is ProjectWorkspace) {
-                              widget.onSelectProject(val);
-                            } else if (val == '__create_project__') {
-                              widget.onOpenCreateProject?.call();
-                            }
-                          },
-                          itemBuilder: (ctx) => [
-                            if (widget.onOpenCreateProject != null)
-                              PopupMenuItem<String>(
-                                value: '__create_project__',
-                                child: Row(
-                                  children: [
-                                    Icon(
-                                      Icons.create_new_folder_outlined,
-                                      size: 16,
-                                      color: colorScheme.primary,
-                                    ),
-                                    const SizedBox(width: 8),
-                                    Text(
-                                      '+ Tạo Project mới',
-                                      style: TextStyle(
-                                        fontWeight: FontWeight.w700,
-                                        color: colorScheme.primary,
-                                      ),
-                                    ),
-                                  ],
-                                ),
-                              ),
-                            for (final p in widget.projects)
-                              PopupMenuItem<ProjectWorkspace>(
-                                value: p,
-                                child: Row(
-                                  children: [
-                                    Icon(
-                                      Icons.folder_outlined,
-                                      size: 16,
-                                      color: p.name == activeProjectName
-                                          ? colorScheme.primary
-                                          : colorScheme.onSurfaceVariant,
-                                    ),
-                                    const SizedBox(width: 8),
-                                    Expanded(
-                                      child: Text(
-                                        p.name,
-                                        style: TextStyle(
-                                          fontWeight:
-                                              p.name == activeProjectName
-                                              ? FontWeight.w700
-                                              : FontWeight.w500,
-                                        ),
-                                      ),
-                                    ),
-                                  ],
-                                ),
-                              ),
-                          ],
-                          child: _ComposerPill(
-                            icon: Icons.folder_outlined,
-                            label: activeProjectName,
-                            hasDropdown: true,
-                            colorScheme: colorScheme,
-                          ),
-                        ),
-                        const SizedBox(width: 5),
-
-                        PopupMenuButton<String>(
-                          tooltip: 'Chọn Agent',
-                          onSelected: widget.onSelectAgent,
-                          itemBuilder: (ctx) {
-                            final effectiveAgents =
-                                (widget.session != null &&
-                                    widget.session!.availableAgents.isNotEmpty)
-                                ? widget.session!.availableAgents
-                                : (widget.selectedProject != null &&
-                                      widget
-                                          .selectedProject!
-                                          .availableAgents
-                                          .isNotEmpty)
-                                ? widget.selectedProject!.availableAgents
-                                : widget.availableAgents;
-                            return [
-                              for (final a in effectiveAgents)
-                                PopupMenuItem<String>(
-                                  value: a,
-                                  child: Text(
-                                    a,
-                                    style: TextStyle(
-                                      fontWeight: a == widget.selectedAgent
-                                          ? FontWeight.w700
-                                          : FontWeight.w500,
-                                    ),
-                                  ),
-                                ),
-                            ];
-                          },
-                          child: _ComposerPill(
-                            icon: Icons.smart_toy_outlined,
-                            label: widget.selectedAgent,
-                            hasDropdown: true,
-                            colorScheme: colorScheme,
-                          ),
-                        ),
-                        const SizedBox(width: 5),
-
-                        InkWell(
-                          borderRadius: BorderRadius.circular(8),
-                          onTap: widget.isSending ? null : _pickComposerImages,
-                          child: _ComposerPill(
-                            icon: Icons.image_outlined,
-                            label: _pendingImages.isEmpty
-                                ? (isMobile ? 'Ảnh' : 'Đính kèm ảnh')
-                                : 'Ảnh (${_pendingImages.length})',
-                            colorScheme: colorScheme,
-                          ),
-                        ),
-                      ],
-                    ),
+                  child: Text(
+                    widget.blockedReason!,
+                    key: const Key('composer-blocked'),
+                    style: textTheme.bodySmall?.copyWith(color: colorScheme.error),
                   ),
                 ),
-                const SizedBox(width: 6),
-                if (isTurnRunning)
-                  IconButton.filledTonal(
-                    tooltip: 'Dừng lượt chạy (Stop)',
-                    onPressed: widget.onStopTurn,
-                    style: IconButton.styleFrom(
-                      backgroundColor: context.scheme.error.withAlpha(40),
-                      foregroundColor: context.scheme.error,
-                      minimumSize: const Size(32, 32),
-                      padding: EdgeInsets.zero,
-                    ),
-                    icon: const Icon(Icons.stop_rounded, size: 17),
-                  )
-                else
-                  IconButton.filled(
-                    tooltip: 'Gửi tin nhắn (Enter)',
-                    onPressed: _handleSend,
-                    style: IconButton.styleFrom(
-                      minimumSize: const Size(32, 32),
-                      padding: EdgeInsets.zero,
-                    ),
-                    icon: const Icon(Icons.arrow_upward_rounded, size: 17),
-                  ),
               ],
             ),
           ),
-        ],
+        if (_pendingImages.isNotEmpty)
+          Padding(
+            padding: const EdgeInsets.only(bottom: 6),
+            child: _buildPendingImagesStrip(colorScheme, isMobile),
+          ),
+        RepaintBoundary(
+          child: Focus(
+            onKeyEvent: isMobile ? null : _handleComposerKeyEvent,
+            child: TextField(
+              key: const Key('composer-text-field'),
+              controller: _promptController,
+              focusNode: _inputFocusNode,
+              enabled: widget.blockedReason == null,
+              minLines: 1,
+              maxLines: 5,
+              keyboardType: TextInputType.multiline,
+              autocorrect: false,
+              enableSuggestions: true,
+              textInputAction: TextInputAction.newline,
+              style: textTheme.bodyMedium?.copyWith(
+                height: 1.38,
+                fontSize: 14,
+                color: colorScheme.onSurface,
+              ),
+              decoration: InputDecoration(
+                hintText: isMobile
+                    ? 'Nhắn cho $activeProjectName...'
+                    : 'Ask anything in $activeProjectName, or type / for workflows...',
+                hintStyle: textTheme.bodyMedium?.copyWith(
+                  fontSize: 13.5,
+                  color: colorScheme.onSurfaceVariant.withAlpha(155),
+                ),
+                filled: true,
+                fillColor: colorScheme.onSurface.withValues(
+                  alpha: isDark ? 0.06 : 0.045,
+                ),
+                isDense: true,
+                contentPadding: const EdgeInsets.symmetric(
+                  horizontal: 8,
+                  vertical: 10,
+                ),
+                border: fieldBorder,
+                enabledBorder: fieldBorder,
+                disabledBorder: fieldBorder,
+                focusedBorder: focusedBorder,
+                prefixIconConstraints: const BoxConstraints(
+                  minWidth: 0,
+                  minHeight: 36,
+                ),
+                suffixIconConstraints: const BoxConstraints(
+                  minWidth: 0,
+                  minHeight: 36,
+                ),
+                prefixIcon: Padding(
+                  padding: const EdgeInsets.only(left: 4, right: 4),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      // Nút Slash commands & Skills
+                      _compactFieldIconButton(
+                        tooltip: 'Lệnh / & Kỹ năng',
+                        onPressed: () => _showSlashCommandsPicker(context),
+                        icon: Icon(
+                          Icons.terminal_rounded,
+                          size: 18,
+                          color: colorScheme.onSurfaceVariant,
+                        ),
+                      ),
+                      // Trên mobile: nút chọn nhanh Project & Agent gọn ngay trong TextField
+                      if (isMobile)
+                        _buildCompactContextMenuButton(
+                          context,
+                          colorScheme,
+                          activeProjectName,
+                        )
+                      else ...[
+                        _buildProjectSelectorPill(
+                          context,
+                          colorScheme,
+                          activeProjectName,
+                        ),
+                        const SizedBox(width: 4),
+                        _buildAgentSelectorPill(context, colorScheme),
+                      ],
+                    ],
+                  ),
+                ),
+                suffixIcon: Padding(
+                  padding: const EdgeInsets.only(left: 2, right: 4),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      // Nút đính kèm ảnh nằm trong TextField
+                      _compactFieldIconButton(
+                        tooltip: _pendingImages.isEmpty
+                            ? 'Đính kèm ảnh'
+                            : 'Đính kèm ảnh (${_pendingImages.length})',
+                        onPressed: widget.isSending ? null : _pickComposerImages,
+                        icon: Badge(
+                          isLabelVisible: _pendingImages.isNotEmpty,
+                          label: Text('${_pendingImages.length}'),
+                          child: Icon(
+                            Icons.attach_file_rounded,
+                            size: 18,
+                            color: _pendingImages.isNotEmpty
+                                ? colorScheme.primary
+                                : colorScheme.onSurfaceVariant,
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 3),
+                      if (isTurnRunning)
+                        IconButton.filledTonal(
+                          tooltip: 'Dừng lượt chạy (Stop)',
+                          onPressed: widget.onStopTurn,
+                          style: IconButton.styleFrom(
+                            backgroundColor: colorScheme.error.withAlpha(45),
+                            foregroundColor: colorScheme.error,
+                            minimumSize: const Size(32, 32),
+                            maximumSize: const Size(32, 32),
+                            shape: const CircleBorder(),
+                            padding: EdgeInsets.zero,
+                            tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                          ),
+                          icon: const Icon(Icons.stop_rounded, size: 17),
+                        )
+                      else
+                        IconButton.filled(
+                          tooltip: 'Gửi tin nhắn (Enter)',
+                          onPressed: _handleSend,
+                          style: IconButton.styleFrom(
+                            backgroundColor: colorScheme.primary,
+                            foregroundColor: colorScheme.onPrimary,
+                            minimumSize: const Size(32, 32),
+                            maximumSize: const Size(32, 32),
+                            shape: const CircleBorder(),
+                            padding: EdgeInsets.zero,
+                            tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                          ),
+                          icon: const Icon(Icons.arrow_upward_rounded, size: 17),
+                        ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildProjectSelectorPill(
+    BuildContext context,
+    ColorScheme colorScheme,
+    String activeProjectName,
+  ) {
+    return PopupMenuButton<dynamic>(
+      tooltip: 'Chọn Project Workspace',
+      onSelected: (val) {
+        if (val is ProjectWorkspace) {
+          widget.onSelectProject(val);
+        } else if (val == '__create_project__') {
+          widget.onOpenCreateProject?.call();
+        }
+      },
+      itemBuilder: (ctx) => [
+        if (widget.onOpenCreateProject != null)
+          PopupMenuItem<String>(
+            value: '__create_project__',
+            child: Row(
+              children: [
+                Icon(
+                  Icons.create_new_folder_outlined,
+                  size: 16,
+                  color: colorScheme.primary,
+                ),
+                const SizedBox(width: 8),
+                Text(
+                  '+ Tạo Project mới',
+                  style: TextStyle(
+                    fontWeight: FontWeight.w700,
+                    color: colorScheme.primary,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        for (final p in widget.projects)
+          PopupMenuItem<ProjectWorkspace>(
+            value: p,
+            child: Row(
+              children: [
+                Icon(
+                  Icons.folder_outlined,
+                  size: 16,
+                  color: p.name == activeProjectName
+                      ? colorScheme.primary
+                      : colorScheme.onSurfaceVariant,
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    p.name,
+                    style: TextStyle(
+                      fontWeight: p.name == activeProjectName
+                          ? FontWeight.w700
+                          : FontWeight.w500,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+      ],
+      child: _ComposerPill(
+        icon: Icons.folder_outlined,
+        label: activeProjectName,
+        hasDropdown: true,
+        colorScheme: colorScheme,
       ),
+    );
+  }
+
+  Widget _buildAgentSelectorPill(
+    BuildContext context,
+    ColorScheme colorScheme,
+  ) {
+    final effectiveAgents =
+        (widget.session != null && widget.session!.availableAgents.isNotEmpty)
+        ? widget.session!.availableAgents
+        : (widget.selectedProject != null &&
+              widget.selectedProject!.availableAgents.isNotEmpty)
+        ? widget.selectedProject!.availableAgents
+        : widget.availableAgents;
+    return PopupMenuButton<String>(
+      tooltip: 'Chọn Agent',
+      onSelected: widget.onSelectAgent,
+      itemBuilder: (ctx) => [
+        for (final a in effectiveAgents)
+          PopupMenuItem<String>(
+            value: a,
+            child: Text(
+              a,
+              style: TextStyle(
+                fontWeight: a == widget.selectedAgent
+                    ? FontWeight.w700
+                    : FontWeight.w500,
+              ),
+            ),
+          ),
+      ],
+      child: _ComposerPill(
+        icon: Icons.smart_toy_outlined,
+        label: widget.selectedAgent,
+        hasDropdown: true,
+        colorScheme: colorScheme,
+      ),
+    );
+  }
+
+  Widget _buildCompactContextMenuButton(
+    BuildContext context,
+    ColorScheme colorScheme,
+    String activeProjectName,
+  ) {
+    final effectiveAgents =
+        (widget.session != null && widget.session!.availableAgents.isNotEmpty)
+        ? widget.session!.availableAgents
+        : (widget.selectedProject != null &&
+              widget.selectedProject!.availableAgents.isNotEmpty)
+        ? widget.selectedProject!.availableAgents
+        : widget.availableAgents;
+    return PopupMenuButton<Object>(
+      tooltip: 'Project ($activeProjectName) • Agent (${widget.selectedAgent})',
+      borderRadius: BorderRadius.circular(16),
+      child: SizedBox(
+        width: 32,
+        height: 32,
+        child: Center(
+          child: Icon(
+            Icons.tune_rounded,
+            size: 18,
+            color: colorScheme.onSurfaceVariant,
+          ),
+        ),
+      ),
+      onSelected: (val) {
+        if (val is ProjectWorkspace) {
+          widget.onSelectProject(val);
+        } else if (val == '__create_project__') {
+          widget.onOpenCreateProject?.call();
+        } else if (val is String && val.startsWith('__agent__:')) {
+          widget.onSelectAgent(val.substring('__agent__:'.length));
+        }
+      },
+      itemBuilder: (ctx) => [
+        PopupMenuItem<Object>(
+          enabled: false,
+          height: 28,
+          child: Text(
+            'PROJECT ($activeProjectName)',
+            style: TextStyle(
+              fontSize: 10.5,
+              fontWeight: FontWeight.w800,
+              color: colorScheme.primary,
+            ),
+          ),
+        ),
+        if (widget.onOpenCreateProject != null)
+          PopupMenuItem<Object>(
+            value: '__create_project__',
+            child: Text(
+              '+ Tạo Project mới',
+              style: TextStyle(
+                fontWeight: FontWeight.w700,
+                color: colorScheme.primary,
+              ),
+            ),
+          ),
+        for (final p in widget.projects)
+          PopupMenuItem<Object>(
+            value: p,
+            child: Row(
+              children: [
+                Icon(
+                  p.name == activeProjectName
+                      ? Icons.check_rounded
+                      : Icons.folder_outlined,
+                  size: 15,
+                  color: p.name == activeProjectName
+                      ? colorScheme.primary
+                      : colorScheme.onSurfaceVariant,
+                ),
+                const SizedBox(width: 8),
+                Expanded(child: Text(p.name)),
+              ],
+            ),
+          ),
+        const PopupMenuDivider(),
+        PopupMenuItem<Object>(
+          enabled: false,
+          height: 28,
+          child: Text(
+            'AGENT (${widget.selectedAgent})',
+            style: TextStyle(
+              fontSize: 10.5,
+              fontWeight: FontWeight.w800,
+              color: colorScheme.primary,
+            ),
+          ),
+        ),
+        for (final a in effectiveAgents)
+          PopupMenuItem<Object>(
+            value: '__agent__:$a',
+            child: Row(
+              children: [
+                Icon(
+                  a == widget.selectedAgent
+                      ? Icons.check_rounded
+                      : Icons.smart_toy_outlined,
+                  size: 15,
+                  color: a == widget.selectedAgent
+                      ? colorScheme.primary
+                      : colorScheme.onSurfaceVariant,
+                ),
+                const SizedBox(width: 8),
+                Expanded(child: Text(a)),
+              ],
+            ),
+          ),
+      ],
     );
   }
 

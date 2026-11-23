@@ -4,6 +4,7 @@ import 'dart:math' as math;
 import 'package:material_ui/material_ui.dart';
 
 import 'package:muop_agent/core/theme/app_theme.dart';
+import 'package:muop_agent/core/widgets/glass_scaffold.dart';
 import 'package:muop_agent/features/bridge/domain/peer_models.dart';
 import 'package:muop_agent/features/sessions/domain/session_entities.dart';
 
@@ -89,42 +90,40 @@ class _AgentMapScreenState extends State<AgentMapScreen> {
         .length;
     final colorScheme = Theme.of(context).colorScheme;
 
-    return Scaffold(
-      appBar: AppBar(
-        titleSpacing: 0,
-        title: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const Text(
-              'Agent map',
-              style: TextStyle(fontWeight: FontWeight.w700, fontSize: 17),
-            ),
-            Text(
-              '${lanes.length} agents · bấm một agent để xem chi tiết',
-              style: TextStyle(
-                fontSize: 11.5,
-                color: colorScheme.onSurfaceVariant,
-              ),
-            ),
-          ],
-        ),
-        actions: [
-          IconButton(
-            tooltip: 'Vừa màn hình',
-            onPressed: session == null ? null : _fitToViewport,
-            icon: const Icon(Icons.fit_screen_outlined),
+    return GlassScreenScaffold(
+      titleSpacing: 0,
+      titleWidget: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const Text(
+            'Agent map',
+            style: TextStyle(fontWeight: FontWeight.w700, fontSize: 17),
           ),
-          TextButton.icon(
-            onPressed: session == null
-                ? null
-                : () => _showHistory(context, session),
-            icon: const Icon(Icons.history_rounded, size: 18),
-            label: const Text('Lịch sử'),
+          Text(
+            '${lanes.length} agents · bấm một agent để xem chi tiết',
+            style: TextStyle(
+              fontSize: 11.5,
+              color: colorScheme.onSurfaceVariant,
+            ),
           ),
-          const SizedBox(width: 6),
         ],
       ),
+      actions: [
+        IconButton(
+          tooltip: 'Vừa màn hình',
+          onPressed: session == null ? null : _fitToViewport,
+          icon: const Icon(Icons.fit_screen_outlined),
+        ),
+        TextButton.icon(
+          onPressed: session == null
+              ? null
+              : () => _showHistory(context, session),
+          icon: const Icon(Icons.history_rounded, size: 18),
+          label: const Text('Lịch sử'),
+        ),
+        const SizedBox(width: 6),
+      ],
       body: session == null
           ? Center(
               child: Text(
@@ -522,8 +521,8 @@ class _AgentCardState extends State<_AgentCard>
             height: _cardHeight,
             padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
             decoration: BoxDecoration(
-              color: scheme.surfaceContainerHigh,
-              borderRadius: BorderRadius.circular(12),
+              color: context.glassCardColor,
+              borderRadius: BorderRadius.circular(14),
               border: Border.all(
                 color: border,
                 width: running ? 1.6 : (node.isRoot ? 1.2 : 0.9),

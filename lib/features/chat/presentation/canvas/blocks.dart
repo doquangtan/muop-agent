@@ -6,8 +6,6 @@ extension _CanvasExtBlocks on _ChatCanvasViewState {
     _ChatFlatBlock block, {
     required bool isMobile,
   }) {
-    final colorScheme = Theme.of(context).colorScheme;
-
     switch (block.kind) {
       case _ChatBlockKind.turnSpacing:
         return SizedBox(height: isMobile ? 14 : 20);
@@ -27,6 +25,7 @@ extension _CanvasExtBlocks on _ChatCanvasViewState {
         final turnIndex = block.turn!.turnIndex;
         final isExpanded = _expandedPromptTurns.contains(turnIndex);
         final promptContent = userStep.content;
+        final chatTheme = context.chatTheme;
 
         return Padding(
           padding: const EdgeInsets.only(top: 8, bottom: 14),
@@ -34,61 +33,90 @@ extension _CanvasExtBlocks on _ChatCanvasViewState {
             alignment: Alignment.centerRight,
             child: ConstrainedBox(
               constraints: BoxConstraints(maxWidth: isMobile ? 320 : 660),
+              // Content Layer: dùng bề mặt đục/gradient nhẹ theo theme widget User, tránh BackdropFilter trong ListView
               child: Container(
-                padding: EdgeInsets.symmetric(
-                  horizontal: isMobile ? 14 : 18,
-                  vertical: isMobile ? 10 : 12,
-                ),
+                key: const Key('chat-user-bubble'),
                 decoration: BoxDecoration(
-                  color: context.scheme.surfaceContainerHigh,
+                  gradient: LinearGradient(
+                    begin: Alignment.topLeft,
+                    end: Alignment.bottomRight,
+                    colors: chatTheme.userBubbleGradient,
+                  ),
                   borderRadius: const BorderRadius.only(
-                    topLeft: Radius.circular(16),
-                    topRight: Radius.circular(16),
-                    bottomLeft: Radius.circular(16),
+                    topLeft: Radius.circular(18),
+                    topRight: Radius.circular(18),
+                    bottomLeft: Radius.circular(18),
                     bottomRight: Radius.circular(4),
                   ),
                   border: Border.all(
-                    color: context.scheme.outlineVariant.withAlpha(140),
-                    width: 0.8,
+                    color: chatTheme.userBubbleBorder,
+                    width: 0.85,
                   ),
+                ),
+                padding: EdgeInsets.symmetric(
+                  horizontal: isMobile ? 14 : 18,
+                  vertical: isMobile ? 10 : 12,
                 ),
                 child: LayoutBuilder(
                   builder: (context, boxConstraints) {
                     final textStyle = TextStyle(
                       fontSize: isMobile ? 13.5 : 14,
                       height: 1.45,
-                      color: context.scheme.onSurface,
+                      color: chatTheme.userBubbleText,
                       fontWeight: FontWeight.w500,
                     );
 
-                    final textSpan = TextSpan(
-                      text: promptContent,
-                      style: textStyle,
-                    );
                     final textDirection = Directionality.of(context);
-                    final textPainter = TextPainter(
-                      text: textSpan,
-                      maxLines: 5,
-                      textDirection: textDirection,
-                    )..layout(maxWidth: boxConstraints.maxWidth);
-                    final exceedsFiveLines = textPainter.didExceedMaxLines;
-
-                    // Đo toàn bộ nội dung (không giới hạn dòng) để biết số dòng ẩn và lấy 5 dòng cuối
-                    final fullPainter = TextPainter(
-                      text: textSpan,
-                      textDirection: textDirection,
-                    )..layout(maxWidth: boxConstraints.maxWidth);
-                    final totalLines = fullPainter.computeLineMetrics().length;
-                    final hiddenPromptLines = exceedsFiveLines
-                        ? math.max(0, totalLines - 5)
-                        : 0;
-                    final collapsedPrompt = exceedsFiveLines
-                        ? textFromVisualLine(
+                    final cacheKey = Object.hash(
+                      promptContent,
+                      boxConstraints.maxWidth.round(),
+                      isMobile,
+                      textDirection,
+                    );
+                    var layout = _promptLayoutCache[cacheKey];
+                    if (layout == null) {
+                      final textSpan = TextSpan(
+                        text: promptContent,
+                        style: textStyle,
+                      );
+                      final textPainter = TextPainter(
+                        text: textSpan,
+                        maxLines: 5,
+                        textDirection: textDirection,
+                      )..layout(maxWidth: boxConstraints.maxWidth);
+                      final exceedsFiveLines = textPainter.didExceedMaxLines;
+                      if (!exceedsFiveLines) {
+                        layout = _CollapsedPromptLayout(
+                          exceedsFiveLines: false,
+                          hiddenLines: 0,
+                          collapsedText: promptContent,
+                        );
+                      } else {
+                        final fullPainter = TextPainter(
+                          text: textSpan,
+                          textDirection: textDirection,
+                        )..layout(maxWidth: boxConstraints.maxWidth);
+                        final totalLines =
+                            fullPainter.computeLineMetrics().length;
+                        final hiddenPromptLines = math.max(0, totalLines - 5);
+                        layout = _CollapsedPromptLayout(
+                          exceedsFiveLines: true,
+                          hiddenLines: hiddenPromptLines,
+                          collapsedText: textFromVisualLine(
                             fullPainter,
                             promptContent,
                             hiddenPromptLines,
-                          )
-                        : promptContent;
+                          ),
+                        );
+                      }
+                      if (_promptLayoutCache.length > 200) {
+                        _promptLayoutCache.clear();
+                      }
+                      _promptLayoutCache[cacheKey] = layout;
+                    }
+                    final exceedsFiveLines = layout.exceedsFiveLines;
+                    final hiddenPromptLines = layout.hiddenLines;
+                    final collapsedPrompt = layout.collapsedText;
 
                     return Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
@@ -124,7 +152,7 @@ extension _CanvasExtBlocks on _ChatCanvasViewState {
                                       style: TextStyle(
                                         fontSize: 12,
                                         fontWeight: FontWeight.w600,
-                                        color: colorScheme.primary,
+                                        color: chatTheme.userBubbleLink,
                                       ),
                                     ),
                                     const SizedBox(width: 2),
@@ -133,7 +161,7 @@ extension _CanvasExtBlocks on _ChatCanvasViewState {
                                           ? Icons.unfold_less_rounded
                                           : Icons.unfold_more_rounded,
                                       size: 16,
-                                      color: colorScheme.primary,
+                                      color: chatTheme.userBubbleLink,
                                     ),
                                   ],
                                 ),
@@ -158,7 +186,9 @@ extension _CanvasExtBlocks on _ChatCanvasViewState {
                               Icon(
                                 Icons.image_outlined,
                                 size: 14,
-                                color: colorScheme.onSurfaceVariant,
+                                color: chatTheme.userBubbleText.withValues(
+                                  alpha: 0.78,
+                                ),
                               ),
                               const SizedBox(width: 4),
                               Text(
@@ -166,7 +196,9 @@ extension _CanvasExtBlocks on _ChatCanvasViewState {
                                 style: TextStyle(
                                   fontSize: 12,
                                   fontWeight: FontWeight.w600,
-                                  color: colorScheme.onSurfaceVariant,
+                                  color: chatTheme.userBubbleText.withValues(
+                                    alpha: 0.78,
+                                  ),
                                 ),
                               ),
                             ],
@@ -353,7 +385,7 @@ extension _CanvasExtBlocks on _ChatCanvasViewState {
               padding: const EdgeInsets.all(12),
               child: SingleChildScrollView(
                 scrollDirection: Axis.horizontal,
-                child: SelectableText(
+                child: Text(
                   block.text,
                   style: TextStyle(
                     fontFamily: 'monospace',
@@ -442,30 +474,35 @@ extension _CanvasExtBlocks on _ChatCanvasViewState {
     required bool isMobile,
     required List<Widget> children,
   }) {
+    final chatTheme = context.chatTheme;
     return Align(
       alignment: Alignment.centerLeft,
       child: ConstrainedBox(
         constraints: BoxConstraints(maxWidth: isMobile ? 320 : 660),
+        // Content Layer: không dùng BackdropFilter trên từng thẻ trong ListView để cuộn mượt 60/120fps
         child: Container(
-          width: double.infinity,
+          key: const Key('chat-ai-card'),
+          decoration: BoxDecoration(
+            color: chatTheme.aiBubbleBackground,
+            borderRadius: BorderRadius.circular(16),
+            border: Border.all(
+              color: chatTheme.aiBubbleBorder,
+              width: 0.85,
+            ),
+          ),
           padding: EdgeInsets.fromLTRB(
             isMobile ? 12 : 16,
             10,
             isMobile ? 12 : 16,
             12,
           ),
-          decoration: BoxDecoration(
-            color: colorScheme.surfaceContainerLow,
-            borderRadius: BorderRadius.circular(14),
-            border: Border.all(
-              color: colorScheme.outlineVariant.withAlpha(150),
-              width: 0.8,
+          child: DefaultTextStyle.merge(
+            style: TextStyle(color: chatTheme.aiBubbleText),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: children,
             ),
-          ),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            mainAxisSize: MainAxisSize.min,
-            children: children,
           ),
         ),
       ),
@@ -676,9 +713,10 @@ extension _CanvasExtBlocks on _ChatCanvasViewState {
     );
   }
 
-  /// Chip ở dưới thẻ AI (bên trái chip tệp thay đổi): bấm để mở dialog tool action
+  /// Chip gọn ở dưới thẻ AI: bấm để mở dialog tool action
   Widget _buildToolActionsButton(BuildContext context, _ChatTurnGroup turn) {
     final colorScheme = Theme.of(context).colorScheme;
+    final isDark = Theme.of(context).brightness == Brightness.dark;
     final parts = <String>[];
     if (turn.totalToolCount > 0) {
       final n = turn.totalToolCount;
@@ -687,29 +725,82 @@ extension _CanvasExtBlocks on _ChatCanvasViewState {
     if (turn.totalThoughtCount > 0) {
       parts.add('${turn.totalThoughtCount} thought');
     }
-    return ActionChip(
-      avatar: Icon(
-        Icons.build_circle_outlined,
-        size: 16,
-        color: colorScheme.primary,
+    return InkWell(
+      borderRadius: BorderRadius.circular(12),
+      onTap: () => _showToolActionsDialog(context, turn),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+        decoration: BoxDecoration(
+          color: isDark
+              ? Colors.white.withValues(alpha: 0.06)
+              : Colors.black.withValues(alpha: 0.04),
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(
+            color: colorScheme.outlineVariant.withAlpha(140),
+            width: 0.8,
+          ),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(
+              Icons.build_circle_outlined,
+              size: 14.5,
+              color: colorScheme.primary,
+            ),
+            const SizedBox(width: 6),
+            Text(
+              parts.join(' • '),
+              style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                fontWeight: FontWeight.w600,
+                color: colorScheme.onSurface,
+              ),
+            ),
+          ],
+        ),
       ),
-      label: Text(parts.join(' • ')),
-      onPressed: () => _showToolActionsDialog(context, turn),
     );
   }
 
-  /// Chip ở dưới cùng của thẻ AI: tóm tắt số file thay đổi, bấm để mở danh sách
+  /// Chip gọn ở dưới cùng của thẻ AI: tóm tắt số file thay đổi, bấm để mở danh sách
   Widget _buildFilesChip(BuildContext context, _ChatTurnGroup turn) {
     final colorScheme = Theme.of(context).colorScheme;
+    final isDark = Theme.of(context).brightness == Brightness.dark;
     final count = turn.groupedFiles.length;
-    return ActionChip(
-      avatar: Icon(
-        Icons.description_outlined,
-        size: 16,
-        color: colorScheme.primary,
+    return InkWell(
+      borderRadius: BorderRadius.circular(12),
+      onTap: () => _showFilesChangedDialog(context, turn),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+        decoration: BoxDecoration(
+          color: isDark
+              ? Colors.white.withValues(alpha: 0.06)
+              : Colors.black.withValues(alpha: 0.04),
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(
+            color: colorScheme.outlineVariant.withAlpha(140),
+            width: 0.8,
+          ),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(
+              Icons.description_outlined,
+              size: 14.5,
+              color: colorScheme.primary,
+            ),
+            const SizedBox(width: 6),
+            Text(
+              '$count tệp thay đổi',
+              style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                fontWeight: FontWeight.w600,
+                color: colorScheme.onSurface,
+              ),
+            ),
+          ],
+        ),
       ),
-      label: Text('$count tệp thay đổi'),
-      onPressed: () => _showFilesChangedDialog(context, turn),
     );
   }
 }
