@@ -9,7 +9,7 @@
   <meta property="og:description" content="Giám sát và trò chuyện trực tiếp với AI coding agent trong mạng LAN.">
   <meta property="og:image" content="assets/img/dashboard.png">
   <link rel="icon" type="image/png" href="assets/img/favicon.png">
-  <link rel="stylesheet" href="assets/css/style.css">
+  <link rel="stylesheet" href="assets/css/style.css?v=3">
 </head>
 <body>
 
@@ -301,16 +301,17 @@
   <div class="wrap">
     <div class="section-head">
       <span class="eyebrow">Tải về</span>
-      <h2>Chọn bản cho thiết bị của bạn</h2>
-      <p class="lead">Server chạy trên máy Linux có agent. Các bản Android, iOS và macOS là ứng dụng client để kết nối tới server qua mạng LAN.</p>
+      <h2>Cài server trước, rồi cài app</h2>
+      <p class="lead">Mướp Agents gồm hai phần. <strong>Server</strong> chạy trên máy có agent và là bắt buộc. <strong>App</strong> trên điện thoại hoặc máy khác chỉ hoạt động sau khi đã kết nối tới server.</p>
     </div>
 
-    <div class="downloads">
-      <div class="dl-card">
-        <div class="dl-os">Linux · Ubuntu / Debian</div>
-        <h3>Gói .deb</h3>
+    <div class="dl-flow">
+      <div class="dl-card dl-server">
+        <span class="dl-step-tag dl-step-required">Bước 1 · Bắt buộc</span>
+        <div class="dl-os">Server · Linux Ubuntu / Debian</div>
+        <h3>Gói .deb (server và app desktop)</h3>
         <p class="dl-meta">muop-agent_1.1.0-7_amd64.deb · 17.4 MB · x86_64</p>
-        <p>Cài cả server (dịch vụ chạy nền) và ứng dụng desktop. Phần phụ thuộc được apt tự cài.</p>
+        <p>Cài <strong>server</strong> trước. Server chạy nền trên máy có agent (Claude Code hoặc agy), lắng nghe cổng <code>8787</code>. Gói này cũng cài app desktop Linux. Phần phụ thuộc được apt tự cài.</p>
         <div class="codeblock">
           <pre>sudo apt install ./muop-agent_1.1.0-7_amd64.deb</pre>
           <button class="copy" type="button">Sao chép</button>
@@ -320,34 +321,49 @@
         <div class="sha">SHA-256 <code>8aeca695a6911ccadf60d21dabe74123df3bb800d6da8c2fb1c6bb33415053d9</code></div>
       </div>
 
-      <div class="dl-card">
+      <div class="dl-link" role="note">
+        <span class="dl-line" aria-hidden="true"></span>
+        <span class="dl-arrow" aria-hidden="true">▼</span>
+        <p>Sau khi server chạy, các app bên dưới kết nối tới server qua mạng LAN. Trong app, nhập địa chỉ <code>http://&lt;ip-máy-server&gt;:8787</code>. Nếu tường lửa đang bật, mở cổng <code>8787</code>.</p>
+      </div>
+
+      <div class="dl-clients-head">
+        <span class="dl-step-tag">Bước 2 · Cài app trên thiết bị của bạn</span>
+      </div>
+
+      <div class="dl-clients">
+      <div class="dl-card dl-client">
         <div class="dl-os">Android</div>
         <h3>File .apk</h3>
         <p class="dl-meta">muop-agent-release.apk · 106.2 MB</p>
         <p>Mở file APK trên điện thoại. Lần đầu, Android sẽ yêu cầu cho phép cài từ nguồn ngoài Google Play cho trình quản lý file bạn dùng.</p>
+        <p class="dl-hint">Khi mở lần đầu, nhập địa chỉ server (cổng 8787).</p>
         <p class="dl-count"><span data-dl="muop-agent-release.apk">—</span> lượt tải</p>
         <a class="btn btn-primary dl-btn" href="assets/downloads/muop-agent-release.apk" download>Tải .apk</a>
         <div class="sha">SHA-256 <code>705f99e815831606e2321a8a24c9f7c7da24e7556c29d274da9f32405b763484</code></div>
       </div>
 
-      <div class="dl-card">
+      <div class="dl-card dl-client">
         <div class="dl-os">iOS · TrollStore</div>
         <h3>File .ipa</h3>
         <p class="dl-meta">muop-agent-trollstore.ipa · 18.9 MB</p>
         <p>Cài bằng <strong>TrollStore</strong> trên thiết bị đã hỗ trợ. Không dùng để cài trực tiếp qua App Store hay TestFlight.</p>
+        <p class="dl-hint">Khi mở lần đầu, nhập địa chỉ server (cổng 8787).</p>
         <p class="dl-count"><span data-dl="muop-agent-trollstore.ipa">—</span> lượt tải</p>
         <a class="btn btn-primary dl-btn" href="assets/downloads/muop-agent-trollstore.ipa" download>Tải .ipa</a>
         <div class="sha">SHA-256 <code>ad54e73ddc5639966dd23e0b579ce7bb94337799702f1130e150b9dbbf2815c3</code></div>
       </div>
 
-      <div class="dl-card">
+      <div class="dl-card dl-client">
         <div class="dl-os">macOS</div>
         <h3>Ứng dụng .app (zip)</h3>
         <p class="dl-meta">muop-agent-macos.zip · 41.7 MB</p>
         <p>Giải nén, kéo <code>muop_agent.app</code> vào thư mục Applications. Nếu macOS chặn lần mở đầu, bấm chuột phải vào app và chọn Mở.</p>
+        <p class="dl-hint">Khi mở lần đầu, nhập địa chỉ server (cổng 8787).</p>
         <p class="dl-count"><span data-dl="muop-agent-macos.zip">—</span> lượt tải</p>
         <a class="btn btn-primary dl-btn" href="assets/downloads/muop-agent-macos.zip" download>Tải .zip</a>
         <div class="sha">SHA-256 <code>8f8f0a60bf941db40f2f6c205897f17d9fea4032634a49bf1b246b95bcffd1f1</code></div>
+      </div>
       </div>
     </div>
 
@@ -423,6 +439,52 @@ make build-apk     <span class="tok-c"># ra muop-agent-release.apk</span></pre>
   </div>
 </section>
 
+<!-- ============ DÙNG QUA INTERNET ============ -->
+<section class="section" id="tu-xa" style="padding-top: 0;">
+  <div class="wrap">
+    <div class="section-head">
+      <span class="eyebrow">Dùng qua internet</span>
+      <h2>Dùng app ngoài mạng nhà hoặc văn phòng</h2>
+      <p class="lead">App kết nối tới server qua mạng LAN. Đừng mở cổng <code>8787</code> ra internet, vì server chưa có xác thực. Để dùng từ xa, đưa máy server và thiết bị chạy app vào cùng một mạng riêng ảo (VPN mesh) bằng <strong>Tailscale</strong> hoặc <strong>NetBird</strong>. Chọn một trong hai là đủ.</p>
+    </div>
+
+    <div class="steps">
+      <div class="step">
+        <div class="num">LỰA CHỌN 1</div>
+        <h3>Tailscale</h3>
+        <p>Mạng riêng ảo dựa trên WireGuard, đăng nhập bằng tài khoản. Có ứng dụng cho Linux, Android, iOS và macOS.</p>
+        <ol class="vpn-steps">
+          <li>Cài Tailscale trên máy server và trên thiết bị chạy app. Hướng dẫn chính thức: <a href="https://tailscale.com/docs/install/linux" target="_blank" rel="noopener noreferrer">tailscale.com/docs/install/linux</a></li>
+          <li>Đăng nhập cùng một tài khoản trên mọi máy: <code>sudo tailscale up</code></li>
+          <li>Trên máy server, lấy IP Tailscale: <code>tailscale ip -4</code> (dạng <code>100.x.x.x</code>)</li>
+          <li>Trong app, nhập địa chỉ <code>http://&lt;ip-tailscale&gt;:8787</code></li>
+        </ol>
+        <p class="vpn-note">Nếu UFW đang bật trên máy server, chỉ cho cổng 8787 đi qua interface VPN: <code>sudo ufw allow in on tailscale0 to any port 8787 proto tcp</code></p>
+      </div>
+
+      <div class="step">
+        <div class="num">LỰA CHỌN 2</div>
+        <h3>NetBird</h3>
+        <p>Mạng riêng ảo mã nguồn mở dựa trên WireGuard, quản lý thiết bị qua dashboard. Có client cho Linux, Android, iOS và macOS.</p>
+        <ol class="vpn-steps">
+          <li>Cài NetBird trên máy server và trên thiết bị chạy app. Hướng dẫn chính thức: <a href="https://docs.netbird.io/get-started/install/linux" target="_blank" rel="noopener noreferrer">docs.netbird.io/get-started/install/linux</a></li>
+          <li>Đăng ký từng máy vào cùng một mạng: <code>sudo netbird up</code> (máy không có trình duyệt thì dùng setup key theo <a href="https://docs.netbird.io/get-started" target="_blank" rel="noopener noreferrer">hướng dẫn bắt đầu</a>)</li>
+          <li>Trên máy server, xem IP NetBird: <code>netbird status</code></li>
+          <li>Trong app, nhập địa chỉ <code>http://&lt;ip-netbird&gt;:8787</code></li>
+        </ol>
+        <p class="vpn-note">Nếu UFW đang bật, chỉ cho cổng 8787 đi qua interface VPN: <code>sudo ufw allow in on wt0 to any port 8787 proto tcp</code> (đổi <code>wt0</code> thành tên interface NetBird trên máy bạn, xem bằng <code>ip -br link</code>)</p>
+      </div>
+    </div>
+
+    <div class="callout" style="margin-top: 24px;">
+      <div class="mark">!</div>
+      <div>
+        <p><strong>Lưu ý.</strong> Máy server phải đang chạy (dịch vụ <code>muop-agent-server</code>). Chỉ thiết bị đã vào cùng mạng VPN mới kết nối được tới server. Trang web công khai <code>agents.muop.vn</code> không cần VPN, và cũng không phải là đường kết nối của app.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
 </main>
 
 <footer class="site-footer">
@@ -436,6 +498,7 @@ make build-apk     <span class="tok-c"># ra muop-agent-release.apk</span></pre>
       <a href="api.html">Tài liệu API</a>
       <a href="#tai-ve">Tải về</a>
       <a href="#cai-dat">Cài đặt</a>
+      <a href="#tu-xa">Dùng qua internet</a>
       <a href="#ung-ho">Ủng hộ</a>
       <a href="https://github.com/doquangtan/muop-agent" target="_blank" rel="noopener noreferrer">GitHub</a>
     </div>
