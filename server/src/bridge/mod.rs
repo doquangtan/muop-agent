@@ -290,7 +290,7 @@ pub async fn emit_ack(name: &str, payload: Value) -> Result<Value, String> {
     }
 }
 
-/// Gửi lượt chat tới agent trên máy A. Prompt được thêm nhãn nguồn `[Từ máy <tên>]`.
+/// Gửi lượt chat tới agent trên máy A (prompt giữ nguyên).
 ///
 /// Kèm `remoteProject` (địa chỉ máy này + đường dẫn project) để máy A mount đúng thư mục này về máy A
 /// và làm việc trên đó. Máy A không cần cấu hình gì thêm.
@@ -304,13 +304,7 @@ pub async fn send_chat(mut body: Value) -> Result<Value, String> {
     if !project.is_empty() {
         body["remoteProject"] = remote_project(&project, &scanner::detect_lan_ips(), scanner::listen_port(), &origin_label());
     }
-    if let Some(prompt) = body
-        .get("prompt")
-        .and_then(Value::as_str)
-        .map(str::to_owned)
-    {
-        body["prompt"] = Value::String(tag_origin(&prompt, &origin_label()));
-    }
+    // Prompt gửi nguyên văn: máy phụ không thêm nhãn nguồn, phân biệt bằng màu trên máy chính
     emit_ack("chat:send", body).await
 }
 
@@ -371,11 +365,6 @@ fn remote_project(project: &str, lan_ips: &[String], port: u16, host: &str) -> V
         "projectPath": project,
         "originHost": host,
     })
-}
-
-/// Thêm nhãn nguồn vào đầu prompt để agent trên A biết tin nhắn đến từ máy nào.
-fn tag_origin(prompt: &str, origin: &str) -> String {
-    format!("[Từ máy {origin}] {prompt}")
 }
 
 pub async fn stop_chat(conversation_id: &str) -> Result<Value, String> {
@@ -441,7 +430,7 @@ pub fn origin_label() -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{map_peer_session_in, normalize_url, remote_project, tag_origin};
+    use super::{map_peer_session_in, normalize_url, remote_project};
     use serde_json::json;
 
     #[test]
@@ -501,14 +490,6 @@ mod tests {
                 "/home/john/Documents/muop-ecosystem/muop-agent"
             ),
             "3b0cf23755d3e304"
-        );
-    }
-
-    #[test]
-    fn prompt_is_tagged_with_origin() {
-        assert_eq!(
-            tag_origin("sửa lỗi login", "laptop"),
-            "[Từ máy laptop] sửa lỗi login"
         );
     }
 

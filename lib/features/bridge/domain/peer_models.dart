@@ -27,18 +27,16 @@ List<String> mergeModelLists(List<String> local, List<String> peer) {
   return merged;
 }
 
-/// Nhãn hiển thị của model máy phụ. Tiền tố thay vì hậu tố, vì nhóm model bỏ hậu tố `(…)`
-/// khi tách mức suy luận.
+/// Nhãn hiển thị của model máy phụ. Không gắn tên máy vào nhãn: menu gom model theo khối
+/// `Claude Cli · <máy>` / `Agy · <máy>`, nên tên máy nằm ở tiêu đề khối.
 Map<String, String> peerModelLabels({
   required Iterable<String> remoteModels,
   required Map<String, String> remoteLabels,
-  required String host,
 }) {
   final labels = <String, String>{};
-  final who = host.isEmpty ? 'Máy phụ' : 'Máy phụ $host';
   for (final id in remoteModels) {
     final label = remoteLabels[id] ?? '';
-    labels[toPeerModelId(id)] = '$who · ${label.isEmpty ? id : label}';
+    labels[toPeerModelId(id)] = label.isEmpty ? id : label;
   }
   return labels;
 }
@@ -55,21 +53,21 @@ String? peerBlockReason({
   return 'Mất kết nối tới $who. Khung chat bị khóa cho model này cho đến khi kết nối lại.';
 }
 
-/// JSON conversation từ máy phụ, đổi `selectedModel` sang id có tiền tố `peer:` để khớp
-/// danh sách model của app (mở lại conversation sẽ chọn đúng model của máy phụ).
-/// Tiêu đề conversation máy phụ trong sidebar: gắn tag `[Máy phụ <tên máy>]` (không gắn lặp).
-/// Conversation vẫn nằm trong workspace của máy này; tag cho biết máy phụ đã chạy nó.
-String peerSessionTitle({required String host, required String title}) {
-  final h = host.trim().isEmpty ? 'Máy phụ' : host.trim();
-  // Bỏ nhãn nguồn `[Từ máy …]` mà máy chính thêm vào prompt: tag máy phụ đã đủ thông tin
-  var t = title.trim().replaceFirst(RegExp(r'^\[Từ máy [^\]]*\]\s*'), '').trim();
-  if (t.startsWith('[Máy phụ')) return t;
-  return '[Máy phụ $h] ${t.isEmpty ? '(không tiêu đề)' : t}';
+/// Tiêu đề conversation máy phụ trong sidebar. Không gắn tag chữ: conversation máy phụ được
+/// nhận biết bằng màu (tertiary). Bỏ nhãn `[Từ máy …]` của bản cũ còn trong lịch sử.
+String peerSessionTitle({required String title}) {
+  final t = title.trim().replaceFirst(RegExp(r'^\[Từ máy [^\]]*\]\s*'), '').trim();
+  return t.isEmpty ? '(không tiêu đề)' : t;
 }
 
+/// JSON conversation từ máy phụ, đổi `selectedModel` sang id có tiền tố `peer:` để khớp
+/// danh sách model của app (mở lại conversation sẽ chọn đúng model của máy phụ).
 Map<String, dynamic> asPeerSessionJson(Map<String, dynamic> json) {
   final copy = Map<String, dynamic>.from(json);
   final selected = '${copy['selectedModel'] ?? ''}';
   copy['selectedModel'] = selected.isEmpty ? '' : toPeerModelId(selected);
+  // Model dùng cho context chip: cùng id với `selectedModel` để tra giới hạn context của máy phụ
+  final ctx = '${copy['contextModel'] ?? ''}';
+  if (ctx.isNotEmpty) copy['contextModel'] = toPeerModelId(ctx);
   return copy;
 }

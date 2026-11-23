@@ -201,9 +201,54 @@ const TRAY_RETRY_INTERVAL: tokio::time::Duration = tokio::time::Duration::from_s
 const TRAY_RETRY_MIN: tokio::time::Duration = tokio::time::Duration::from_secs(5);
 const TRAY_RETRY_MAX: tokio::time::Duration = tokio::time::Duration::from_secs(30);
 
+/// Tên D-Bus mà shell đồ họa giữ trên session bus khi giao diện đã hiện: GNOME `org.gnome.Shell`, KDE `org.kde.plasmashell`.
+/// Màn đăng nhập (GDM) dùng bus riêng nên không làm tên này xuất hiện trên bus của người dùng.
+const DESKTOP_SHELL_NAMES: [&str; 2] = ["org.gnome.Shell", "org.kde.plasmashell"];
+const GUI_PROBE_INTERVAL: tokio::time::Duration = tokio::time::Duration::from_secs(2);
+/// Chờ thêm sau khi shell xuất hiện để panel và khay StatusNotifier kịp dựng xong
+const GUI_SETTLE_DELAY: tokio::time::Duration = tokio::time::Duration::from_secs(3);
+
+/// Chờ đến khi giao diện đồ họa của phiên người dùng đã hiện, rồi chờ thêm một chút.
+/// Không đăng ký tray trước lúc này: lúc boot, server có thể chạy trước khi màn hình sẵn sàng và icon không hiện.
+async fn wait_for_gui() {
+    let conn = loop {
+        match zbus::Connection::session().await {
+            Ok(conn) => break conn,
+            Err(_) => tokio::time::sleep(GUI_PROBE_INTERVAL).await,
+        }
+    };
+    let mut announced = false;
+    while !gui_shell_present(&conn).await {
+        if !announced {
+            tracing::info!("⏳ Chờ giao diện đồ họa hiện lên trước khi đăng ký System Tray...");
+            announced = true;
+        }
+        tokio::time::sleep(GUI_PROBE_INTERVAL).await;
+    }
+    tracing::info!("🖥️ Giao diện đã hiện, đợi thêm rồi đăng ký System Tray");
+    tokio::time::sleep(GUI_SETTLE_DELAY).await;
+}
+
+/// Có shell đồ họa nào đang giữ tên D-Bus trên session bus không
+async fn gui_shell_present(conn: &zbus::Connection) -> bool {
+    let Ok(dbus) = zbus::fdo::DBusProxy::new(conn).await else {
+        return false;
+    };
+    for name in DESKTOP_SHELL_NAMES {
+        let Ok(bus_name) = zbus::names::BusName::try_from(name) else {
+            continue;
+        };
+        if dbus.name_has_owner(bus_name).await.unwrap_or(false) {
+            return true;
+        }
+    }
+    false
+}
+
 pub fn spawn_system_tray(screen: Arc<ScreenManager>) {
     tokio::spawn(async move {
         tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+        wait_for_gui().await;
         let mut delay = TRAY_RETRY_MIN;
         let mut announced = false;
         loop {

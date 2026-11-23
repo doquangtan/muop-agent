@@ -202,6 +202,7 @@ pub fn router() -> Router<AppState> {
         .route("/api/bridge/respond", post(bridge::handle_respond))
         .route("/api/bridge/pending", get(bridge::handle_pending))
         .route("/api/bridge/meta", get(bridge::handle_peer_meta))
+        .route("/api/bridge/quota", get(bridge::handle_peer_quota))
         .route("/api/bridge/sessions", get(bridge::handle_peer_sessions))
         .route("/api/bridge/session", get(bridge::handle_peer_session))
 }

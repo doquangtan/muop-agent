@@ -14,10 +14,6 @@ pub fn claude_bin() -> Result<String, String> {
 /// Model mặc định của Claude Code CLI (ID đầy đủ có version)
 pub const CLAUDE_DEFAULT_MODEL: &str = "claude-sonnet-5-5";
 
-/// Các model gốc của Claude Code (ID đầy đủ có version). Mức suy nghĩ được gắn thêm bằng hậu tố.
-pub const CLAUDE_BASE_MODELS: [&str; 3] =
-    ["claude-sonnet-5-5", "claude-opus-5-5", "claude-haiku-5-5"];
-
 pub(super) const EFFORT_CACHE_TTL: Duration = Duration::from_secs(600);
 pub(super) const EFFORT_RETRY_TTL: Duration = Duration::from_secs(60);
 
@@ -74,11 +70,11 @@ pub fn parse_effort_levels(help: &str) -> Vec<String> {
 }
 
 /// Id model Claude phát cho UI: `claude-cli:<model>-<mức>` cho từng mức CLI hỗ trợ,
-/// hoặc `claude-cli:<model>` nếu không đọc được mức nào
+/// hoặc `claude-cli:<model>` nếu không đọc được mức nào. Danh sách model lấy từ API (xem `claude_base_models`).
 pub fn claude_model_ids() -> Vec<String> {
     let levels = effort_levels();
     let mut ids = Vec::new();
-    for base in CLAUDE_BASE_MODELS {
+    for base in claude_base_models() {
         if levels.is_empty() {
             ids.push(format!("claude-cli:{base}"));
         } else {
@@ -148,5 +144,222 @@ mod effort_tests {
             "x".repeat(400)
         );
         assert!(parse_effort_levels(&help).is_empty());
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Danh sách model lấy từ API Anthropic (không hardcode)
+// ---------------------------------------------------------------------------
+
+const CLAUDE_MODELS_URL: &str = "https://api.anthropic.com/v1/models?limit=100";
+const CLAUDE_MODELS_TTL: Duration = Duration::from_secs(600);
+const CLAUDE_MODELS_EMPTY_TTL: Duration = Duration::from_secs(60);
+
+static CLAUDE_MODELS_CACHE: std::sync::Mutex<Option<(Instant, Vec<String>, Duration)>> =
+    std::sync::Mutex::new(None);
+
+/// Model gốc của Claude (ID đầy đủ có version, không kèm mức), lấy từ `GET /v1/models` bằng token OAuth của
+/// Claude Code CLI. Chưa đăng nhập, không đọc được token hoặc API lỗi thì trả về rỗng (không có model Claude).
+/// Kết quả được cache: 10 phút khi có dữ liệu, 1 phút khi rỗng.
+pub fn claude_base_models() -> Vec<String> {
+    if let Ok(guard) = CLAUDE_MODELS_CACHE.lock() {
+        if let Some((at, ids, ttl)) = guard.as_ref() {
+            if at.elapsed() < *ttl {
+                return ids.clone();
+            }
+        }
+    }
+    let ids = fetch_claude_base_models().unwrap_or_default();
+    let ttl = if ids.is_empty() {
+        CLAUDE_MODELS_EMPTY_TTL
+    } else {
+        CLAUDE_MODELS_TTL
+    };
+    if let Ok(mut guard) = CLAUDE_MODELS_CACHE.lock() {
+        *guard = Some((Instant::now(), ids.clone(), ttl));
+    }
+    ids
+}
+
+fn fetch_claude_base_models() -> Option<Vec<String>> {
+    let token = claude_oauth_token()?;
+    // curl thay vì reqwest: reqwest của dự án không bật TLS. Token đi qua stdin (`-K -`), không lộ trên dòng lệnh.
+    let config = format!(
+        "url = \"{CLAUDE_MODELS_URL}\"\n\
+         header = \"Authorization: Bearer {token}\"\n\
+         header = \"anthropic-version: 2023-06-01\"\n\
+         header = \"anthropic-beta: oauth-2025-04-20\"\n"
+    );
+    let mut child = std::process::Command::new("curl")
+        .args(["-s", "-f", "-m", "10", "-K", "-"])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .ok()?;
+    if let Some(mut stdin) = child.stdin.take() {
+        use std::io::Write;
+        let _ = stdin.write_all(config.as_bytes());
+    }
+    let out = child.wait_with_output().ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let body: Value = serde_json::from_slice(&out.stdout).ok()?;
+    Some(parse_claude_model_ids(&body))
+}
+
+/// Access token OAuth của Claude Code CLI (`~/.claude/.credentials.json`). Token hết hạn thì trả None.
+fn claude_oauth_token() -> Option<String> {
+    let path = crate::infra::paths::home_dir().join(".claude/.credentials.json");
+    let raw = std::fs::read_to_string(path).ok()?;
+    let v: Value = serde_json::from_str(&raw).ok()?;
+    let oauth = v.get("claudeAiOauth")?;
+    let token = oauth.get("accessToken")?.as_str()?.to_string();
+    let expires_ms = oauth.get("expiresAt")?.as_i64()?;
+    let now_ms = chrono::Utc::now().timestamp_millis();
+    // Token được ghép vào file cấu hình của curl: chỉ nhận ký tự an toàn
+    let token_ok = !token.is_empty()
+        && token
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'));
+    if expires_ms <= now_ms || !token_ok {
+        return None;
+    }
+    Some(token)
+}
+
+/// Lọc phản hồi `GET /v1/models`: chỉ id `claude-*`, bỏ bản ghi có hậu tố ngày (`-20251101`, trùng alias), giữ thứ tự, bỏ trùng
+pub(crate) fn parse_claude_model_ids(body: &Value) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let Some(data) = body.get("data").and_then(Value::as_array) else {
+        return out;
+    };
+    for item in data {
+        let Some(id) = item.get("id").and_then(Value::as_str) else {
+            continue;
+        };
+        if !id.starts_with("claude-") || is_dated_snapshot(id) {
+            continue;
+        }
+        if !out.iter().any(|x| x == id) {
+            out.push(id.to_string());
+        }
+    }
+    // Từ cao xuống thấp: phiên bản mới nhất trước, cùng phiên bản thì tên giảm dần
+    out.sort_by(|a, b| {
+        claude_version_key(b)
+            .cmp(&claude_version_key(a))
+            .then_with(|| b.cmp(a))
+    });
+    out
+}
+
+/// Các số trong id model, ví dụ `claude-opus-4-8` → [4, 8]. Dùng để sắp xếp từ cao xuống thấp.
+fn claude_version_key(id: &str) -> Vec<u64> {
+    id.split('-')
+        .filter(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()))
+        .filter_map(|p| p.parse::<u64>().ok())
+        .collect()
+}
+
+/// Tên hiển thị của model gốc, suy ra từ id (không cần bảng cố định):
+/// `claude-fable-5-2` → `Claude Fable 5.2`
+pub fn claude_display_name(base: &str) -> String {
+    let rest = base.strip_prefix("claude-").unwrap_or(base);
+    let mut family = String::new();
+    let mut version: Vec<&str> = Vec::new();
+    for part in rest.split('-').filter(|p| !p.is_empty()) {
+        if part.bytes().all(|b| b.is_ascii_digit()) {
+            version.push(part);
+        } else if family.is_empty() {
+            let mut chars = part.chars();
+            if let Some(first) = chars.next() {
+                family = first.to_uppercase().chain(chars).collect();
+            }
+        }
+    }
+    let mut name = String::from("Claude");
+    if !family.is_empty() {
+        name.push(' ');
+        name.push_str(&family);
+    }
+    if !version.is_empty() {
+        name.push(' ');
+        name.push_str(&version.join("."));
+    }
+    name
+}
+
+/// `claude-sonnet-4-5-20250929`: hậu tố 8 chữ số là bản ghi theo ngày
+fn is_dated_snapshot(id: &str) -> bool {
+    id.rsplit('-')
+        .next()
+        .is_some_and(|s| s.len() == 8 && s.bytes().all(|b| b.is_ascii_digit()))
+}
+
+#[cfg(test)]
+mod claude_model_list_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn keeps_claude_ids_in_order_and_drops_dated_snapshots() {
+        let body = json!({"data": [
+            {"id": "claude-sonnet-5-5"},
+            {"id": "claude-haiku-4-5-20251001"},
+            {"id": "claude-opus-5-5"},
+            {"id": "gpt-4o"},
+            {"id": "claude-sonnet-5-5"},
+            {"type": "model"},
+        ]});
+        assert_eq!(
+            parse_claude_model_ids(&body),
+            vec![
+                "claude-sonnet-5-5".to_string(),
+                "claude-opus-5-5".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn sorts_newest_version_first() {
+        let body = json!({"data": [
+            {"id": "claude-opus-4-8"},
+            {"id": "claude-fable-5"},
+            {"id": "claude-haiku-5-5"},
+            {"id": "claude-fable-5-2"},
+        ]});
+        assert_eq!(
+            parse_claude_model_ids(&body),
+            vec![
+                "claude-haiku-5-5".to_string(),
+                "claude-fable-5-2".to_string(),
+                "claude-fable-5".to_string(),
+                "claude-opus-4-8".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn display_name_from_id() {
+        assert_eq!(claude_display_name("claude-fable-5-2"), "Claude Fable 5.2");
+        assert_eq!(
+            claude_display_name("claude-sonnet-5-5"),
+            "Claude Sonnet 5.5"
+        );
+        assert_eq!(claude_display_name("claude-opus-5"), "Claude Opus 5");
+    }
+
+    #[test]
+    fn missing_data_gives_no_models() {
+        assert!(parse_claude_model_ids(&json!({"error": "x"})).is_empty());
+    }
+
+    #[test]
+    fn dated_suffix_detection() {
+        assert!(is_dated_snapshot("claude-opus-4-5-20251101"));
+        assert!(!is_dated_snapshot("claude-opus-4-5"));
+        assert!(!is_dated_snapshot("claude-fable-5-2"));
     }
 }

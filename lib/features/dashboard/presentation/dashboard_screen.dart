@@ -21,7 +21,6 @@ import 'package:muop_agent/features/interactions/domain/interaction_entities.dar
 import 'package:muop_agent/features/interactions/domain/interactions_repository.dart';
 import 'package:muop_agent/features/interactions/presentation/ai_question_dialog.dart';
 import 'package:muop_agent/features/interactions/presentation/rate_retry_widgets.dart';
-import 'package:muop_agent/features/lsp/presentation/lsp_settings_screen.dart';
 import 'package:muop_agent/core/config/server_paths.dart';
 import 'package:muop_agent/features/agent_map/presentation/agent_map_screen.dart';
 import 'package:muop_agent/features/projects/domain/project_entities.dart';
@@ -130,6 +129,8 @@ class _DashboardScreenState extends ConsumerState<DashboardScreenView> {
   /// Mức suy nghĩ (effort) do CLI của server hỗ trợ; rỗng cho tới khi có meta
   List<String> _effortLevels = const [];
   Map<String, int> _modelContextLimits = {};
+  // Giới hạn context của model máy phụ (khóa đã có tiền tố `peer:`)
+  Map<String, int> _peerContextLimits = {};
   final List<String> _availableAgents = defaultAgents;
   // Quota theo provider, lấy qua REST đúng màn hình đang mở (xem `_refreshQuota`)
   final Map<String, QuotaReport> _quotaReports = {};
@@ -697,6 +698,11 @@ class _DashboardScreenState extends ConsumerState<DashboardScreenView> {
   }
 
   Future<void> _loadFullSessionDetail(String sessionId) async {
+    // Conversation của máy phụ không có trên server máy chính: lấy chi tiết qua cầu nối
+    if (_peerSessionIds.contains(sessionId)) {
+      await _loadPeerSession(sessionId);
+      return;
+    }
     final detailed = await _sessionsRepo.fetchSessionDetail(
       address: _serverAddress,
       sessionId: sessionId,
@@ -955,8 +961,10 @@ class _DashboardScreenState extends ConsumerState<DashboardScreenView> {
         _peerLabels = peerModelLabels(
           remoteModels: meta.models,
           remoteLabels: meta.labels,
-          host: _peerHost,
         );
+        _peerContextLimits = {
+          for (final e in meta.contextLimits.entries) toPeerModelId(e.key): e.value,
+        };
         _recomputeModels();
         // Conversation đang mở có thể dùng model máy phụ vừa có: chọn lại theo lịch sử
         _syncDefaultSelections();
@@ -967,6 +975,8 @@ class _DashboardScreenState extends ConsumerState<DashboardScreenView> {
     _upsertPeerSessions([
       for (final json in raw) ConversationSession.fromJson(asPeerSessionJson(json)),
     ]);
+    // Quota đang hiện là của máy phụ (model máy phụ đang chọn): tải lại sau khi máy phụ kết nối
+    if (isPeerQuotaScope(_quotaScope)) unawaited(_refreshQuota());
   }
 
   /// Thêm hoặc cập nhật conversation của máy phụ. Giữ steps đã tải khi bản mới không kèm steps.
@@ -978,7 +988,7 @@ class _DashboardScreenState extends ConsumerState<DashboardScreenView> {
         if (raw.id.isEmpty) continue;
         // Conversation vẫn thuộc workspace của máy này (server đã chuyển về project); chỉ gắn tag máy phụ
         final s = raw.copyWith(
-          title: peerSessionTitle(host: _peerHost, title: raw.title),
+          title: peerSessionTitle(title: raw.title),
         );
         _peerSessionIds.add(s.id);
         final index = next.indexWhere((x) => x.id == s.id);
@@ -1007,7 +1017,7 @@ class _DashboardScreenState extends ConsumerState<DashboardScreenView> {
     _handlePeerSession(json);
   }
 
-  /// Gửi lượt chat tới máy phụ qua cầu nối. Máy phụ tự thêm nhãn nguồn vào prompt.
+  /// Gửi lượt chat tới máy phụ qua cầu nối (prompt gửi nguyên văn).
   Future<ChatSendResult> _sendToPeer({
     required String prompt,
     required String projectPath,
@@ -1935,7 +1945,9 @@ class _DashboardScreenState extends ConsumerState<DashboardScreenView> {
   /// rỗng ở màn chung (chưa chọn cuộc chat).
   String get _quotaScope {
     if (!_isNewConversationMode && _activeSession == null) return '';
-    return _activeSource == 'claude-cli' ? kQuotaProviderClaude : kQuotaProviderAgy;
+    final provider = _activeSource == 'claude-cli' ? kQuotaProviderClaude : kQuotaProviderAgy;
+    // Model máy phụ: quota lấy từ máy phụ, không dùng quota máy này
+    return isPeerModel(_effectiveModel) ? '$kPeerQuotaScopePrefix$provider' : provider;
   }
 
   /// Lấy quota đúng cho màn đang mở: chat Claude → `/api/quota/claude`, chat agy → `/api/quota/agy`,
@@ -1944,6 +1956,19 @@ class _DashboardScreenState extends ConsumerState<DashboardScreenView> {
     final scope = _quotaScope;
     final seq = ++_quotaRequestSeq;
     final address = _serverAddress;
+    if (isPeerQuotaScope(scope)) {
+      final provider = quotaProviderOf(scope);
+      if (mounted) {
+        setState(() => _quotaReports.putIfAbsent(scope, () => QuotaReport.loading(provider)));
+      }
+      final report = await _bridgeRepo.fetchPeerQuota(address, provider: provider);
+      if (!mounted || seq != _quotaRequestSeq) return;
+      setState(() {
+        _quotaReports[scope] = report ??
+            QuotaReport.missing(provider, 'Không kết nối được máy phụ');
+      });
+      return;
+    }
     // Chưa có dữ liệu thì hiện trạng thái đang tải (đọc quota agy có thể mất khoảng 30 giây)
     if (mounted) {
       setState(() {
@@ -2306,8 +2331,10 @@ class _DashboardScreenState extends ConsumerState<DashboardScreenView> {
                   connected: _peerConnected,
                   host: _peerHost,
                 ),
+                peerHost: _peerHost,
+                isPeerSession: _peerSessionIds.contains(activeSession?.id ?? ''),
                 effortLevels: _effortLevels,
-                modelContextLimits: _modelContextLimits,
+                modelContextLimits: {..._modelContextLimits, ..._peerContextLimits},
                 quotaScope: _quotaScope,
                 quotaReports: Map.of(_quotaReports),
                 selectedAgent: _selectedAgent,
@@ -2786,60 +2813,12 @@ class _DashboardScreenState extends ConsumerState<DashboardScreenView> {
                   if (Navigator.of(context).canPop() && isMobileDrawer) {
                     Navigator.of(context).pop();
                   }
-                  _openFromSidebar(
-                    context,
-                    LspSettingsScreen(),
-                  );
-                },
-                icon: Icon(Icons.settings_suggest_rounded,
-                    size: 16, color: colorScheme.primary),
-                label: Text(
-                  'LSP',
-                  style: textTheme.labelMedium?.copyWith(
-                    color: colorScheme.primary,
-                    fontWeight: FontWeight.w600,
-                  ),
-                ),
-              ),
-              TextButton.icon(
-                style: TextButton.styleFrom(
-                  visualDensity: VisualDensity.compact,
-                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                ),
-                onPressed: () {
-                  if (Navigator.of(context).canPop() && isMobileDrawer) {
-                    Navigator.of(context).pop();
-                  }
                   _openFromSidebar(context, const ScreenStreamScreen());
                 },
                 icon: Icon(Icons.cast_rounded,
                     size: 16, color: colorScheme.primary),
                 label: Text(
                   'Màn hình',
-                  style: textTheme.labelMedium?.copyWith(
-                    color: colorScheme.primary,
-                    fontWeight: FontWeight.w600,
-                  ),
-                ),
-              ),
-              TextButton.icon(
-                style: TextButton.styleFrom(
-                  visualDensity: VisualDensity.compact,
-                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                ),
-                onPressed: () {
-                  if (Navigator.of(context).canPop() && isMobileDrawer) {
-                    Navigator.of(context).pop();
-                  }
-                  _openFromSidebar(
-                    context,
-                    SetupWizardScreen(),
-                  );
-                },
-                icon: Icon(Icons.rocket_launch_rounded,
-                    size: 16, color: colorScheme.primary),
-                label: Text(
-                  'Khởi tạo',
                   style: textTheme.labelMedium?.copyWith(
                     color: colorScheme.primary,
                     fontWeight: FontWeight.w600,
@@ -3330,6 +3309,20 @@ class _DashboardScreenState extends ConsumerState<DashboardScreenView> {
                   Icons.pause_circle_outline_rounded,
                   size: 13,
                   color: context.status.warning,
+                ),
+                const SizedBox(width: 8),
+              ] else if (_peerSessionIds.contains(session.id)) ...[
+                // Conversation máy phụ: icon đám mây, màu theo provider như máy chính (Claude vàng, agy chủ đạo)
+                Icon(
+                  Icons.cloud_rounded,
+                  size: 13,
+                  color: session.source == 'claude-cli'
+                      ? (isSelected
+                          ? context.status.warning
+                          : context.status.warning.withAlpha(170))
+                      : (isSelected
+                          ? context.scheme.primary
+                          : context.scheme.primary.withAlpha(170)),
                 ),
                 const SizedBox(width: 8),
               ] else ...[

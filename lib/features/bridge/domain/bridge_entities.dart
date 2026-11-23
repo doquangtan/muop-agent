@@ -75,6 +75,7 @@ class PeerMeta {
     required this.hostname,
     required this.models,
     required this.labels,
+    this.contextLimits = const {},
     required this.error,
   });
 
@@ -82,6 +83,9 @@ class PeerMeta {
   final String hostname;
   final List<String> models;
   final Map<String, String> labels;
+
+  /// Giới hạn context theo model id của máy phụ (`modelContextLimits` của máy phụ)
+  final Map<String, int> contextLimits;
   final String error;
 
   factory PeerMeta.fromJson(Map<String, dynamic> json) {
@@ -103,11 +107,20 @@ class PeerMeta {
     } else {
       error = '';
     }
+    final limits = <String, int>{};
+    final rawLimits = json['modelContextLimits'];
+    if (rawLimits is Map) {
+      rawLimits.forEach((k, v) {
+        final n = v is num ? v.toInt() : int.tryParse('$v');
+        if (n != null) limits['$k'] = n;
+      });
+    }
     return PeerMeta(
       ok: error.isEmpty,
       hostname: '${json['hostname'] ?? ''}',
       models: models,
       labels: labels,
+      contextLimits: limits,
       error: error,
     );
   }

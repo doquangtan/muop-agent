@@ -4,6 +4,15 @@ import 'package:muop_agent/features/sessions/domain/session_entities.dart';
 const String kQuotaProviderAgy = 'agy';
 const String kQuotaProviderClaude = 'claude';
 
+/// Tiền tố phạm vi quota của máy phụ (ví dụ `peer:agy`): quota lấy từ tài khoản máy phụ, không lẫn với máy chính
+const String kPeerQuotaScopePrefix = 'peer:';
+
+bool isPeerQuotaScope(String scope) => scope.startsWith(kPeerQuotaScopePrefix);
+
+/// Provider gốc của phạm vi quota (`peer:claude` → `claude`)
+String quotaProviderOf(String scope) =>
+    isPeerQuotaScope(scope) ? scope.substring(kPeerQuotaScopePrefix.length) : scope;
+
 /// Quota của một provider. Khi không lấy được dữ liệu thì `groups` rỗng và `error` ghi lý do.
 class QuotaReport {
   const QuotaReport({

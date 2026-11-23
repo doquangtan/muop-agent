@@ -8,6 +8,7 @@ import 'package:material_ui/material_ui.dart';
 import 'package:muop_agent/core/theme/app_theme.dart';
 import 'package:muop_agent/features/chat/domain/chat_entities.dart';
 import 'package:muop_agent/features/chat/domain/model_groups.dart';
+import 'package:muop_agent/features/bridge/domain/peer_models.dart';
 import 'package:muop_agent/features/chat/presentation/quota_detail_sheet.dart';
 import 'package:muop_agent/features/chat/presentation/run_command_dialog.dart';
 import 'package:muop_agent/features/chat/presentation/text_tail.dart';
@@ -69,6 +70,8 @@ class ChatCanvasView extends StatefulWidget {
     required this.onSendMessage,
     this.serverBaseUrl = '',
     this.workspaceRoot = '',
+    this.peerHost = '',
+    this.isPeerSession = false,
     required this.onStopTurn,
     required this.onOpenFileBrowser,
     required this.onOpenChangesTab,
@@ -135,6 +138,12 @@ class ChatCanvasView extends StatefulWidget {
   final String serverBaseUrl;
   /// Thư mục project gốc do server cấu hình (fallback khi chưa có project được chọn)
   final String workspaceRoot;
+
+  /// Tên máy phụ đang kết nối (dùng cho tiêu đề khối model của máy phụ)
+  final String peerHost;
+
+  /// Conversation đang mở chạy trên máy phụ: chỉ hiện model của máy phụ
+  final bool isPeerSession;
   final VoidCallback onStopTurn;
 
   /// Lịch tự gửi lại sau rate limit của conversation đang mở (null nếu không có)

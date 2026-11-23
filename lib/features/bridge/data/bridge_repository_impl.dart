@@ -5,6 +5,7 @@ import 'package:muop_agent/core/network/socket_gateway.dart';
 import 'package:muop_agent/features/bridge/domain/bridge_entities.dart';
 import 'package:muop_agent/features/bridge/domain/bridge_repository.dart';
 import 'package:muop_agent/features/interactions/domain/interaction_entities.dart';
+import 'package:muop_agent/features/quota/domain/quota_entities.dart';
 
 /// Sự kiện `bridge:*` mà màn Cầu nối dùng (xem `FORWARDED_EVENTS` ở server/src/bridge/mod.rs)
 const _watchedEvents = [
@@ -114,6 +115,22 @@ class BridgeRepositoryImpl implements BridgeRepository {
       );
       if (code != 200 || body['ok'] == false || body['id'] == null) return null;
       return body;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  @override
+  Future<QuotaReport?> fetchPeerQuota(String address, {required String provider}) async {
+    try {
+      final (code, body) = await restRequest(
+        address,
+        'GET',
+        '/api/bridge/quota?provider=${Uri.encodeQueryComponent(provider)}',
+        timeout: const Duration(seconds: 60),
+      );
+      if (code != 200 || body['ok'] == false) return null;
+      return QuotaReport.fromJson(provider, body);
     } catch (_) {
       return null;
     }

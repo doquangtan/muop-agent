@@ -10,10 +10,7 @@ import 'package:muop_agent/core/state/server_address_provider.dart';
 /// Đường dẫn được lưu trong SQLite trên server; để trống và lưu = dùng lại đường dẫn tự dò.
 /// Màn gắn với server đang kết nối: đổi địa chỉ (provider toàn cục) thì dựng lại và tải lại dữ liệu
 class LspSettingsScreen extends ConsumerWidget {
-  const LspSettingsScreen({
-    super.key,
-  });
-
+  const LspSettingsScreen({super.key});
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -29,8 +26,12 @@ class LspSettingsScreenView extends StatefulWidget {
   const LspSettingsScreenView({
     super.key,
     required this.serverAddress,
+    this.embedded = false,
   });
   final String serverAddress;
+
+  /// Trong màn Cài đặt (tab): không có Scaffold/AppBar riêng
+  final bool embedded;
 
   @override
   State<LspSettingsScreenView> createState() => _LspSettingsScreenState();
@@ -52,14 +53,18 @@ class _LspSettingsScreenState extends State<LspSettingsScreenView> {
       _loading = true;
       _loadError = null;
     });
-    final res = await AppDependencies.lsp.fetchLspSettings(widget.serverAddress);
+    final res = await AppDependencies.lsp.fetchLspSettings(
+      widget.serverAddress,
+    );
     if (!mounted) return;
     setState(() {
       _loading = false;
       if (res.ok) {
         _languages = res.languages;
       } else {
-        _loadError = res.error.isEmpty ? 'Không tải được cài đặt LSP' : res.error;
+        _loadError = res.error.isEmpty
+            ? 'Không tải được cài đặt LSP'
+            : res.error;
       }
     });
   }
@@ -74,6 +79,71 @@ class _LspSettingsScreenState extends State<LspSettingsScreenView> {
     final scheme = context.scheme;
     final textTheme = Theme.of(context).textTheme;
 
+    final body = _loading
+        ? const Center(child: CircularProgressIndicator())
+        : _loadError != null
+        ? Center(
+            child: Padding(
+              padding: const EdgeInsets.all(24),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(Icons.cloud_off_rounded, size: 40, color: scheme.error),
+                  const SizedBox(height: 12),
+                  Text(
+                    _loadError!,
+                    textAlign: TextAlign.center,
+                    style: textTheme.bodyMedium,
+                  ),
+                  const SizedBox(height: 12),
+                  OutlinedButton(
+                    onPressed: _reload,
+                    child: const Text('Thử lại'),
+                  ),
+                ],
+              ),
+            ),
+          )
+        : ListView(
+            padding: const EdgeInsets.fromLTRB(12, 12, 12, 24),
+            children: [
+              Text(
+                'Đường dẫn LSP dùng để gấp code, danh sách hàm và Ctrl+click tới định nghĩa. '
+                'Máy server chưa có LSP ở vị trí chuẩn thì nhập đường dẫn tuyệt đối tới tệp thực thi, rồi lưu. '
+                'Để trống và lưu để dùng lại đường dẫn tự dò.',
+                style: textTheme.bodySmall?.copyWith(
+                  color: scheme.onSurfaceVariant,
+                ),
+              ),
+              const SizedBox(height: 12),
+              for (final lang in _languages) ...[
+                _LspLanguageCard(
+                  key: ValueKey(lang.language),
+                  serverAddress: widget.serverAddress,
+                  status: lang,
+                  onSaved: (res) => setState(() => _applyResult(res)),
+                ),
+                const SizedBox(height: 10),
+              ],
+            ],
+          );
+
+    if (widget.embedded) {
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Align(
+            alignment: Alignment.centerRight,
+            child: IconButton(
+              tooltip: 'Kiểm tra lại',
+              onPressed: _loading ? null : _reload,
+              icon: const Icon(Icons.refresh_rounded),
+            ),
+          ),
+          Expanded(child: body),
+        ],
+      );
+    }
     return Scaffold(
       appBar: AppBar(
         title: const Text('Cài đặt LSP'),
@@ -85,45 +155,7 @@ class _LspSettingsScreenState extends State<LspSettingsScreenView> {
           ),
         ],
       ),
-      body: _loading
-          ? const Center(child: CircularProgressIndicator())
-          : _loadError != null
-              ? Center(
-                  child: Padding(
-                    padding: const EdgeInsets.all(24),
-                    child: Column(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Icon(Icons.cloud_off_rounded, size: 40, color: scheme.error),
-                        const SizedBox(height: 12),
-                        Text(_loadError!, textAlign: TextAlign.center, style: textTheme.bodyMedium),
-                        const SizedBox(height: 12),
-                        OutlinedButton(onPressed: _reload, child: const Text('Thử lại')),
-                      ],
-                    ),
-                  ),
-                )
-              : ListView(
-                  padding: const EdgeInsets.fromLTRB(12, 12, 12, 24),
-                  children: [
-                    Text(
-                      'Đường dẫn LSP dùng để gấp code, danh sách hàm và Ctrl+click tới định nghĩa. '
-                      'Máy server chưa có LSP ở vị trí chuẩn thì nhập đường dẫn tuyệt đối tới tệp thực thi, rồi lưu. '
-                      'Để trống và lưu để dùng lại đường dẫn tự dò.',
-                      style: textTheme.bodySmall?.copyWith(color: scheme.onSurfaceVariant),
-                    ),
-                    const SizedBox(height: 12),
-                    for (final lang in _languages) ...[
-                      _LspLanguageCard(
-                        key: ValueKey(lang.language),
-                        serverAddress: widget.serverAddress,
-                        status: lang,
-                        onSaved: (res) => setState(() => _applyResult(res)),
-                      ),
-                      const SizedBox(height: 10),
-                    ],
-                  ],
-                ),
+      body: body,
     );
   }
 }
@@ -158,7 +190,8 @@ class _LspLanguageCardState extends State<_LspLanguageCard> {
   void didUpdateWidget(covariant _LspLanguageCard oldWidget) {
     super.didUpdateWidget(oldWidget);
     // Sau khi lưu, hiển thị đúng đường dẫn đã lưu từ server
-    if (oldWidget.status.configuredPath != widget.status.configuredPath && !_busy) {
+    if (oldWidget.status.configuredPath != widget.status.configuredPath &&
+        !_busy) {
       _path.text = widget.status.configuredPath;
     }
   }
@@ -222,11 +255,16 @@ class _LspLanguageCardState extends State<_LspLanguageCard> {
                 Expanded(
                   child: Text(
                     st.label,
-                    style: textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w700),
+                    style: textTheme.titleSmall?.copyWith(
+                      fontWeight: FontWeight.w700,
+                    ),
                   ),
                 ),
                 Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 8,
+                    vertical: 3,
+                  ),
                   decoration: BoxDecoration(
                     color: chipColor.withAlpha(36),
                     borderRadius: BorderRadius.circular(999),
@@ -243,7 +281,9 @@ class _LspLanguageCardState extends State<_LspLanguageCard> {
             ),
             const SizedBox(height: 6),
             Text(
-              ready ? 'Đang dùng: ${st.effectivePath}' : 'Chưa tìm thấy tệp thực thi',
+              ready
+                  ? 'Đang dùng: ${st.effectivePath}'
+                  : 'Chưa tìm thấy tệp thực thi',
               style: textTheme.bodySmall?.copyWith(
                 fontFamily: 'monospace',
                 color: scheme.onSurfaceVariant,
@@ -251,7 +291,10 @@ class _LspLanguageCardState extends State<_LspLanguageCard> {
             ),
             if (st.note.isNotEmpty) ...[
               const SizedBox(height: 4),
-              Text(st.note, style: textTheme.bodySmall?.copyWith(color: status.warning)),
+              Text(
+                st.note,
+                style: textTheme.bodySmall?.copyWith(color: status.warning),
+              ),
             ],
             const SizedBox(height: 10),
             TextField(
