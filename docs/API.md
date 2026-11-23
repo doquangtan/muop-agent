@@ -66,7 +66,7 @@ Kiểm tra server sống:
 
 ### `GET /api/quota`
 
-`QuotaSnapshot`: `{ "agy": QuotaReport, "claude": QuotaReport }`. Hai nguồn lấy song song; nguồn lỗi thì `error` ghi lý do, nguồn còn lại vẫn có dữ liệu. Quota agy được phép mở TUI agy để đọc `/usage` khi không có hub đang chạy (lần đầu mất khoảng 5–30 giây).
+`QuotaSnapshot`: `{ "agy": QuotaReport, "claude": QuotaReport }`. Hai nguồn lấy song song; nguồn lỗi thì `error` ghi lý do, nguồn còn lại vẫn có dữ liệu. Quota agy lấy từ hub do server quản lý; chưa có trong DB thì server hỏi hub ngay (lần đầu có thể tới khoảng 60 giây).
 
 `QuotaReport`: `{ "provider": "agy" | "claude", "groups": [ModelQuotaGroup], "error": "" }`. `ModelQuotaGroup`: `{ displayName, description, buckets: [ModelQuotaBucket] }`. `ModelQuotaBucket`: `{ bucketId, displayName, description, window, remainingFraction, remainingPercent, resetTime }`.
 
@@ -74,7 +74,7 @@ Không có dữ liệu thì `groups` rỗng và `error` ghi lý do; server khôn
 
 ### `GET /api/quota/agy`
 
-Quota Antigravity. Có thể mở TUI agy (`allow_host`) nếu không có hub. Kết quả đọc từ TUI giữ 5 phút, lỗi giữ 10 giây.
+Quota Antigravity, đọc từ bảng `agy_account` (hub do server quản lý). Chưa có số liệu thì server hỏi hub ngay. Không còn đọc TUI.
 
 ### `GET /api/quota/claude`
 
@@ -355,7 +355,7 @@ Trạng thái đăng nhập là `AgyAuthEvent`:
 | :--- | :--- | :--- |
 | GET | `/api/agy/auth/status` | Trạng thái hiện tại (`AgyAuthEvent`). |
 | POST | `/api/agy/auth/check` | Kiểm tra đã đăng nhập chưa; nếu đang có terminal và đã vào màn chat thì kết thúc luồng. |
-| POST | `/api/agy/auth/logout` | Đăng xuất qua TUI agy (`/logout`). |
+| POST | `/api/agy/auth/logout` | Đăng xuất qua RPC `AuthLogout` của hub do server quản lý (không còn TUI). |
 | POST | `/api/agy/auth/login/start` | Mở terminal đăng nhập. Bị từ chối nếu đã đăng nhập. |
 | POST | `/api/agy/auth/login/submit` | Body `{ "code": "..." }`. Ghi mã vào terminal đăng nhập. |
 | POST | `/api/agy/auth/login/cancel` | Đóng terminal, phase `cancelled`. |
@@ -517,6 +517,7 @@ Ngay khi kết nối, server gửi: `retry:update`, `screen:status`, `setup:upda
 | `claude:auth:logout` | | `ClaudeAuthResponse`. |
 | `setup:status` | | `SetupStatus`. |
 | `setup:tool-path` | `{ tool, path }` | `SetupStatus` (ack). Cùng quy tắc với `POST /api/setup/tool-path`. |
+| `setup:workspace` | `{ path }` | `SetupStatus` (ack). Cùng quy tắc với `POST /api/setup/workspace`. |
 | `setup:install` | `{ "tool" }` | `SetupStatus`. |
 | `setup:select` | `{ "clis": [...] }` | `SetupStatus`. |
 | `setup:complete` | | `SetupStatus`. |
@@ -560,6 +561,16 @@ Ngay khi kết nối, server gửi: `retry:update`, `screen:status`, `setup:upda
 - Phiên SSH không được dùng (input/attach) quá 6 giờ thì tự đóng.
 - Explorer (`explore:*`): thư mục chỉ được theo dõi khi có ít nhất một socket đang xem. Hai UI xem hai thư mục khác nhau nhận sự kiện của đúng thư mục mình xem. Watcher dùng `notify` (inotify), không đệ quy.
 
+### 17.4. Màn hình máy chủ (RTSP)
+
+Không có REST cho luồng này. Server phát luồng màn hình qua RTSP tại `rtsp://<ip>:8554/screen` (mã nguồn `server/src/screen/`). Bật và tắt từ icon khay hệ thống; có thể tự bật khi khởi động. Lần bật đầu có thể cần xác nhận chia sẻ màn hình qua xdg-desktop-portal. Mở bằng VLC, mpv hoặc ffplay.
+
+Trạng thái đến qua `screen:status` (khi kết nối, sau `request-screen-status`, khi đổi):
+
+```json
+{ "streaming": true, "starting": false, "error": "", "height": 720, "fps": 30, "rtspUrl": "rtsp://192.168.1.10:8554/screen" }
+```
+
 ---
 
 ## 18. Bridge (máy B điều khiển máy A)
@@ -578,12 +589,13 @@ Server máy B kết nối tới server máy A để gửi lệnh tới agent đa
 | `POST /api/bridge/stop` | `{ "conversationId" }` | Ack của A (`chat:stop`). |
 | `POST /api/bridge/respond` | Như `POST /api/claude/respond` của A | Proxy phản hồi của A. |
 | `GET /api/bridge/meta` | | Proxy `GET /api/meta` của A: `availableModels`, `modelLabels`, `hostname`. Lỗi kết nối: 502. |
+| `GET /api/bridge/quota?provider=<agy\|claude>` | | Proxy quota của A cho một provider. Provider khác: 400. |
 | `GET /api/bridge/sessions` | | Proxy `GET /api/sessions` của A (`{sessions: [...]}`, dạng summary). |
 | `GET /api/bridge/session?id=<id>` | | Proxy `GET /api/session?id=` của A (đầy đủ steps). `id` kiểm tra như `pending`: khác là 400. |
 | `GET /api/bridge/pending?conversationId=<id>` | | Proxy `GET /api/claude/pending?id=` của A: `{ok, conversationId, pending}`, `pending` là `null` khi không có tương tác chờ. `conversationId` chỉ nhận chữ, số, `-`, `_` (khác: 400). |
 Lỗi kết nối tới A trả HTTP 503 (`send`, `stop`) hoặc 502 (`respond`) kèm `{ ok: false, error }`. Lỗi nghiệp vụ của A (ví dụ 409 khi tương tác không còn chờ) được trả nguyên trong body.
 
-Nhãn nguồn: `send` thêm `[Từ máy <hostname máy B>] ` vào đầu `prompt` trước khi gửi tới A.
+`send` gửi `prompt` nguyên văn, không thêm nhãn nguồn.
 
 **Trả lời agy:** không có route riêng. `POST /api/ai-questions/answer` của A chỉ cập nhật trạng thái hiển thị và không gửi gì tới tiến trình agy. Muốn agent nhận câu trả lời, gửi lượt mới bằng `POST /api/bridge/send` với `conversationId` của conversation đó.
 
@@ -610,7 +622,7 @@ Khi máy chính thêm máy này vào cầu nối (`POST /api/bridge/peer`), máy
 
 ### 19.1. Route `/api/fs/*`
 
-**Phạm vi:** mọi `path` phải là đường dẫn tuyệt đối, không chứa `..`, và sau khi giải symlink phải nằm trong `ECOSYSTEM_DIR_PATH` (`/home/john/Documents/muop-ecosystem`). Ngoài phạm vi: `403` với `code: "outside_root"`. Xóa hoặc đổi tên symlink xử lý chính symlink, không theo vào đích.
+**Phạm vi:** mọi `path` phải là đường dẫn tuyệt đối, không chứa `..`, và sau khi giải symlink phải nằm trong thư mục project đã chọn ở bước Khởi tạo (`setup::workspace_root()`). Chưa chọn thì mọi thao tác bị từ chối. Ngoài phạm vi: `403` với `code: "outside_root"`. Xóa hoặc đổi tên symlink xử lý chính symlink, không theo vào đích.
 
 **Không có xác thực** (đồng nhất với các endpoint khác trong LAN). Ai truy cập được cổng 8787 đọc và ghi được file trong phạm vi trên.
 

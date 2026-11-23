@@ -1,0 +1,40 @@
+# Chạy website Mướp Agents bằng nginx nhẹ, không cần build image.
+#
+#   docker compose up -d          # khởi động, mở http://localhost:446
+#   WEB_PORT=8080 docker compose up -d # đổi cổng host (mặc định 446)
+#   docker compose down           # dừng
+#
+# Website chỉ là trang tĩnh. Server Mướp Agents (cổng 8787) chạy riêng trên máy có agent.
+
+name: muop-web
+
+services:
+  web:
+    image: nginxinc/nginx-unprivileged:1.27-alpine
+    container_name: muop-web
+    restart: unless-stopped
+    ports:
+      - "${WEB_PORT:-446}:8080"
+    volumes:
+      # Nội dung website, chỉ đọc
+      - ./:/usr/share/nginx/html:ro
+      # Cấu hình nginx tối giản (thay nginx.conf mặc định của image)
+      - ./deploy/nginx.conf:/etc/nginx/nginx.conf:ro
+    # Giới hạn tài nguyên: website tĩnh chỉ cần vài MB RAM
+    mem_limit: 32m
+    cpus: 0.25
+    pids_limit: 64
+    # Hệ thống file chỉ đọc; nginx chỉ ghi vào các thư mục tạm bên dưới
+    read_only: true
+    tmpfs:
+      - /tmp
+      - /var/cache/nginx
+      # Entrypoint của image ghi vào đây khi khởi động (rỗng, bỏ qua cảnh báo)
+      - /etc/nginx/conf.d
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: json-file
+      options:
+        max-size: "1m"
+        max-file: "1"
