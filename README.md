@@ -2,6 +2,21 @@
 
 Ứng dụng **Linux Desktop & Android Mobile** trực quan hóa theo thời gian thực và **trò chuyện trực tiếp với Agent theo từng Project** (tương tự Google Antigravity 2.0) cho hệ sinh thái **`muop-erp-server` ↔ `muop-erp-app`**.
 
+## Ủng hộ
+
+Nếu Mướp Agents hữu ích cho bạn, bạn có thể ủng hộ tác giả qua một trong các hình thức dưới đây (hoàn toàn tự nguyện).
+
+<p align="center">
+  <a href="https://buymeacoffee.com/johndylan1r" target="_blank" rel="noopener noreferrer"><img src="https://cdn.buymeacoffee.com/buttons/v2/default-yellow.png" alt="Buy me a beer" style="height: 60px !important;width: 217px !important;" ></a>
+</p>
+
+<p align="center">
+  <b>MoMo / VietQR / Napas 247</b><br>
+  <img src="https://agents.muop.vn/assets/img/donate-qr.jpg" alt="Mã QR ủng hộ qua MoMo, VietQR và Napas 247" width="260">
+</p>
+
+---
+
 ## Kiến trúc Hệ thống (Rust Backend + Pure Flutter UI)
 
 1. **Rust Backend Server (`server/`)**:

@@ -1,0 +1,445 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Mướp Agents — Giám sát & trò chuyện với AI coding agent</title>
+  <meta name="description" content="Mướp Agents: giám sát và trò chuyện trực tiếp với Claude Code và Antigravity (agy) đang chạy trên máy của bạn, từ desktop Linux hoặc Android trong cùng mạng LAN.">
+  <meta property="og:title" content="Mướp Agents">
+  <meta property="og:description" content="Giám sát và trò chuyện trực tiếp với AI coding agent trong mạng LAN.">
+  <meta property="og:image" content="assets/img/dashboard.png">
+  <link rel="icon" type="image/png" href="assets/img/favicon.png">
+  <link rel="stylesheet" href="assets/css/style.css">
+</head>
+<body>
+
+<header class="site-header">
+  <nav class="wrap nav">
+    <a class="brand" href="index.html">
+      <img class="brand-logo" src="assets/img/logo-96.png" alt="" width="36" height="36">
+      <span>Mướp Agents</span>
+    </a>
+    <button class="nav-toggle" id="navToggle" aria-label="Mở menu">☰</button>
+    <div class="nav-links" id="navLinks">
+      <a href="#ung-ho">Ủng hộ</a>
+      <a href="#tinh-nang">Tính năng</a>
+      <a href="#anh">Giao diện</a>
+      <a href="#kien-truc">Kiến trúc</a>
+      <a href="#tai-ve">Tải về</a>
+      <a href="#cai-dat">Cài đặt</a>
+      <a href="api.html" class="btn btn-ghost btn-small">Tài liệu API</a>
+    </div>
+  </nav>
+</header>
+
+<main>
+
+<!-- ============ HERO ============ -->
+<section class="hero">
+  <div class="wrap hero-grid">
+    <div>
+      <img class="hero-logo" src="assets/img/logo.png" alt="Logo Mướp Agents" width="112" height="112">
+      <span class="eyebrow">Linux Desktop · Android · Mạng LAN</span>
+      <h1>Mướp Agents</h1>
+      <p class="lead">
+        Giám sát và trò chuyện trực tiếp với các AI coding agent đang chạy trên máy của bạn —
+        <strong>Claude Code</strong> và <strong>Antigravity (agy)</strong> — từ máy tính hoặc điện thoại trong cùng mạng.
+        Theo dõi từng bước làm việc, xem file thay đổi, duyệt kế hoạch, và thao tác SSH, Docker, git ngay trong một ứng dụng.
+      </p>
+      <div class="hero-cta">
+        <a class="btn btn-primary" href="#tai-ve">Tải về</a>
+        <a class="btn btn-ghost" href="#cai-dat">Hướng dẫn cài đặt</a>
+        <a class="btn btn-ghost" href="api.html">Xem tài liệu API →</a>
+      </div>
+      <div class="chips">
+        <span class="chip">Socket.IO realtime</span>
+        <span class="chip">Rust · axum</span>
+        <span class="chip">Flutter</span>
+        <span class="chip">SQLite</span>
+        <span class="chip">Không có server trung gian</span>
+      </div>
+    </div>
+    <div class="hero-visual">
+      <div class="window">
+        <img src="assets/img/dashboard.png" alt="Giao diện Mướp Agents: danh sách conversation, cây thư mục project và khung chat với agent" width="1568" height="961">
+      </div>
+    </div>
+  </div>
+
+  <div class="wrap stats">
+    <div class="stat"><strong>96</strong><span>tuyến REST API (kể cả alias)</span></div>
+    <div class="stat"><strong>61</strong><span>sự kiện Socket.IO (gửi và nhận)</span></div>
+    <div class="stat"><strong>2</strong><span>nhà cung cấp agent: Claude Code &amp; agy</span></div>
+    <div class="stat"><strong>2</strong><span>nền tảng client: Linux &amp; Android</span></div>
+  </div>
+</section>
+
+<!-- ============ TÍNH NĂNG ============ -->
+<!-- ============ ỦNG HỘ ============ -->
+<section class="section" id="ung-ho" style="padding-top: 0;">
+  <div class="wrap">
+    <div class="donate">
+      <div class="donate-text">
+        <span class="eyebrow">Ủng hộ</span>
+        <h2>Ủng hộ phát triển Mướp Agents</h2>
+        <p class="lead">Nếu Mướp Agents hữu ích cho công việc của bạn, bạn có thể ủng hộ tác giả. Ủng hộ hoàn toàn tự nguyện.</p>
+        <div class="donate-method">
+          <p class="donate-label">Buy Me a Coffee</p>
+          <a href="https://buymeacoffee.com/johndylan1r" target="_blank" rel="noopener noreferrer"><img src="https://cdn.buymeacoffee.com/buttons/v2/default-yellow.png" alt="Buy me a beer" style="height: 60px !important;width: 217px !important;" ></a>
+        </div>
+        <div class="donate-method">
+          <p class="donate-label">MoMo / VietQR / Napas 247</p>
+          <p>Quét mã QR bằng app MoMo hoặc app ngân hàng hỗ trợ VietQR.</p>
+        </div>
+      </div>
+      <figure class="donate-qr">
+        <img src="assets/img/donate-qr.jpg" alt="Mã QR ủng hộ qua MoMo, VietQR và Napas 247" loading="lazy" width="720" height="787">
+      </figure>
+    </div>
+  </div>
+</section>
+
+<section class="section" id="tinh-nang">
+  <div class="wrap">
+    <div class="section-head">
+      <span class="eyebrow">Tính năng</span>
+      <h2>Một nơi cho mọi agent trên máy của bạn</h2>
+      <p class="lead">Server chạy trên máy có agent. Ứng dụng là giao diện thuần túy, kết nối qua Socket.IO và REST.</p>
+    </div>
+
+    <div class="grid-3">
+      <div class="card">
+        <div class="ico">chat</div>
+        <h3>Chat realtime với agent</h3>
+        <p>Gửi prompt, xem từng token và từng tool call khi agent đang làm việc. Chọn model và mức suy luận cho từng conversation. Gửi kèm ảnh.</p>
+      </div>
+      <div class="card">
+        <div class="ico">map</div>
+        <h3>Agent map</h3>
+        <p>Sơ đồ cây Coordinator và các subagent của lượt hiện tại: trạng thái đang chạy hoặc đã xong, thời lượng và số token của từng nhánh.</p>
+      </div>
+      <div class="card">
+        <div class="ico">plan</div>
+        <h3>Duyệt kế hoạch &amp; câu hỏi</h3>
+        <p>Phê duyệt, từ chối hoặc góp ý kế hoạch (ExitPlanMode). Trả lời câu hỏi AskUserQuestion của Claude Code ngay trong app.</p>
+      </div>
+      <div class="card">
+        <div class="ico">diff</div>
+        <h3>File &amp; git</h3>
+        <p>Danh sách file agent đã sửa, diff, trình duyệt file trên server, lịch sử commit, chi tiết commit và push nhánh.</p>
+      </div>
+      <div class="card">
+        <div class="ico">quota</div>
+        <h3>Quota &amp; context</h3>
+        <p>Theo dõi hạn mức 5 giờ và tuần của Claude Code và agy, thời điểm reset, cùng số token context đang dùng so với giới hạn của model.</p>
+      </div>
+      <div class="card">
+        <div class="ico">retry</div>
+        <h3>Tự gửi lại khi hết hạn mức</h3>
+        <p>Gặp lỗi rate limit, server tự xếp lịch gửi lại đúng prompt sau thời điểm reset. Có thể hủy bất cứ lúc nào.</p>
+      </div>
+      <div class="card">
+        <div class="ico">ssh</div>
+        <h3>Terminal SSH</h3>
+        <p>Lưu nhiều máy (mật khẩu hoặc key), mở terminal tương tác. Phiên tồn tại độc lập với app: thoát màn hình không ngắt lệnh đang chạy.</p>
+      </div>
+      <div class="card">
+        <div class="ico">dock</div>
+        <h3>Docker qua SSH</h3>
+        <p>Liệt kê container đang chạy theo project compose, stop/restart, xem log realtime. Tự kết nối lại khi kết nối SSH rớt.</p>
+      </div>
+      <div class="card">
+        <div class="ico">lsp</div>
+        <h3>Đọc code như IDE</h3>
+        <p>Với Go, Dart và Rust: gấp mã, danh sách hàm, tô màu cú pháp theo ngữ nghĩa, hover, nhảy tới định nghĩa và tham chiếu qua language server.</p>
+      </div>
+      <div class="card">
+        <div class="ico">scr</div>
+        <h3>Màn hình máy chủ</h3>
+        <p>Xem màn hình máy đang chạy server qua luồng RTSP, mở bằng app hoặc bất kỳ player nào như VLC, mpv, ffplay.</p>
+      </div>
+      <div class="card">
+        <div class="ico">mnt</div>
+        <h3>Cầu nối giữa hai máy</h3>
+        <p>Máy B điều khiển agent trên máy A. Project của máy A được mount về máy B qua FUSE, agent ghi thẳng vào project gốc.</p>
+      </div>
+      <div class="card">
+        <div class="ico">setup</div>
+        <h3>Khởi tạo có hướng dẫn</h3>
+        <p>Wizard kiểm tra công cụ (git, ssh, curl, fuse3), cài agy và Claude Code trên máy server, chọn thư mục project và đăng nhập ngay trong app.</p>
+      </div>
+      <div class="card">
+        <div class="ico">tray</div>
+        <h3>Chạy nền</h3>
+        <p>Server chạy như dịch vụ systemd user, có icon trên khay hệ thống (GNOME, KDE). Khởi động lại server vẫn nhận lại lượt chat đang chạy.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ ẢNH ============ -->
+<section class="section" id="anh">
+  <div class="wrap">
+    <div class="section-head">
+      <span class="eyebrow">Giao diện</span>
+      <h2>Xem trước ứng dụng</h2>
+      <p class="lead">Ảnh chụp từ bản Linux Desktop. Bấm vào ảnh để xem lớn hơn.</p>
+    </div>
+
+    <div class="gallery">
+      <figure class="shot wide">
+        <button type="button" data-zoom="assets/img/dashboard.png" aria-label="Phóng to ảnh chat">
+          <img src="assets/img/dashboard.png" alt="Khung chat với agent, cây thư mục project bên cạnh" loading="lazy" width="1568" height="961">
+        </button>
+        <figcaption><b>Chat và cây project.</b> Mỗi lượt là một thẻ phản hồi; các tool action gom lại thành một hàng nút. Thanh dưới cùng hiện model, mức suy luận, context đã dùng và quota.</figcaption>
+      </figure>
+
+      <figure class="shot">
+        <button type="button" data-zoom="assets/img/model-picker.png" aria-label="Phóng to ảnh chọn model">
+          <img src="assets/img/model-picker.png" alt="Menu chọn model gom theo Claude Code CLI và Antigravity" loading="lazy" width="1568" height="961">
+        </button>
+        <figcaption><b>Chọn model.</b> Danh sách model Claude lấy trực tiếp từ tài khoản đã đăng nhập; model agy lấy từ CLI.</figcaption>
+      </figure>
+
+      <figure class="shot">
+        <button type="button" data-zoom="assets/img/ssh.png" aria-label="Phóng to ảnh danh sách máy SSH">
+          <img src="assets/img/ssh.png" alt="Danh sách máy SSH đã lưu, có máy này và các máy từ xa" loading="lazy" width="1568" height="961">
+        </button>
+        <figcaption><b>Máy SSH.</b> Lưu máy bằng mật khẩu hoặc key. "Máy này" luôn có sẵn và mở shell trực tiếp.</figcaption>
+      </figure>
+
+      <figure class="shot">
+        <button type="button" data-zoom="assets/img/docker.png" aria-label="Phóng to ảnh quản lý Docker">
+          <img src="assets/img/docker.png" alt="Danh sách container Docker nhóm theo project compose" loading="lazy" width="1568" height="961">
+        </button>
+        <figcaption><b>Docker.</b> Container nhóm theo project compose, có nút xem log, khởi động lại và dừng.</figcaption>
+      </figure>
+
+      <figure class="shot wide">
+        <button type="button" data-zoom="assets/img/screen.png" aria-label="Phóng to ảnh màn hình máy chủ">
+          <img src="assets/img/screen.png" alt="Màn hình máy chủ được phát trực tiếp trong app" loading="lazy" width="1568" height="961">
+        </button>
+        <figcaption><b>Màn hình máy chủ.</b> Luồng trực tiếp được phát trong app; cũng có thể mở địa chỉ RTSP bằng player bên ngoài.</figcaption>
+      </figure>
+    </div>
+  </div>
+</section>
+
+<!-- ============ KIẾN TRÚC ============ -->
+<section class="section" id="kien-truc">
+  <div class="wrap">
+    <div class="section-head">
+      <span class="eyebrow">Kiến trúc</span>
+      <h2>Client mỏng, server làm việc nặng</h2>
+      <p class="lead">Ứng dụng không đọc file hay chạy tiến trình trên máy server. Mọi dữ liệu đi qua server qua REST và Socket.IO trên cổng <code>8787</code>.</p>
+    </div>
+
+    <div class="arch">
+      <div class="arch-col">
+        <div class="arch-box">
+          <h4>Client (Flutter)</h4>
+          <p>Giao diện thuần túy cho Linux Desktop và Android. Không có mã truy cập hệ thống file.</p>
+          <ul>
+            <li>Socket.IO v4 (WebSocket)</li>
+            <li>REST cho tải lịch sử, upload, quản lý</li>
+          </ul>
+        </div>
+      </div>
+
+      <div class="arch-link"><span class="line"></span><span class="arrow">⇄</span><span>Socket.IO<br>+ REST</span><span class="line"></span></div>
+
+      <div class="arch-col">
+        <div class="arch-box core">
+          <h4>Server (Rust · axum · socketioxide)</h4>
+          <p>Một tiến trình duy nhất, lắng nghe <code>0.0.0.0:8787</code>.</p>
+          <ul>
+            <li>Đọc transcript và SQLite của agent (chỉ đọc)</li>
+            <li>Chạy và dừng <code>claude</code> và <code>agy</code> theo từng lượt</li>
+            <li>Gửi lại lượt khi hết rate limit</li>
+            <li>Quản lý phiên SSH, Docker, LSP, hub agy</li>
+            <li>Lưu cấu hình trong SQLite WAL</li>
+          </ul>
+        </div>
+      </div>
+
+      <div class="arch-link"><span class="line"></span><span class="arrow">→</span><span>tiến trình<br>và socket</span><span class="line"></span></div>
+
+      <div class="arch-col">
+        <div class="arch-box">
+          <h4>Dịch vụ trên máy server</h4>
+          <ul>
+            <li><span class="tag">claude</span> Claude Code CLI</li>
+            <li><span class="tag">agy</span> Antigravity CLI</li>
+            <li><span class="tag">ssh</span> máy từ xa</li>
+            <li><span class="tag">docker</span> container</li>
+            <li><span class="tag">gopls</span> <span class="tag">dart</span> <span class="tag">rust-analyzer</span></li>
+            <li><span class="tag">RTSP :8554</span> màn hình</li>
+            <li><span class="tag">FUSE</span> mount project máy khác</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ BẢO MẬT ============ -->
+<section class="section" style="padding-top: 0;">
+  <div class="wrap">
+    <div class="callout">
+      <div class="mark">!</div>
+      <div>
+        <p><strong>Chỉ dùng trong mạng LAN hoặc VPN tin cậy.</strong> Server hiện chưa có xác thực: ai truy cập được cổng <code>8787</code> đều có thể đọc, ghi file và chạy lệnh qua các API tương ứng (SSH, Docker, agent, file system).
+        Không mở cổng 8787 ra internet. Mật khẩu SSH và private key đang lưu dạng chưa mã hóa trong SQLite (quyền file <code>0600</code>).</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ TẢI VỀ ============ -->
+<section class="section" id="tai-ve">
+  <div class="wrap">
+    <div class="section-head">
+      <span class="eyebrow">Tải về</span>
+      <h2>Chọn bản cho thiết bị của bạn</h2>
+      <p class="lead">Server chạy trên máy Linux có agent. Các bản Android, iOS và macOS là ứng dụng client để kết nối tới server qua mạng LAN.</p>
+    </div>
+
+    <div class="downloads">
+      <div class="dl-card">
+        <div class="dl-os">Linux · Ubuntu / Debian</div>
+        <h3>Gói .deb</h3>
+        <p class="dl-meta">muop-agent_1.1.0-7_amd64.deb · 17.4 MB · x86_64</p>
+        <p>Cài cả server (dịch vụ chạy nền) và ứng dụng desktop. Phần phụ thuộc được apt tự cài.</p>
+        <div class="codeblock">
+          <pre>sudo apt install ./muop-agent_1.1.0-7_amd64.deb</pre>
+          <button class="copy" type="button">Sao chép</button>
+        </div>
+        <a class="btn btn-primary dl-btn" href="assets/downloads/muop-agent_1.1.0-7_amd64.deb" download>Tải .deb</a>
+        <div class="sha">SHA-256 <code>8aeca695a6911ccadf60d21dabe74123df3bb800d6da8c2fb1c6bb33415053d9</code></div>
+      </div>
+
+      <div class="dl-card">
+        <div class="dl-os">Android</div>
+        <h3>File .apk</h3>
+        <p class="dl-meta">muop-agent-release.apk · 106.2 MB</p>
+        <p>Mở file APK trên điện thoại. Lần đầu, Android sẽ yêu cầu cho phép cài từ nguồn ngoài Google Play cho trình quản lý file bạn dùng.</p>
+        <a class="btn btn-primary dl-btn" href="assets/downloads/muop-agent-release.apk" download>Tải .apk</a>
+        <div class="sha">SHA-256 <code>705f99e815831606e2321a8a24c9f7c7da24e7556c29d274da9f32405b763484</code></div>
+      </div>
+
+      <div class="dl-card">
+        <div class="dl-os">iOS · TrollStore</div>
+        <h3>File .ipa</h3>
+        <p class="dl-meta">muop-agent-trollstore.ipa · 18.9 MB</p>
+        <p>Cài bằng <strong>TrollStore</strong> trên thiết bị đã hỗ trợ. Không dùng để cài trực tiếp qua App Store hay TestFlight.</p>
+        <a class="btn btn-primary dl-btn" href="assets/downloads/muop-agent-trollstore.ipa" download>Tải .ipa</a>
+        <div class="sha">SHA-256 <code>ad54e73ddc5639966dd23e0b579ce7bb94337799702f1130e150b9dbbf2815c3</code></div>
+      </div>
+
+      <div class="dl-card">
+        <div class="dl-os">macOS</div>
+        <h3>Ứng dụng .app (zip)</h3>
+        <p class="dl-meta">muop-agent-macos.zip · 41.7 MB</p>
+        <p>Giải nén, kéo <code>muop_agent.app</code> vào thư mục Applications. Nếu macOS chặn lần mở đầu, bấm chuột phải vào app và chọn Mở.</p>
+        <a class="btn btn-primary dl-btn" href="assets/downloads/muop-agent-macos.zip" download>Tải .zip</a>
+        <div class="sha">SHA-256 <code>8f8f0a60bf941db40f2f6c205897f17d9fea4032634a49bf1b246b95bcffd1f1</code></div>
+      </div>
+    </div>
+
+    <p class="dl-note">Kiểm tra file trước khi cài bằng cách so sánh SHA-256 với giá trị trên trang. Lệnh: <code>sha256sum &lt;tên-file&gt;</code> (Linux) hoặc <code>shasum -a 256 &lt;tên-file&gt;</code> (macOS).</p>
+  </div>
+</section>
+
+<!-- ============ CÀI ĐẶT ============ -->
+<section class="section" id="cai-dat">
+  <div class="wrap">
+    <div class="section-head">
+      <span class="eyebrow">Cài đặt</span>
+      <h2>Bắt đầu trong vài phút</h2>
+      <p class="lead">Chạy server trên máy có agent, rồi mở app trên máy tính hoặc điện thoại cùng mạng LAN và nhập địa chỉ của server.</p>
+    </div>
+
+    <div class="steps">
+      <div class="step">
+        <div class="num">BƯỚC 1</div>
+        <h3>Chạy server (Linux)</h3>
+        <p>Cách đơn giản nhất là đóng gói file <code>.deb</code> và cài đặt. Server tự khởi động cùng phiên đăng nhập.</p>
+        <div class="codeblock">
+          <pre><span class="tok-c"># Từ thư mục gốc của repo</span>
+make deb
+sudo apt install ./build/deb/muop-agent_&lt;phiên-bản&gt;_amd64.deb</pre>
+          <button class="copy" type="button">Sao chép</button>
+        </div>
+        <p style="margin-top:12px">Hoặc chạy trực tiếp khi phát triển:</p>
+        <div class="codeblock">
+          <pre>make server          <span class="tok-c"># cargo run --release, cổng 8787</span></pre>
+          <button class="copy" type="button">Sao chép</button>
+        </div>
+      </div>
+
+      <div class="step">
+        <div class="num">BƯỚC 2</div>
+        <h3>Mở ứng dụng</h3>
+        <p>Trên Linux, chạy bản build hoặc gói cài đặt. Trên Android, cài file APK. Nhập IP của máy chạy server; wizard sẽ kiểm tra công cụ và hướng dẫn đăng nhập agent.</p>
+        <div class="codeblock">
+          <pre><span class="tok-c"># Desktop Linux (chạy từ mã nguồn)</span>
+make run
+
+<span class="tok-c"># Android: tạo file APK release</span>
+make build-apk     <span class="tok-c"># ra muop-agent-release.apk</span></pre>
+          <button class="copy" type="button">Sao chép</button>
+        </div>
+      </div>
+
+      <div class="step">
+        <div class="num">BƯỚC 3</div>
+        <h3>Kiểm tra server</h3>
+        <p>Server trả về trạng thái khi gọi endpoint kiểm tra. Đây là cách nhanh nhất để biết máy chủ đã sẵn sàng hay chưa.</p>
+        <div class="codeblock">
+          <pre>curl http://&lt;ip-server&gt;:8787/api/ping</pre>
+          <button class="copy" type="button">Sao chép</button>
+        </div>
+      </div>
+
+      <div class="step">
+        <div class="num">BƯỚC 4</div>
+        <h3>Tích hợp bằng API</h3>
+        <p>Mọi chức năng của app đều gọi qua REST và Socket.IO, nên bạn có thể viết script hoặc client riêng. Xem đầy đủ endpoint, tham số và ví dụ trong trang tài liệu.</p>
+        <div class="codeblock">
+          <pre>curl -X POST http://&lt;ip-server&gt;:8787/api/chat/send \
+  -H "Content-Type: application/json" \
+  -d '{"prompt":"Liệt kê file TODO","projectPath":"/duong/dan/project","model":"claude-cli:claude-haiku-5-5-medium"}'</pre>
+          <button class="copy" type="button">Sao chép</button>
+        </div>
+        <p style="margin-top:12px"><a href="api.html">Mở tài liệu API →</a></p>
+      </div>
+    </div>
+  </div>
+</section>
+
+</main>
+
+<footer class="site-footer">
+  <div class="wrap footer-grid">
+    <div>
+      <p class="foot-brand"><img src="assets/img/logo-96.png" alt="" width="28" height="28"><strong style="color:var(--text)">Mướp Agents</strong> · phiên bản ứng dụng 1.1.0 · server 1.0.0</p>
+      <p>Giao diện Flutter, server Rust. Dữ liệu đọc từ máy của bạn; không có dịch vụ đám mây trung gian.</p>
+    </div>
+    <div class="footer-links">
+      <a href="index.html">Trang chủ</a>
+      <a href="api.html">Tài liệu API</a>
+      <a href="#tai-ve">Tải về</a>
+      <a href="#cai-dat">Cài đặt</a>
+      <a href="#ung-ho">Ủng hộ</a>
+    </div>
+  </div>
+</footer>
+
+<div class="lightbox" id="lightbox" role="dialog" aria-modal="true" aria-label="Ảnh phóng to">
+  <button type="button" id="lightboxClose" aria-label="Đóng">✕</button>
+  <img id="lightboxImg" alt="">
+</div>
+
+<script src="assets/js/main.js"></script>
+</body>
+</html>

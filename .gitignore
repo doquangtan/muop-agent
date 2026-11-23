@@ -44,3 +44,6 @@ android/build/
 
 # macOS build archive (generated)
 /muop-agent-macos.zip
+
+# Website installers (large binaries; host them outside git)
+/website/assets/downloads/
