@@ -1,29 +1,32 @@
 part of '../chat_canvas_view.dart';
 
 extension _CanvasExtModelBar on _ChatCanvasViewState {
-  /// Model thuộc Claude Code CLI (id dạng `claude-cli:<alias>`), còn lại là Antigravity (`agy:<model>`)
-  bool _isClaudeCliModel(String modelId) => modelId.startsWith('claude-cli:');
+  /// Model thuộc Claude Code CLI (id dạng `claude-cli:<alias>`), còn lại là Antigravity (`agy:<model>`).
+  /// Model máy phụ (`peer:` + id) được xét theo id gốc trên máy đó.
+  bool _isClaudeCliModel(String modelId) =>
+      remoteModelId(modelId).startsWith('claude-cli:');
+
+  /// Thứ tự khối trong menu: Claude máy chính, Antigravity máy chính, Claude máy phụ, Antigravity máy phụ
+  int _sectionRank(ModelGroup group) {
+    final peer = isPeerModel(group.id);
+    final claude = _isClaudeCliModel(group.id);
+    return (peer ? 2 : 0) + (claude ? 0 : 1);
+  }
 
   String _formatModelLabel(String modelId) {
-    // Bỏ hậu tố mức (ví dụ `-high`) để tra nhãn theo model gốc
-    final base = parseModelId(
-      modelId,
-      levels: resolveEffortLevels(widget.effortLevels),
-    ).groupId;
-    switch (base) {
-      case 'default':
-      case 'claude-cli:claude-sonnet-5-5':
-        return 'Claude Sonnet 5.5';
-      case 'claude-cli:claude-opus-5-5':
-        return 'Claude Opus 5.5';
-      case 'claude-cli:claude-haiku-5-5':
-        return 'Claude Haiku 5.5';
-      default:
-        // Model Antigravity lấy từ `agy models` (nhãn do server gửi); thiếu nhãn thì bỏ tiền tố provider
-        final fromServer = widget.modelLabels[modelId];
-        if (fromServer != null && fromServer.isNotEmpty) return fromServer;
-        return modelId.startsWith('agy:') ? modelId.substring(4) : modelId;
+    // Nhãn do server gửi (model Claude suy ra từ id, model agy lấy từ `agy models`)
+    final fromServer = widget.modelLabels[modelId];
+    if (fromServer != null && fromServer.isNotEmpty) return fromServer;
+    // Thiếu nhãn: bỏ hậu tố mức rồi bỏ tiền tố provider
+    final base = remoteModelId(
+      parseModelId(modelId, levels: resolveEffortLevels(widget.effortLevels))
+          .groupId,
+    );
+    if (base.startsWith('agy:')) return base.substring('agy:'.length);
+    if (base.startsWith('claude-cli:')) {
+      return base.substring('claude-cli:'.length);
     }
+    return base;
   }
 
   /// Nhãn cho việc gom nhóm: Claude dùng bảng cố định, Antigravity dùng nhãn của server
@@ -51,11 +54,16 @@ extension _CanvasExtModelBar on _ChatCanvasViewState {
     TextTheme textTheme,
     bool isMobile,
   ) {
-    final groups = groupModels(
+    final rawGroups = groupModels(
       _getFilteredModelsForSession(),
       _labelMapFor(_getFilteredModelsForSession()),
       effortLevels: resolveEffortLevels(widget.effortLevels),
     );
+    // Gom theo khối: mỗi khối (provider × máy) là một đoạn liên tiếp trong menu
+    final groups = [
+      for (var rank = 0; rank < 4; rank++)
+        ...rawGroups.where((g) => _sectionRank(g) == rank),
+    ];
     final current = _groupOfSelected(groups);
     final effort = groups
         .expand((g) => g.options)
@@ -80,8 +88,7 @@ extension _CanvasExtModelBar on _ChatCanvasViewState {
           itemBuilder: (ctx) => [
             for (var i = 0; i < groups.length; i++) ...[
               if (i == 0 ||
-                  _isClaudeCliModel(groups[i].id) !=
-                      _isClaudeCliModel(groups[i - 1].id))
+                  _sectionRank(groups[i]) != _sectionRank(groups[i - 1]))
                 ..._providerHeaderEntries(
                   groups[i].id,
                   colorScheme,
@@ -94,9 +101,11 @@ extension _CanvasExtModelBar on _ChatCanvasViewState {
                     Icon(
                       Icons.auto_awesome_rounded,
                       size: 15,
-                      color: identical(groups[i], current)
-                          ? colorScheme.primary
-                          : colorScheme.onSurfaceVariant,
+                      color: isPeerModel(groups[i].id)
+                          ? colorScheme.tertiary
+                          : identical(groups[i], current)
+                              ? colorScheme.primary
+                              : colorScheme.onSurfaceVariant,
                     ),
                     const SizedBox(width: 8),
                     Text(
@@ -118,7 +127,9 @@ extension _CanvasExtModelBar on _ChatCanvasViewState {
               Icon(
                 Icons.memory_rounded,
                 size: 13.5,
-                color: colorScheme.primary,
+                color: isPeerModel(widget.selectedModel)
+                    ? colorScheme.tertiary
+                    : colorScheme.primary,
               ),
               const SizedBox(width: 5),
               ConstrainedBox(
@@ -129,7 +140,9 @@ extension _CanvasExtModelBar on _ChatCanvasViewState {
                   overflow: TextOverflow.ellipsis,
                   style: textTheme.labelSmall?.copyWith(
                     fontWeight: FontWeight.w800,
-                    color: colorScheme.onSurface,
+                    color: isPeerModel(widget.selectedModel)
+                        ? colorScheme.tertiary
+                        : colorScheme.onSurface,
                   ),
                 ),
               ),
@@ -191,13 +204,23 @@ extension _CanvasExtModelBar on _ChatCanvasViewState {
     );
   }
 
-  /// Header của mỗi nhóm provider trong popup chọn model
+  /// Header của mỗi khối trong popup chọn model. Khối máy phụ ghi tên máy: `Claude Cli · <máy>`
   List<PopupMenuEntry<String>> _providerHeaderEntries(
     String modelId,
     ColorScheme colorScheme, {
     required bool showDivider,
   }) {
     final isClaude = _isClaudeCliModel(modelId);
+    final isPeer = isPeerModel(modelId);
+    final host = widget.peerHost.trim();
+    final accent = isPeer ? colorScheme.tertiary : colorScheme.primary;
+    final title = isPeer
+        ? (isClaude
+            ? 'Claude Cli · ${host.isEmpty ? 'máy phụ' : host}'
+            : 'Agy · ${host.isEmpty ? 'máy phụ' : host}')
+        : (isClaude
+            ? 'Claude Code CLI · limit tài khoản Claude'
+            : 'Antigravity (agy) · quota Gemini/Claude');
     return [
       if (showDivider) const PopupMenuDivider(),
       PopupMenuItem<String>(
@@ -206,16 +229,16 @@ extension _CanvasExtModelBar on _ChatCanvasViewState {
         child: Row(
           children: [
             Icon(
-              isClaude ? Icons.terminal_rounded : Icons.hub_rounded,
+              isPeer
+                  ? Icons.lan_rounded
+                  : (isClaude ? Icons.terminal_rounded : Icons.hub_rounded),
               size: 14,
-              color: colorScheme.primary,
+              color: accent,
             ),
             const SizedBox(width: 8),
             Expanded(
               child: Text(
-                isClaude
-                    ? 'Claude Code CLI · limit tài khoản Claude'
-                    : 'Antigravity (agy) · quota Gemini/Claude',
+                title,
                 style: TextStyle(
                   fontSize: 12,
                   fontWeight: FontWeight.w700,
@@ -229,29 +252,31 @@ extension _CanvasExtModelBar on _ChatCanvasViewState {
     ];
   }
 
-  /// Lọc danh sách model dựa trên session source
+  /// Lọc model theo conversation: đúng provider (`source`) và đúng nơi chạy. Conversation máy chính
+  /// không hiện model máy phụ, conversation máy phụ chỉ hiện model máy phụ.
   List<String> _getFilteredModelsForSession() {
     final session = widget.session;
     if (session == null || widget.isNewConversationMode) {
       return widget.availableModels;
     }
-
-    if (session.source == 'claude-cli') {
-      return widget.availableModels
-          .where((m) => m.startsWith('claude-cli:'))
-          .toList();
-    } else {
-      return widget.availableModels.where((m) => m.startsWith('agy:')).toList();
-    }
+    final wantPrefix =
+        session.source == 'claude-cli' ? 'claude-cli:' : 'agy:';
+    return widget.availableModels
+        .where((m) =>
+            isPeerModel(m) == widget.isPeerSession &&
+            remoteModelId(m).startsWith(wantPrefix))
+        .toList();
   }
 
   /// Provider của thanh quota. Thanh ở màn chat dùng provider của cuộc chat (`quotaScope`);
   /// màn chung thì theo model đang chọn.
   String get _quotaProvider {
     if (widget.quotaScope.isNotEmpty) return widget.quotaScope;
-    return _isClaudeCliModel(widget.selectedModel)
+    final base = _isClaudeCliModel(widget.selectedModel)
         ? kQuotaProviderClaude
         : kQuotaProviderAgy;
+    // Model máy phụ: quota của máy phụ (`peer:<provider>`)
+    return isPeerModel(widget.selectedModel) ? '$kPeerQuotaScopePrefix$base' : base;
   }
 
   /// Nhóm quota của provider đang hiển thị, chọn theo model đang chọn (agy có nhiều nhóm).
@@ -265,7 +290,7 @@ extension _CanvasExtModelBar on _ChatCanvasViewState {
     final groups = (report?.groups ?? const <ModelQuotaGroup>[])
         .where((g) => g.buckets.isNotEmpty)
         .toList();
-    if (_quotaProvider == kQuotaProviderClaude) {
+    if (quotaProviderOf(_quotaProvider) == kQuotaProviderClaude) {
       return (primaryGroup: groups.firstOrNull, geminiGroup: null, error: error);
     }
 

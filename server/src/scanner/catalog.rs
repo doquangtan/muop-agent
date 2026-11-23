@@ -4,9 +4,37 @@ use super::*;
 /// - `agy:<model>` → Antigravity CLI (`agy`)
 /// - `claude-cli:<model-id>` → Claude Code CLI (`claude --model <model-id>`, ID đầy đủ có version)
 pub fn default_models() -> Vec<String> {
-    let mut models = crate::claude::code::claude_model_ids();
+    // Model Claude chỉ hiện khi Claude Code CLI đã đăng nhập: chưa đăng nhập thì chọn sẽ không chạy được
+    let mut models = if claude_cli_logged_in() {
+        crate::claude::code::claude_model_ids()
+    } else {
+        Vec::new()
+    };
     models.extend(agy_model_ids());
     models
+}
+
+/// Trạng thái đăng nhập Claude Code CLI, cache ngắn để không gọi `claude auth status` ở mỗi snapshot
+static CLAUDE_LOGIN_CACHE: std::sync::Mutex<Option<(std::time::Instant, bool)>> =
+    std::sync::Mutex::new(None);
+const CLAUDE_LOGIN_TTL: Duration = Duration::from_secs(30);
+
+fn claude_cli_logged_in() -> bool {
+    if let Ok(guard) = CLAUDE_LOGIN_CACHE.lock() {
+        if let Some((at, logged_in)) = guard.as_ref() {
+            if at.elapsed() < CLAUDE_LOGIN_TTL {
+                return *logged_in;
+            }
+        }
+    }
+    // Không đọc được CLI (chưa cài, lỗi) thì coi như chưa đăng nhập
+    let logged_in = crate::claude_auth::status()
+        .map(|view| view.logged_in)
+        .unwrap_or(false);
+    if let Ok(mut guard) = CLAUDE_LOGIN_CACHE.lock() {
+        *guard = Some((std::time::Instant::now(), logged_in));
+    }
+    logged_in
 }
 
 pub(super) const AGY_MODELS_TTL: Duration = Duration::from_secs(600);
@@ -200,7 +228,15 @@ pub(super) fn agy_context_for(
 
 /// Nhãn hiển thị của mọi model, key là id đầy đủ (ví dụ `agy:gemini-4-argon-medium`)
 pub fn model_labels() -> HashMap<String, String> {
-    agy_models().into_iter().map(|m| (m.id, m.label)).collect()
+    let mut labels: HashMap<String, String> =
+        agy_models().into_iter().map(|m| (m.id, m.label)).collect();
+    // Nhãn model Claude suy ra từ id (không bảng cố định); khóa là id đầy đủ có mức suy luận
+    for id in crate::claude::code::claude_model_ids() {
+        let model = id.strip_prefix("claude-cli:").unwrap_or(&id);
+        let (base, _) = crate::claude::code::split_effort(model);
+        labels.insert(id.clone(), crate::claude::code::claude_display_name(&base));
+    }
+    labels
 }
 
 pub fn default_agents() -> Vec<String> {

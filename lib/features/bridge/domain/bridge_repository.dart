@@ -1,5 +1,6 @@
 import 'package:muop_agent/features/bridge/domain/bridge_entities.dart';
 import 'package:muop_agent/features/interactions/domain/interaction_entities.dart';
+import 'package:muop_agent/features/quota/domain/quota_entities.dart';
 
 /// Interface (domain) của feature bridge. Presentation chỉ phụ thuộc interface này.
 /// Mọi lời gọi đi tới server đang kết nối (`address`), server đó chuyển tiếp tới máy A.
@@ -28,6 +29,9 @@ abstract class BridgeRepository {
 
   /// Chi tiết một conversation trên máy A (đầy đủ steps). Null nếu không lấy được.
   Future<Map<String, dynamic>?> fetchPeerSession(String address, {required String id});
+
+  /// Quota của máy phụ (`agy` hoặc `claude`). Null khi không kết nối được máy phụ.
+  Future<QuotaReport?> fetchPeerQuota(String address, {required String provider});
 
   Future<BridgeSendResult> stopTurn(
     String address, {

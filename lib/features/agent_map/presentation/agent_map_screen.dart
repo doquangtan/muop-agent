@@ -4,6 +4,7 @@ import 'dart:math' as math;
 import 'package:material_ui/material_ui.dart';
 
 import 'package:muop_agent/core/theme/app_theme.dart';
+import 'package:muop_agent/features/bridge/domain/peer_models.dart';
 import 'package:muop_agent/features/sessions/domain/session_entities.dart';
 
 /// Sơ đồ cây các agent của một conversation.
@@ -343,9 +344,10 @@ class _AgentMapScreenState extends State<AgentMapScreen> {
   }
 
   String _rootSubtitle(ConversationSession session) {
-    final model = session.contextModel.isNotEmpty
+    // Model máy phụ có tiền tố `peer:` trong app: bỏ để nhãn gọn như máy chính
+    final model = remoteModelId(session.contextModel.isNotEmpty
         ? session.contextModel
-        : session.selectedModel;
+        : session.selectedModel);
     final modelLabel = model.isEmpty ? 'Chưa rõ model' : _modelLabel(model);
     return '$modelLabel · ${_formatTokens(session.contextTokens)} tokens trong ngữ cảnh';
   }

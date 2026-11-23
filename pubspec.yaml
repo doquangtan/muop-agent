@@ -1,7 +1,7 @@
 name: muop_agent
 description: "Mướp Agent Monitor — Ứng dụng Giao diện (Desktop & Mobile) kết nối Rust Server qua Socket.IO Realtime"
 publish_to: 'none'
-version: 1.1.0+5
+version: 1.1.0+6
 
 environment:
   sdk: ^3.13.5

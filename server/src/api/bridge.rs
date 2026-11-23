@@ -134,6 +134,24 @@ pub struct PeerSessionQuery {
     pub id: Option<String>,
 }
 
+#[derive(Deserialize)]
+pub struct PeerQuotaQuery {
+    pub provider: Option<String>,
+}
+
+/// Quota của máy phụ (proxy `GET /api/quota/<provider>` của máy phụ). Quota máy phụ lấy từ tài khoản máy phụ,
+/// không dùng quota của máy này.
+pub async fn handle_peer_quota(Query(query): Query<PeerQuotaQuery>) -> impl IntoResponse {
+    let provider = query.provider.unwrap_or_default();
+    if provider != "agy" && provider != "claude" {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "ok": false, "error": "provider không hợp lệ" })),
+        );
+    }
+    peer_get(&format!("/api/quota/{provider}")).await
+}
+
 /// Chi tiết một conversation của máy phụ (proxy `GET /api/session?id=`), đã chuyển về project của máy này nếu thuộc về nó.
 /// Id kiểm tra như `pending`.
 pub async fn handle_peer_session(Query(query): Query<PeerSessionQuery>) -> impl IntoResponse {

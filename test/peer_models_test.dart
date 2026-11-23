@@ -27,23 +27,22 @@ void main() {
     ]);
   });
 
-  test('peer labels carry the machine name as a prefix, so effort suffix stripping keeps it', () {
+  test('peer labels have no machine prefix; the machine name is on the menu section header', () {
     final labels = peerModelLabels(
       remoteModels: ['claude-cli:claude-haiku-5-5-low', 'claude-cli:claude-haiku-5-5-high'],
       remoteLabels: {'claude-cli:claude-haiku-5-5-low': 'Claude Haiku 5.5 (Low)'},
-      host: 'Laptop',
     );
-    expect(labels['peer:claude-cli:claude-haiku-5-5-low'], 'Máy phụ Laptop · Claude Haiku 5.5 (Low)');
+    expect(labels['peer:claude-cli:claude-haiku-5-5-low'], 'Claude Haiku 5.5 (Low)');
     // Không có nhãn từ máy phụ: dùng id gốc
-    expect(labels['peer:claude-cli:claude-haiku-5-5-high'], 'Máy phụ Laptop · claude-cli:claude-haiku-5-5-high');
+    expect(labels['peer:claude-cli:claude-haiku-5-5-high'], 'claude-cli:claude-haiku-5-5-high');
 
-    // Nhóm model: mức suy luận được tách, tên nhóm giữ tiền tố máy
+    // Nhóm model: mức suy luận được tách, tên nhóm không có tiền tố máy
     final groups = groupModels(
       ['peer:claude-cli:claude-haiku-5-5-low', 'peer:claude-cli:claude-haiku-5-5-high'],
       labels,
     );
     expect(groups, hasLength(1));
-    expect(groups.first.label, 'Máy phụ Laptop · Claude Haiku 5.5');
+    expect(groups.first.label, 'Claude Haiku 5.5');
     expect(groups.first.options.map((o) => o.effort), ['low', 'high']);
   });
 
@@ -88,18 +87,12 @@ void main() {
     expect(asPeerSessionJson({'id': 'cid-3'})['selectedModel'], '');
   });
 
-  test('tiêu đề conversation máy phụ có tag máy phụ, không gắn lặp', () {
+  test('tiêu đề conversation máy phụ không gắn tag chữ, bỏ nhãn [Từ máy] của bản cũ', () {
+    expect(peerSessionTitle(title: 'tạo file mèo'), 'tạo file mèo');
+    expect(peerSessionTitle(title: '  '), '(không tiêu đề)');
     expect(
-      peerSessionTitle(host: 'IdeaPad', title: 'tạo file mèo'),
-      '[Máy phụ IdeaPad] tạo file mèo',
-    );
-    final once = peerSessionTitle(host: 'IdeaPad', title: 'tạo file mèo');
-    expect(peerSessionTitle(host: 'IdeaPad', title: once), once);
-    expect(peerSessionTitle(host: '', title: 'x'), '[Máy phụ Máy phụ] x');
-    expect(peerSessionTitle(host: 'IdeaPad', title: '  '), '[Máy phụ IdeaPad] (không tiêu đề)');
-    expect(
-      peerSessionTitle(host: 'IdeaPad', title: '[Từ máy ASRock-X99] Tạo file mèo'),
-      '[Máy phụ IdeaPad] Tạo file mèo',
+      peerSessionTitle(title: '[Từ máy ASRock-X99] Tạo file mèo'),
+      'Tạo file mèo',
     );
   });
 }
