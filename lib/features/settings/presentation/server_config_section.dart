@@ -6,10 +6,12 @@ import 'package:material_ui/material_ui.dart';
 import 'package:muop_agent/core/config/server_config.dart';
 import 'package:muop_agent/core/di/app_dependencies.dart';
 import 'package:muop_agent/core/state/server_address_provider.dart';
+import 'package:muop_agent/core/state/setup_check_provider.dart';
 import 'package:muop_agent/core/theme/app_theme.dart';
 import 'package:muop_agent/features/connection/domain/connection_entities.dart';
 import 'package:muop_agent/features/connection/domain/connection_repository.dart';
 import 'package:muop_agent/features/connection/domain/lan_scan.dart';
+import 'package:muop_agent/features/setup/presentation/setup_flow.dart';
 
 /// Cấu hình IP máy chủ trong màn Cài đặt: địa chỉ đang dùng, kiểm tra kết nối, quét LAN,
 /// danh sách máy đã kết nối trước đây. Đổi địa chỉ thì toàn app tải lại dữ liệu từ máy đó.
@@ -31,6 +33,8 @@ class _ServerConfigSectionState extends ConsumerState<ServerConfigSection> {
   int scanTotal = 0;
   List<LanServer> lanServers = const [];
   List<String> saved = [];
+  /// Tên máy (hostname) của từng địa chỉ đã lưu, hiện ngay dưới IP
+  Map<String, String> serverNames = {};
   bool _socketLive = false;
   StreamSubscription<bool>? _liveSub;
 
@@ -52,19 +56,83 @@ class _ServerConfigSectionState extends ConsumerState<ServerConfigSection> {
     super.dispose();
   }
 
-  /// Các server đã kết nối trước đây (mới nhất đứng đầu)
+  /// Các server đã kết nối trước đây (mới nhất đứng đầu) kèm tên máy đã nhớ
   Future<void> _loadSaved() async {
     final list = List<String>.of(await _connectionRepo.loadSavedServers());
-    if (mounted) setState(() => saved = list);
+    final names = await _connectionRepo.loadServerNames();
+    if (mounted) {
+      setState(() {
+        saved = list;
+        serverNames = names;
+      });
+    }
+    // Máy đã lưu từ trước khi có tên: hỏi hostname một lần rồi ghi lại
+    await Future.wait([
+      for (final addr in list)
+        if (!names.containsKey(addr)) _rememberName(addr),
+    ]);
   }
 
-  /// Kết nối tới [addr]: ghi nhận vào danh sách đã lưu và đổi địa chỉ toàn cục
+  String _cleanAddress(String addr) =>
+      addr.trim().isEmpty ? defaultHostAddress : addr.trim();
+
+  /// Dòng phụ của máy đã lưu: tên máy dưới IP, kèm "Đang dùng" nếu là máy hiện tại
+  Widget? _savedSubtitle(String addr, String current) {
+    final name = serverNames[addr] ?? '';
+    final parts = [
+      if (name.isNotEmpty) name,
+      if (addr == current) 'Đang dùng',
+    ];
+    if (parts.isEmpty) return null;
+    return Text(parts.join(' · '));
+  }
+
+  /// Hỏi hostname của [addr] và nhớ lại khi máy trả lời; máy offline thì bỏ qua
+  Future<void> _rememberName(String addr) async {
+    final res = await _connectionRepo.pingRemoteServer(addr);
+    if (!res.isOnline || res.hostname.trim().isEmpty) return;
+    await _connectionRepo.saveServerName(addr, res.hostname);
+    if (mounted) {
+      setState(() => serverNames = {...serverNames, addr: res.hostname.trim()});
+    }
+  }
+
+  /// Kết nối tới [addr] (từ lịch sử, máy tìm được hoặc ô IP). Nếu máy trả lời trạng thái thì đổi máy chủ
+  /// và mở luồng kiểm tra cài đặt (splash, wizard nếu cần) ngay, không chờ người dùng bấm quay lại.
+  /// Máy không trả lời thì chỉ lưu địa chỉ và báo lỗi.
   Future<void> _connect(String addr) async {
-    final clean = addr.trim().isEmpty ? defaultHostAddress : addr.trim();
+    final clean = _cleanAddress(addr);
+    // Chụp Navigator GỐC trước các await. Trên desktop màn này nằm trong Navigator của vùng panel
+    // (lồng trong dashboard); đổi máy chủ làm dashboard dựng lại và hủy Navigator đó, push splash sẽ hụt.
+    final navigator = Navigator.of(context, rootNavigator: true);
+    final messenger = ScaffoldMessenger.of(context);
+    final ping = await _connectionRepo.pingRemoteServer(clean);
     await _connectionRepo.saveServerAddress(clean);
-    if (!mounted) return;
+    if (ping.isOnline) {
+      // Đánh dấu trước khi đổi để dashboard dựng lại không mở splash lần thứ hai
+      ref.read(setupCheckedAddressProvider.notifier).mark(clean);
+    }
     ref.read(serverAddressProvider.notifier).change(clean);
-    await _loadSaved();
+    // Tên máy lấy nền, không chặn việc đổi kết nối
+    unawaited(_rememberName(clean));
+    if (mounted) await _loadSaved();
+
+    if (!ping.isOnline) {
+      final reason = ping.errorMessage.isEmpty ? '' : ' (${ping.errorMessage})';
+      messenger.showSnackBar(
+        SnackBar(content: Text('Chưa lấy được trạng thái từ $clean$reason')),
+      );
+      return;
+    }
+    final ran = await runSetupFlow(navigator, clean);
+    if (!ran) {
+      messenger.showSnackBar(
+        const SnackBar(content: Text('Đang kiểm tra một máy chủ khác, thử lại sau')),
+      );
+      return;
+    }
+    // Xong splash/wizard: nếu màn Cài đặt vẫn mở (điện thoại) thì đóng để về dashboard
+    if (mounted) await Navigator.of(context).maybePop();
   }
 
     Future<void> testPing() async {
@@ -73,10 +141,18 @@ class _ServerConfigSectionState extends ConsumerState<ServerConfigSection> {
         pingResult = null;
       });
       final res = await _connectionRepo.pingRemoteServer(ipController.text);
+      if (res.isOnline && res.hostname.trim().isNotEmpty) {
+        await _connectionRepo.saveServerName(
+          _cleanAddress(ipController.text),
+          res.hostname,
+        );
+      }
+      if (!mounted) return;
       setState(() {
         isPinging = false;
         pingResult = res;
       });
+      await _loadSaved();
     }
 
     Future<void> scanLan() async {
@@ -118,7 +194,8 @@ class _ServerConfigSectionState extends ConsumerState<ServerConfigSection> {
             padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
             children: [
               Text(
-                'Máy chủ Rust (Socket.IO). Đang dùng: $serverAddress',
+                'Máy chủ Rust (Socket.IO). Đang dùng: $serverAddress'
+                '${(serverNames[serverAddress] ?? '').isEmpty ? '' : ' (${serverNames[serverAddress]})'}',
                 style: textTheme.bodySmall?.copyWith(color: colorScheme.onSurfaceVariant),
               ),
               const SizedBox(height: 12),
@@ -195,9 +272,7 @@ class _ServerConfigSectionState extends ConsumerState<ServerConfigSection> {
                               fontWeight: FontWeight.w700,
                             ),
                           ),
-                          subtitle: addr == serverAddress
-                              ? const Text('Đang dùng')
-                              : null,
+                          subtitle: _savedSubtitle(addr, serverAddress),
                           onTap: () {
                             unawaited(_connect(addr));
                           },

@@ -93,10 +93,10 @@ fn is_local_session(s: &DockerSession) -> bool {
     crate::ssh::hosts::is_local(&s.host)
 }
 
-/// Lệnh shell trên máy server (`$SHELL -i -c`), cùng PATH với terminal của máy này
+/// Lệnh shell trên máy server (`$SHELL -l -i -c`), cùng PATH với terminal của máy này
 fn local_command(command: &str) -> Command {
     let mut cmd = Command::new(crate::ssh::hosts::local_shell());
-    cmd.args(["-i", "-c", command]);
+    cmd.args(["-l", "-i", "-c", command]);
     if let Some(home) = std::env::var_os("HOME")
         .map(PathBuf::from)
         .filter(|p| p.is_dir())

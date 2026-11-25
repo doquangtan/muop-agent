@@ -219,6 +219,8 @@ mod compact_tests {
              {\"type\":\"CHECKPOINT\",\"content\":\"# Resuming\"}\n",
         )
         .unwrap();
+        // Khôi phục HOME sau test: các test khác trong cùng tiến trình đọc HOME
+        let previous_home = std::env::var_os("HOME");
         std::env::set_var("HOME", &dir);
         assert!(agy_compact_checkpoint_written(cid));
 
@@ -231,6 +233,10 @@ mod compact_tests {
         .unwrap();
         assert!(!agy_compact_checkpoint_written(cid));
         assert!(!agy_compact_checkpoint_written("../etc"));
+        match previous_home {
+            Some(home) => std::env::set_var("HOME", home),
+            None => std::env::remove_var("HOME"),
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 

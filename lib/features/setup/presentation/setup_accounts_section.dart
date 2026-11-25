@@ -57,6 +57,9 @@ class _SetupAccountsSectionState extends State<SetupAccountsSection> {
   /// Nhận trạng thái do server đẩy qua socket (khi đăng nhập xong, bị hủy, hết hạn...)
   StreamSubscription<AgyAuthState>? _updatesSub;
 
+  /// Hẹn hỏi lại email sau khi đăng nhập (xem [_refreshAccountsUntilReady])
+  Timer? _accountsRetry;
+
   @override
   void initState() {
     super.initState();
@@ -69,6 +72,7 @@ class _SetupAccountsSectionState extends State<SetupAccountsSection> {
   @override
   void dispose() {
     _updatesSub?.cancel();
+    _accountsRetry?.cancel();
     super.dispose();
   }
 
@@ -105,6 +109,20 @@ class _SetupAccountsSectionState extends State<SetupAccountsSection> {
     setState(() => _accounts = accounts);
   }
 
+  /// Sau khi đăng nhập, email có thể chưa có trong DB ở lần hỏi đầu tiên. Hỏi lại vài lần (chỉ đọc DB)
+  /// cho tới khi có email, để không phải thoát màn hình mới thấy.
+  void _refreshAccountsUntilReady({int attempt = 0}) {
+    _accountsRetry?.cancel();
+    _refreshAccounts().then((_) {
+      if (!mounted || !(_state?.loggedIn ?? false)) return;
+      if (_accounts.agyEmail.isNotEmpty || attempt >= 9) return;
+      _accountsRetry = Timer(
+        const Duration(seconds: 1),
+        () => _refreshAccountsUntilReady(attempt: attempt + 1),
+      );
+    });
+  }
+
   /// Áp dụng trạng thái từ server: ack của một lệnh hoặc event `agy:auth:update`.
   /// Khi thất bại, giữ trạng thái đăng nhập theo server và hiện lỗi.
   void _onUpdate(AgyAuthState res, {String fallbackError = 'Thao tác thất bại'}) {
@@ -122,11 +140,16 @@ class _SetupAccountsSectionState extends State<SetupAccountsSection> {
         _actionError = res.error.isEmpty ? fallbackError : res.error;
       }
     });
-    if (wasLoggedIn != (_state?.loggedIn ?? false)) {
-      // Đổi trạng thái đăng nhập agy thì gói và email cũng đổi theo
+    final nowLoggedIn = _state?.loggedIn ?? false;
+    if (wasLoggedIn && !nowLoggedIn) {
+      // Đã đăng xuất: bỏ email và gói cũ ngay, không chờ tải lại
+      setState(() => _accounts = AccountsStatus.empty);
       _refreshAccounts();
+    } else if (!wasLoggedIn && nowLoggedIn) {
+      // Vừa đăng nhập: email và gói có thể chưa sẵn sàng, hỏi lại tới khi có
+      _refreshAccountsUntilReady();
     } else if (res.ok && res.loggedIn) {
-      // Server lấy lại email, gói từ hub (sau khi đăng nhập, hoặc định kỳ): tải lại để hiện thông tin mới
+      // Định kỳ hoặc sau khi server lấy lại thông tin: tải lại để hiện thông tin mới
       _refreshAccounts();
     }
     if (!wasLoggedIn && (_state?.loggedIn ?? false)) {
@@ -204,6 +227,18 @@ class _SetupAccountsSectionState extends State<SetupAccountsSection> {
     final res = await _repo.logout();
     if (!mounted) return;
     _onUpdate(res, fallbackError: 'Không đăng xuất được');
+    // Lỗi hoặc hết giờ: hỏi trạng thái thật của server (giữ thông báo lỗi đang hiện)
+    if (!res.ok) _syncStatusAfterFailure();
+  }
+
+  /// Sau lệnh lỗi hoặc hết giờ, trạng thái trên màn có thể đã cũ: hỏi server và áp dụng, không xóa thông báo lỗi
+  Future<void> _syncStatusAfterFailure() async {
+    final actual = await _repo.fetchStatus();
+    if (!mounted || !actual.ok) return;
+    setState(() {
+      _state = actual;
+      if (!actual.loggedIn) _accounts = AccountsStatus.empty;
+    });
   }
 
   @override

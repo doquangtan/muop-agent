@@ -299,16 +299,30 @@ pub fn ensure_local_host() -> Option<i64> {
 }
 
 /// Mở terminal SSH tới máy này và chạy `agy` để người dùng đồng ý điều khoản trên màn hình SSH.
-/// Trả về (id phiên, id máy đã lưu).
-/// Mở terminal SSH tới máy này chạy `agy` (đăng nhập, hoặc đồng ý điều khoản) trong màn hình SSH của app.
-/// Trả về (id phiên, id máy đã lưu).
+/// Số cột của terminal đăng nhập agy (trần của PTY là 500)
+pub const LOGIN_TERMINAL_COLS: u16 = 400;
+
+/// Mở terminal SSH tới máy này chạy `agy` để người dùng tự đăng nhập (hoặc đồng ý điều khoản)
+/// trong màn hình SSH của app. Trả về (id phiên, id máy đã lưu).
 pub fn open_agy_terminal() -> Result<(String, i64), String> {
     // Không qua ssh: agy chạy trực tiếp trong PTY của server ("SSH ảo"), nên không cần sshd,
     // khóa SSH hay máy SSH đã lưu. Cùng môi trường với các lệnh agy khác của server.
     let agy = crate::setup::install::find_bin("agy").ok_or("không tìm thấy lệnh agy")?;
     let io = crate::setup::io().ok_or("server chưa sẵn sàng")?;
     let sid = crate::ssh::terminal::new_session_id();
-    crate::ssh::terminal::open_local(io, &sid, &agy, &[], 120, 40, 0, "Agy (máy chủ)")?;
+    // Rộng: TUI của agy không ngắt dòng giữa link đăng nhập. Client resize bị bỏ qua cho phiên này.
+    // Cùng thư mục dữ liệu với chat/hub: đăng nhập ở đây phải ghi token vào đúng nơi chat đọc
+    crate::ssh::terminal::open_local(
+        io,
+        &sid,
+        &agy,
+        &[crate::chat::AGY_APP_DATA_ARG],
+        &[],
+        LOGIN_TERMINAL_COLS,
+        40,
+        0,
+        "Agy (máy chủ)",
+    )?;
     Ok((sid, 0))
 }
 

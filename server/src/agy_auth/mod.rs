@@ -3,12 +3,13 @@
 //! - Đăng nhập: server mở terminal SSH tới máy này chạy `agy` ([`open_login_terminal`]). Người dùng tự
 //!   đăng nhập trong terminal đó (chọn Google OAuth, mở link, dán mã). Server theo dõi: hub báo đã có
 //!   token thì thành công; agy thoát mà chưa có token thì thất bại ([`watch_login`]).
-//! - Đăng xuất: gọi RPC `AuthLogout` của hub do server mở (`agy_account::logout_via_hub`), chờ `agy models` báo chưa đăng nhập.
+//! - Đăng xuất: gửi `logout` qua ACP (`acp::logout`), chờ ACP báo chưa đăng nhập.
 //! - Trạng thái giữ trong [`CURRENT`] và đẩy cho client qua Socket.IO `agy:auth:update` mỗi khi đổi
 //!   (xem [`socket`]). Client không cần hỏi lại theo chu kỳ.
 //!
 //! Các hàm trong module này chặn luồng (curl, SSH, chờ): API phải gọi qua `spawn_blocking`.
 
+pub(crate) mod acp;
 mod flow;
 pub(crate) mod host;
 pub mod socket;
@@ -32,7 +33,7 @@ const LOGIN_POLL: Duration = Duration::from_secs(1);
 const PICK_MAX: u32 = 3;
 const PICK_GAP: Duration = Duration::from_secs(3);
 /// Khoảng cách kiểm tra đăng nhập nền (không cần client hỏi): báo khi đăng nhập đổi.
-/// Mỗi lần chạy `agy models` (một tiến trình, có gọi mạng) nên để thưa hơn kiểm tra qua hub.
+/// Mỗi lần hỏi ACP (một tiến trình `agy acp`) nên để thưa hơn kiểm tra qua hub.
 const STATUS_WATCH_EVERY: Duration = Duration::from_secs(30);
 
 const EXITED_MSG: &str =
@@ -175,6 +176,7 @@ pub(crate) fn open_login_terminal() -> Result<(String, i64), String> {
 fn watch_login(sid: &str, started: Instant) {
     let mut picks: u32 = 0;
     let mut last_pick: Option<Instant> = None;
+    let mut last_native: Option<Instant> = None;
     loop {
         thread::sleep(LOGIN_POLL);
         if !is_login_session(sid) {
@@ -185,8 +187,8 @@ fn watch_login(sid: &str, started: Instant) {
         let Some(raw) = terminal_output(sid) else {
             // Phiên đã đóng (agy đã thoát). agy có thể thoát ngay sau khi đã xác thực, trước khi vẽ màn chat
             // (đã gặp: crash trong initAuth sau "Auth succeeded"). Token đã có trong nguồn lưu, nên hỏi
-            // `agy models` (cùng nguồn mà terminal dùng) trước khi kết luận thất bại.
-            if matches!(signed_in_by_models(), Ok(true)) {
+            // ACP (cùng nguồn mà terminal dùng) trước khi kết luận thất bại.
+            if matches!(signed_in(), Ok(true)) {
                 return end_login(sid, Outcome::LoggedIn);
             }
             let outcome = if submitted_slot().is_some() {
@@ -225,13 +227,29 @@ fn watch_login(sid: &str, started: Instant) {
                 thread::sleep(Duration::from_secs(1));
                 return end_login(sid, Outcome::LoggedIn);
             }
-            stage => set_stage(stage.name()),
+            stage => {
+                // Đã gửi mã mà màn hình không khớp dấu hiệu nào (agy đã đăng nhập nhưng vẽ màn khác): hỏi ACP
+                // native thay vì đoán chữ trên màn hình. Chưa đăng nhập thì ACP báo `Authentication required`.
+                if submitted.is_some()
+                    && last_native.is_none_or(|t| t.elapsed() >= NATIVE_CHECK_EVERY)
+                {
+                    last_native = Some(Instant::now());
+                    if matches!(acp::account_state(), Ok(s) if s.logged_in) {
+                        thread::sleep(Duration::from_secs(1));
+                        return end_login(sid, Outcome::LoggedIn);
+                    }
+                }
+                set_stage(stage.name());
+            }
         }
         if started.elapsed() >= LOGIN_TTL {
             return end_login(sid, Outcome::Expired);
         }
     }
 }
+
+/// Khoảng cách tối thiểu giữa hai lần hỏi ACP khi đang chờ xác thực (mỗi lần chạy một tiến trình `agy acp`)
+const NATIVE_CHECK_EVERY: Duration = Duration::from_secs(3);
 
 /// Nhấn Enter để chọn Google OAuth ở menu đăng nhập. Lỗi ghi thì để vòng sau thử lại.
 fn pick_google_oauth(sid: &str) {
@@ -266,7 +284,7 @@ fn set_stage(stage: &str) {
     }
 }
 
-fn is_login_session(sid: &str) -> bool {
+pub(crate) fn is_login_session(sid: &str) -> bool {
     terminal_slot().as_ref().is_some_and(|(cur, _)| cur == sid)
 }
 
@@ -291,6 +309,8 @@ fn end_login(sid: &str, outcome: Outcome) {
     match outcome {
         Outcome::LoggedIn => {
             SIGNED_OUT_BY_APP.store(false, Ordering::SeqCst);
+            // Watcher của tài khoản lấy email, gói và quota ngay sau khi đăng nhập xong
+            crate::agy_account::on_login_changed(true);
             publish("logged_in", true, "");
             sync_quotas();
         }
@@ -392,6 +412,8 @@ fn publish_if_changed(phase: &str, logged_in: bool, error: &str) -> bool {
 fn emit(ev: &AgyAuthEvent) {
     emit_quiet(ev);
     if ev.phase == "logged_in" || ev.phase == "logged_out" {
+        // Trạng thái đã đổi: bỏ cache hỏi tài khoản để lần hỏi sau đọc lại từ agy
+        acp::invalidate_account_cache();
         // Tài khoản đổi: watcher của agy_account xóa hoặc lấy lại thông tin, rồi đẩy model và quota mới
         crate::agy_account::on_login_changed(ev.logged_in);
         push_models_after_account_change();
@@ -428,7 +450,7 @@ pub(crate) fn push_quotas() {
     }
 }
 
-/// Sau khi đăng nhập hoặc đăng xuất agy, tài khoản (và danh sách model) có thể đã đổi. Lấy lại `agy models`
+/// Sau khi đăng nhập hoặc đăng xuất agy, tài khoản (và danh sách model) có thể đã đổi. Lấy lại danh sách model (ACP)
 /// rồi phát `meta:update` cho mọi client. Nếu không, app chỉ nhận meta lúc kết nối và phải thoát mở lại mới thấy model mới.
 fn push_models_after_account_change() {
     thread::spawn(|| {
@@ -447,7 +469,7 @@ fn push_models_after_account_change() {
     });
 }
 
-/// Kiểm tra đăng nhập nền (vòng lặp trong [`init`]): phát `agy:auth:update` khi `agy models` cho thấy đã
+/// Kiểm tra đăng nhập nền (vòng lặp trong [`init`]): phát `agy:auth:update` khi ACP cho thấy đã
 /// đăng nhập mà server còn ghi là chưa (đăng nhập ở agy khác). Chỉ nâng lên `logged_in`, không hạ xuống:
 /// watcher của terminal đăng nhập quản lý việc đăng xuất. Bỏ qua khi có terminal đăng nhập, khi đã đăng nhập,
 /// hoặc khi app vừa đăng xuất (tránh tự đăng nhập lại).
@@ -455,7 +477,9 @@ fn watch_status() {
     if login_active() || current().logged_in || SIGNED_OUT_BY_APP.load(Ordering::SeqCst) {
         return;
     }
-    if !matches!(signed_in_by_models(), Ok(true)) {
+    // Chưa đăng nhập: làm mới danh sách model theo chu kỳ (lệnh này không cần đăng nhập vẫn in model)
+    crate::scanner::reload_agy_models();
+    if !matches!(signed_in(), Ok(true)) {
         return;
     }
     if publish_if_changed("logged_in", true, "") {
@@ -464,97 +488,18 @@ fn watch_status() {
     }
 }
 
-/// Đã đăng nhập agy hay chưa, theo `agy models` (cùng nguồn token mà terminal đăng nhập dùng).
+/// Đã đăng nhập agy hay chưa, hỏi qua ACP (cùng thư mục dữ liệu với chat).
 /// Không hỏi hub: hub có thể giữ trạng thái cũ (đã gặp: `authResult: {}` khi tài khoản vẫn đăng nhập).
 pub fn status() -> Result<bool, String> {
-    signed_in_by_models()
+    signed_in()
 }
 
-/// Thời gian tối đa chờ `agy models` khi xác nhận đăng nhập
-const MODELS_TIMEOUT: Duration = Duration::from_secs(20);
-
-/// Dấu trong log agy khi token hợp lệ và xác thực thành công (kèm email tài khoản).
-/// Không dùng danh sách model của `agy models`: agy vẫn in model khi chưa đăng nhập (đã gặp).
-/// Không dùng "Auth succeeded" hay "You are not logged into": cả hai xuất hiện trong cả hai trường hợp.
-const AUTH_OK_MARK: &str = "authenticated successfully as";
-
-/// Đã đăng nhập agy hay chưa. Chạy `agy models` (có timeout) rồi đọc log của agy vừa chạy:
-/// có dòng xác thực thành công thì đã đăng nhập. Đây là tín hiệu duy nhất đã kiểm chứng đúng cả hai chiều.
-fn signed_in_by_models() -> Result<bool, String> {
-    let since = std::time::SystemTime::now();
-    // Output của `agy models` ghi vào file tạm (không dùng pipe: tiến trình con có thể giữ pipe và làm treo)
-    let stamp = since
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or_default();
-    let out_path = std::env::temp_dir().join(format!(
-        "muop-agy-models-{}-{stamp}.txt",
-        std::process::id()
-    ));
-    let out_file = std::fs::File::create(&out_path)
-        .map_err(|e| format!("Không tạo được file tạm cho agy models: {e}"))?;
-    let waited = wait_agy_models(out_file);
-    let output = std::fs::read_to_string(&out_path).unwrap_or_default();
-    let _ = std::fs::remove_file(&out_path);
-    waited?;
-    // Mỗi lần kiểm tra đăng nhập đều có danh sách model mới nhất (kể cả khi chưa đăng nhập agy vẫn in model)
-    crate::scanner::refresh_agy_models(&output);
-    Ok(logged_in_from_logs(&agy_logs_since(since)))
+/// Đã đăng nhập agy hay chưa, hỏi qua ACP (`session/list`, xem `acp.rs`). Không đọc log, không mở luồng OAuth.
+fn signed_in() -> Result<bool, String> {
+    Ok(acp::account_state()?.logged_in)
 }
 
-/// Chạy `agy models` (stdout vào `out`, stderr bỏ) và chờ tối đa [`MODELS_TIMEOUT`]
-fn wait_agy_models(out: std::fs::File) -> Result<(), String> {
-    let agy = crate::chat::agy_bin()?;
-    let mut child = std::process::Command::new(agy)
-        .arg("models")
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::from(out))
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .map_err(|e| format!("Không chạy được agy: {e}"))?;
-    let started = Instant::now();
-    loop {
-        match child.try_wait() {
-            Ok(Some(_)) => return Ok(()),
-            Ok(None) if started.elapsed() < MODELS_TIMEOUT => {
-                thread::sleep(Duration::from_millis(100))
-            }
-            Ok(None) => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return Err("agy models không trả lời kịp".into());
-            }
-            Err(e) => return Err(format!("Lỗi chờ agy models: {e}")),
-        }
-    }
-}
-
-/// Có log nào trong danh sách ghi xác thực thành công hay không
-fn logged_in_from_logs(logs: &[String]) -> bool {
-    logs.iter().any(|log| log.contains(AUTH_OK_MARK))
-}
-
-/// Nội dung các file log agy được tạo hoặc cập nhật từ `since` trở đi (`~/.gemini/antigravity-cli/log`)
-fn agy_logs_since(since: std::time::SystemTime) -> Vec<String> {
-    let Some(home) = std::env::var_os("HOME") else {
-        return Vec::new();
-    };
-    let dir = std::path::Path::new(&home).join(".gemini/antigravity-cli/log");
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return Vec::new();
-    };
-    entries
-        .flatten()
-        .filter(|e| {
-            e.metadata()
-                .and_then(|m| m.modified())
-                .is_ok_and(|t| t >= since)
-        })
-        .filter_map(|e| std::fs::read_to_string(e.path()).ok())
-        .collect()
-}
-
-/// Trạng thái đăng nhập: terminal đăng nhập đang chạy thì lấy từ terminal; không thì hỏi `agy models`.
+/// Trạng thái đăng nhập: terminal đăng nhập đang chạy thì lấy từ terminal; không thì hỏi ACP (`agy acp`).
 /// Không phát event: dùng cho client hỏi bằng `agy:auth:status`.
 pub fn query() -> AgyAuthEvent {
     // Đang đăng nhập trong terminal: trạng thái lấy từ terminal (watcher). Không hỏi hub:
@@ -564,7 +509,7 @@ pub fn query() -> AgyAuthEvent {
         store(&ev);
         return ev;
     }
-    let ev = match signed_in_by_models() {
+    let ev = match signed_in() {
         Ok(true) => make("logged_in", true, ""),
         Ok(false) => make("logged_out", false, ""),
         Err(e) => make("failed", false, &e),
@@ -593,7 +538,7 @@ pub fn check() -> AgyAuthEvent {
     current()
 }
 
-/// Đăng xuất agy bằng đúng thao tác của người dùng: gọi RPC `AuthLogout` của hub.
+/// Đăng xuất agy qua ACP (`logout`).
 /// Hủy terminal đăng nhập đang mở (nếu có). Chặn luồng: gọi qua `spawn_blocking`.
 pub fn logout() -> Result<(), String> {
     cancel_login();
@@ -601,27 +546,28 @@ pub fn logout() -> Result<(), String> {
     match &res {
         Ok(()) => {
             SIGNED_OUT_BY_APP.store(true, Ordering::SeqCst);
+            crate::agy_account::clear_on_logout();
             publish("logged_out", false, "");
             sync_quotas();
         }
-        Err(e) => publish("failed", matches!(signed_in_by_models(), Ok(true)), e),
+        Err(e) => publish("failed", matches!(signed_in(), Ok(true)), e),
     }
     res
 }
 
-/// Thời gian tối đa chờ agy xóa token sau `AuthLogout`, và khoảng cách giữa hai lần kiểm tra
+/// Thời gian tối đa chờ agy xóa token sau `logout` (ACP), và khoảng cách giữa hai lần kiểm tra
 const LOGOUT_WAIT: Duration = Duration::from_secs(60);
 const LOGOUT_CHECK_EVERY: Duration = Duration::from_secs(2);
 
-/// Gọi `AuthLogout` của hub rồi chờ `agy models` báo chưa đăng nhập
+/// Gọi `logout` qua ACP rồi chờ ACP báo chưa đăng nhập
 fn logout_inner() -> Result<(), String> {
-    if matches!(signed_in_by_models(), Ok(false)) {
+    if matches!(signed_in(), Ok(false)) {
         return Ok(());
     }
-    crate::agy_account::logout_via_hub()?;
+    acp::logout()?;
     let deadline = Instant::now() + LOGOUT_WAIT;
     loop {
-        if matches!(signed_in_by_models(), Ok(false)) {
+        if matches!(signed_in(), Ok(false)) {
             return Ok(());
         }
         if Instant::now() >= deadline {
@@ -636,13 +582,13 @@ fn logout_inner() -> Result<(), String> {
 pub fn begin_login() -> Result<(), String> {
     let res = begin_login_inner();
     if let Err(e) = &res {
-        publish("failed", matches!(signed_in_by_models(), Ok(true)), e);
+        publish("failed", matches!(signed_in(), Ok(true)), e);
     }
     res
 }
 
 fn begin_login_inner() -> Result<(), String> {
-    if matches!(signed_in_by_models(), Ok(true)) {
+    if matches!(signed_in(), Ok(true)) {
         return Err("Agy đang đăng nhập. Hãy đăng xuất trước khi đăng nhập lại.".to_string());
     }
     open_login_terminal().map(|_| ())
@@ -658,10 +604,17 @@ pub(crate) fn sync_quotas() {
 /// Trạng thái hai tài khoản (agy và Claude Code CLI) cho màn hình Tài khoản.
 /// Gọi trong blocking thread (có curl tới hub).
 pub fn accounts_status() -> AccountsStatus {
-    let agy_logged_in = matches!(status(), Ok(true));
-    // Email và gói lấy từ DB (watcher của agy_account lấy từ hub), không hỏi hub trong lúc trả lời client
+    // Trạng thái đã biết (watcher và sự kiện đăng nhập giữ nó luôn mới); chỉ hỏi agy khi chưa biết
+    // Đã biết là đăng nhập thì tin trạng thái đã lưu; chưa biết hoặc đang báo chưa đăng nhập thì hỏi lại agy
+    // (lúc khởi động trạng thái mặc định là chưa đăng nhập, không được hiện nhầm là đăng xuất)
+    let agy_logged_in = current().logged_in || matches!(status(), Ok(true));
+    // Email và gói lấy từ DB; DB chưa có thì yêu cầu watcher lấy ngay (không chờ nhịp kế tiếp)
     let (agy_email, agy_plan) = match (agy_logged_in, crate::agy_account::snapshot()) {
         (true, Some(snap)) => (snap.email, snap.plan),
+        (true, None) => {
+            crate::agy_account::request_refresh();
+            (String::new(), String::new())
+        }
         _ => (String::new(), String::new()),
     };
     let (claude_logged_in, claude_plan) = crate::claude::code::claude_account();
@@ -687,25 +640,5 @@ mod publish_tests {
         store(&make("logged_in", true, ""));
         assert!(publish_if_changed("logged_in", true, ""));
         assert!(!publish_if_changed("logged_in", true, ""));
-    }
-}
-
-#[cfg(test)]
-mod login_log_tests {
-    use super::*;
-
-    #[test]
-    fn auth_line_with_account_means_signed_in() {
-        let log = "OAuth: authenticated successfully as a@b.c".to_string();
-        assert!(logged_in_from_logs(&[log]));
-    }
-
-    #[test]
-    fn logged_out_logs_are_not_signed_in() {
-        // Log thật khi chưa đăng nhập: có "Auth succeeded" nhưng không có dòng xác thực theo tài khoản
-        let log =
-            "Auth succeeded, refreshing features\nYou are not logged into Antigravity".to_string();
-        assert!(!logged_in_from_logs(&[log]));
-        assert!(!logged_in_from_logs(&[]));
     }
 }

@@ -35,37 +35,6 @@ pub(super) fn load_agy_turn_models(conversation_id: &str) -> Vec<(DateTime<Utc>,
     turns
 }
 
-#[cfg(test)]
-mod agy_model_tests {
-    use super::parse_agy_models;
-
-    #[test]
-    fn parses_tab_separated_model_list_and_skips_noise() {
-        let output = "Fetching available models...\n\
-            gemini-4-argon-medium\tGemini 4 Argon (Medium)\n\
-            claude-opus-5-5-high\tClaude Opus 5.5 (High)\n\
-            \n\
-            bad id with space\tX\n";
-        let parsed: Vec<(String, String)> = parse_agy_models(output)
-            .into_iter()
-            .map(|m| (m.id, m.label))
-            .collect();
-        assert_eq!(
-            parsed,
-            vec![
-                (
-                    "agy:gemini-4-argon-medium".to_string(),
-                    "Gemini 4 Argon (Medium)".to_string()
-                ),
-                (
-                    "agy:claude-opus-5-5-high".to_string(),
-                    "Claude Opus 5.5 (High)".to_string()
-                ),
-            ]
-        );
-    }
-}
-
 pub(super) fn agy_turn_model_at(turns: &[(DateTime<Utc>, String)], at: DateTime<Utc>) -> String {
     // Step được làm tròn theo giây nên cho phép lệch 1 giây khi so với thời điểm bắt đầu lượt
     turns

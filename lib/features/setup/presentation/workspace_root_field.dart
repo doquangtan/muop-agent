@@ -3,8 +3,9 @@ import 'package:material_ui/material_ui.dart';
 import 'package:muop_agent/core/theme/app_theme.dart';
 import 'package:muop_agent/features/setup/domain/setup_entities.dart';
 import 'package:muop_agent/features/setup/domain/setup_repository.dart';
+import 'package:muop_agent/features/setup/presentation/workspace_folder_picker.dart';
 
-/// Ô chọn thư mục project: người dùng nhập đường dẫn tuyệt đối, server kiểm tra rồi lưu.
+/// Ô chọn thư mục project: người dùng nhập đường dẫn tuyệt đối hoặc duyệt cây thư mục trên server, rồi lưu.
 /// Dùng ở bước Khởi tạo và ở màn Cài đặt. Không có đường dẫn mặc định.
 /// Việc quét project chỉ bắt đầu sau khi khởi tạo xong.
 class WorkspaceRootField extends StatefulWidget {
@@ -49,6 +50,18 @@ class _WorkspaceRootFieldState extends State<WorkspaceRootField> {
     super.dispose();
   }
 
+  /// Mở cây thư mục trên server; chọn xong thì điền vào ô và lưu luôn
+  Future<void> _pickFolder() async {
+    final picked = await showWorkspaceFolderPicker(
+      context,
+      repository: widget.repository,
+      start: _controller.text.trim(),
+    );
+    if (picked == null || !mounted) return;
+    _controller.text = picked;
+    await _save();
+  }
+
   Future<void> _save() async {
     final path = _controller.text.trim();
     if (path.isEmpty) {
@@ -91,21 +104,25 @@ class _WorkspaceRootFieldState extends State<WorkspaceRootField> {
           onSubmitted: (_) => _save(),
         ),
         const SizedBox(height: 8),
+        Text(
+          widget.current.isEmpty
+              ? 'Chưa chọn thư mục project'
+              : 'Đang dùng: ${widget.current}',
+          style: textTheme.bodySmall?.copyWith(
+            color: widget.current.isEmpty
+                ? context.status.warning
+                : scheme.onSurfaceVariant,
+          ),
+        ),
+        const SizedBox(height: 8),
         Row(
           children: [
-            Expanded(
-              child: Text(
-                widget.current.isEmpty
-                    ? 'Chưa chọn thư mục project'
-                    : 'Đang dùng: ${widget.current}',
-                style: textTheme.bodySmall?.copyWith(
-                  color: widget.current.isEmpty
-                      ? context.status.warning
-                      : scheme.onSurfaceVariant,
-                ),
-              ),
+            OutlinedButton.icon(
+              onPressed: enabled ? _pickFolder : null,
+              icon: const Icon(Icons.folder_open_rounded, size: 18),
+              label: const Text('Chọn thư mục…'),
             ),
-            const SizedBox(width: 8),
+            const Spacer(),
             FilledButton(
               onPressed: enabled ? _save : null,
               child: Text(_busy ? 'Đang lưu…' : 'Lưu thư mục'),

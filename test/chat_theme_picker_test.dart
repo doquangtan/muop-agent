@@ -129,6 +129,23 @@ void main() {
       );
       expect(container.read(chatThemeProvider).presetId, 'lagoon_diamond');
 
+      await tester.ensureVisible(
+        find.byKey(const Key('wallpaper-option-none')),
+      );
+      await tester.tap(find.byKey(const Key('wallpaper-option-none')));
+      await tester.pumpAndSettle();
+      expect(
+        container.read(chatThemeProvider).effectiveWallpaperId,
+        ChatThemeConfig.noWallpaperId,
+      );
+      expect(
+        ChatAppearanceColors.resolve(
+          container.read(chatThemeProvider),
+          Brightness.dark,
+        ).hasWallpaper,
+        isFalse,
+      );
+
       // Tùy chỉnh riêng từng phần: nền Toán Học, User Hồng Đào, AI Trung Tính
       await tester.ensureVisible(
         find.byKey(const Key('wallpaper-option-math_emerald')),

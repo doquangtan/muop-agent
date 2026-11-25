@@ -148,7 +148,7 @@ pub async fn exec(row: &SshHostRow, command: &str, timeout_secs: u64) -> SshExec
     // Máy này: shell của server chạy trực tiếp (giữ tmp để khóa tạm còn sống tới khi xong)
     let (mut cmd, _tmp): (Command, Option<TempDir>) = if is_local(row) {
         let mut c = Command::new(local_shell());
-        c.args(["-i", "-c", command]);
+        c.args(["-l", "-i", "-c", command]);
         if let Some(home) = std::env::var_os("HOME")
             .map(PathBuf::from)
             .filter(|p| p.is_dir())
@@ -255,9 +255,9 @@ pub fn remove_auth_files(dir: &Path) {
     let _ = fs::remove_file(dir.join("askpass.sh"));
 }
 
-/// Lệnh gửi lên máy đích: chạy `$SHELL -i -c <lệnh>` để nạp rc của user (PATH, alias...)
+/// Lệnh gửi lên máy đích: chạy `$SHELL -l -i -c <lệnh>` để nạp profile và rc của user (PATH của brew, alias...)
 pub fn remote_interactive_command(command: &str) -> String {
-    format!("\"${{SHELL:-/bin/sh}}\" -i -c {}", shell_quote(command))
+    format!("\"${{SHELL:-/bin/sh}}\" -l -i -c {}", shell_quote(command))
 }
 
 /// Bọc chuỗi thành một đối số shell an toàn (dấu nháy đơn được escape)
@@ -319,13 +319,16 @@ mod tests {
         assert_eq!(shell_quote("uptime"), "'uptime'");
         assert_eq!(
             remote_interactive_command("uptime"),
-            "\"${SHELL:-/bin/sh}\" -i -c 'uptime'"
+            "\"${SHELL:-/bin/sh}\" -l -i -c 'uptime'"
         );
     }
 
     #[test]
     fn dto_never_contains_secrets() {
-        let dto = to_dto(&row("10.0.0.1", "john", "secret", "-----KEY"));
+        // Id riêng: `is_builtin` tra DB thật (máy mặc định có thể mang id 1 trên một số máy)
+        let mut r = row("10.0.0.1", "john", "secret", "-----KEY");
+        r.id = 987_654;
+        let dto = to_dto(&r);
         let json = serde_json::to_string(&dto).unwrap();
         assert!(!json.contains("secret"));
         assert!(!json.contains("KEY"));

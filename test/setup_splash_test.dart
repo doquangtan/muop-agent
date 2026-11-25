@@ -70,6 +70,10 @@ class _FakeSetupRepository implements SetupRepository {
   Future<SetupStatus> setWorkspace(String path) async => SetupStatus.empty;
 
   @override
+  Future<SetupDirListing> browseDirectories(String path) async =>
+      SetupDirListing.failure('không dùng trong test');
+
+  @override
   Future<SetupStatus> setToolPath(String tool, String path) async => SetupStatus.empty;
 
   @override
@@ -152,11 +156,13 @@ Future<List<bool?>> _openSplash(
 }
 
 void main() {
-  test('needsSetup is false only when completed, CLIs chosen and installed, base tools present', () {
+  test('needsSetup is false when completed, one chosen CLI installed, base tools present', () {
     expect(_status(completed: true, clis: ['agy'], installed: ['agy']).needsSetup, isFalse);
     expect(_status(completed: false, clis: ['agy'], installed: ['agy']).needsSetup, isTrue);
     expect(_status(completed: true, clis: [], installed: []).needsSetup, isTrue);
-    expect(_status(completed: true, clis: ['agy', 'claude'], installed: ['agy']).needsSetup, isTrue);
+    expect(_status(completed: true, clis: ['agy', 'claude'], installed: []).needsSetup, isTrue);
+    // Chọn cả hai, chỉ một cái cài được: vẫn đủ để vào app
+    expect(_status(completed: true, clis: ['agy', 'claude'], installed: ['agy']).needsSetup, isFalse);
   });
 
   testWidgets('splash closes with false when setup is complete', (tester) async {

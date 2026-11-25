@@ -246,6 +246,14 @@ async fn gui_shell_present(conn: &zbus::Connection) -> bool {
 }
 
 pub fn spawn_system_tray(screen: Arc<ScreenManager>) {
+    // System tray dùng StatusNotifierItem qua D-Bus (chỉ Linux). Nơi khác bỏ qua, server vẫn chạy bình thường.
+    if !crate::infra::platform::IS_LINUX {
+        tracing::info!(
+            "System tray chỉ hỗ trợ Linux, bỏ qua trên {}",
+            crate::infra::platform::name()
+        );
+        return;
+    }
     tokio::spawn(async move {
         tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
         wait_for_gui().await;

@@ -273,17 +273,57 @@ fn login_url_spans(raw: &[u8]) -> Vec<(String, String)> {
     if !spans.is_empty() {
         return spans;
     }
-    // Không có OSC 8: lấy chuỗi liền từ tiền tố đến khoảng trắng hoặc ký tự điều khiển
+    // Không có OSC 8: lấy URL thuần từ tiền tố, nối lại chỗ TUI ngắt dòng
     let text = String::from_utf8_lossy(raw).into_owned();
     for (start, _) in text.match_indices(LOGIN_URL_PREFIX) {
-        let url: String = text[start..]
-            .chars()
-            .take_while(|c| !c.is_whitespace() && !c.is_control())
-            .collect();
-        let end = start + url.len();
+        let (url, consumed) = plain_url_at(&text[start..]);
+        let end = start + consumed;
         spans.push((url, text[end..].to_string()));
     }
     spans
+}
+
+/// Ký tự được phép trong URL OAuth (RFC 3986)
+fn is_url_char(c: char) -> bool {
+    c.is_ascii_alphanumeric() || "-._~:/?#[]@!$&'()*+,;=%".contains(c)
+}
+
+/// URL thuần bắt đầu ở đầu `text`, và số byte đã đọc. Khi terminal hẹp, agy ngắt dòng ngay giữa URL và dòng
+/// sau bắt đầu bằng ký tự của URL: nối tiếp qua xuống dòng, miễn là URL chưa có tham số `state=` (tham số
+/// này luôn đứng cuối link OAuth của Google, nên sau nó xuống dòng là hết link).
+fn plain_url_at(text: &str) -> (String, usize) {
+    let mut url = String::new();
+    let mut consumed = 0;
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\r' || c == '\n' {
+            // "\r\n" là một lần ngắt dòng
+            let mut newline_len = c.len_utf8();
+            if c == '\r' && chars.peek() == Some(&'\n') {
+                chars.next();
+                newline_len += 1;
+            }
+            // Dòng sau là phần còn lại của URL khi toàn bộ đoạn đó là ký tự URL và có tham số (= hoặc &).
+            // Chữ thường như "Select login method" hay "(1-10 of 32)" không có tham số nên không được nối.
+            let still_open = !url.contains("state=") || url.ends_with("state=");
+            let next: String = chars.clone().take_while(|n| !n.is_whitespace()).collect();
+            let continues = still_open
+                && !next.is_empty()
+                && next.chars().all(is_url_char)
+                && (next.contains('=') || next.contains('&'));
+            if continues {
+                consumed += newline_len;
+                continue;
+            }
+            break;
+        }
+        if !is_url_char(c) {
+            break;
+        }
+        url.push(c);
+        consumed += c.len_utf8();
+    }
+    (url, consumed)
 }
 
 /// Mốc màn hình đã đổi (đã bỏ khoảng trắng, viết thường). Link in ra trước các mốc này không còn trên màn hình.
@@ -400,6 +440,29 @@ mod tests {
             b"https://accounts.google.com/o/oauth2/auth?a=1\x1b[1CGot\x1b[1Can\x1b[1Cerror: x";
         assert_eq!(link_on_screen(error_after), None);
         assert_eq!(link_on_screen(b"no link here"), None);
+    }
+
+    #[test]
+    fn joins_login_url_wrapped_by_narrow_terminal() {
+        // TUI hẹp ngắt dòng ngay giữa URL: phải nối lại đủ link, không dừng ở chỗ xuống dòng
+        let raw = b"Open the URL below in your browser:\r\n\
+https://accounts.google.com/o/oauth2/auth?client_id=abc&redirect_uri=http%3A%2F%2Flocalhost\r\n\
+xyz&state=qwe123\r\n\
+Enter the code shown";
+        assert_eq!(
+            login_url(raw).as_deref(),
+            Some("https://accounts.google.com/o/oauth2/auth?client_id=abc&redirect_uri=http%3A%2F%2Flocalhostxyz&state=qwe123")
+        );
+    }
+
+    #[test]
+    fn does_not_join_text_after_complete_login_url() {
+        // Sau tham số state= đã đủ, xuống dòng là hết link (dòng chữ kế tiếp không được nối vào)
+        let raw = b"https://accounts.google.com/o/oauth2/auth?client_id=abc&state=qwe123\r\nEnter the code";
+        assert_eq!(
+            login_url(raw).as_deref(),
+            Some("https://accounts.google.com/o/oauth2/auth?client_id=abc&state=qwe123")
+        );
     }
 
     #[test]

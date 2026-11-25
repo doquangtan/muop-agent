@@ -6,9 +6,9 @@ import 'package:muop_agent/core/theme/app_theme.dart';
 import 'package:muop_agent/features/agy_auth/domain/agy_auth_entities.dart';
 import 'package:muop_agent/features/agy_auth/domain/agy_auth_repository.dart';
 import 'package:muop_agent/features/agy_auth/presentation/accounts_screen.dart';
-import 'package:muop_agent/features/agy_auth/presentation/agy_login_panel.dart';
 import 'package:muop_agent/features/claude_auth/domain/claude_auth_entities.dart';
 import 'package:muop_agent/features/claude_auth/domain/claude_auth_repository.dart';
+import 'package:muop_agent/features/agy_auth/presentation/agy_login_panel.dart';
 import 'package:muop_agent/features/ssh/presentation/ssh_terminal_panel.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -57,6 +57,8 @@ class _FakeAgyAuthRepository implements AgyAuthRepository {
   /// Kết quả kiểm tra `agy:auth:check` (mặc định: trạng thái hiện tại)
   AgyAuthState? checkResult;
 
+  bool _started = false;
+
   final _updates = StreamController<AgyAuthState>.broadcast();
 
   /// Giả lập server đẩy `agy:auth:update`
@@ -87,12 +89,15 @@ class _FakeAgyAuthRepository implements AgyAuthRepository {
   @override
   Future<AgyAuthState> checkStatus() async {
     calls.add('check');
+    // Sau khi bắt đầu đăng nhập, server vẫn báo đang ở terminal đăng nhập (không phải đã đăng xuất)
+    if (checkResult == null && _started && !status.terminalOpen) return _terminal();
     return checkResult ?? status;
   }
 
   @override
   Future<AgyAuthState> startLogin() async {
     calls.add('start');
+    _started = true;
     return _terminal();
   }
 
@@ -198,7 +203,21 @@ void main() {
     expect(find.text('Sao chép'), findsOneWidget);
     expect(find.text('Mở link'), findsOneWidget);
     // Terminal SSH vẫn hiện suốt quá trình đăng nhập; link và ô mã nằm bên dưới
+    expect(find.byType(SshTerminalPanel), findsNothing);
+    expect(find.text('Mở terminal (chỉ khi cần)'), findsOneWidget);
+  });
+
+  testWidgets('link do server đọc hiện ngay, terminal ẩn đến khi người dùng mở', (tester) async {
+    final repo = _FakeAgyAuthRepository(status: _terminal(loginUrl: _link, stage: 'awaiting_token'));
+    await _pump(tester, repo);
+
+    expect(find.text('Mở link'), findsOneWidget);
+    expect(find.byType(SshTerminalPanel), findsNothing);
+    await tester.tap(find.text('Mở terminal (chỉ khi cần)'));
+    await tester.pumpAndSettle();
     expect(find.byType(SshTerminalPanel), findsOneWidget);
+    // Mở terminal không làm mất link
+    expect(find.text('Mở link'), findsOneWidget);
   });
 
   testWidgets('màn không còn link: ẩn nút mở link, sao chép và ô mã; terminal vẫn hiện', (tester) async {
@@ -212,7 +231,8 @@ void main() {
     expect(find.text('Mở link'), findsNothing);
     expect(find.text('Sao chép'), findsNothing);
     expect(find.widgetWithText(TextField, 'Mã xác thực'), findsNothing);
-    expect(find.byType(SshTerminalPanel), findsOneWidget);
+    expect(find.byType(SshTerminalPanel), findsNothing);
+    expect(find.text('Mở terminal (chỉ khi cần)'), findsOneWidget);
   });
 
   testWidgets('đang đăng nhập: kiểm tra agy định kỳ bằng agy:auth:check, vào màn chat thì chuyển đã đăng nhập', (tester) async {
@@ -248,7 +268,8 @@ void main() {
     await _pump(tester, repo, settle: false);
 
     expect(find.text('Đang xác nhận mã với agy...'), findsOneWidget);
-    expect(find.byType(SshTerminalPanel), findsOneWidget);
+    expect(find.byType(SshTerminalPanel), findsNothing);
+    expect(find.text('Mở terminal (chỉ khi cần)'), findsOneWidget);
     final field = tester.widget<TextField>(find.widgetWithText(TextField, 'Mã xác thực'));
     expect(field.enabled, isNot(false));
     final confirm = tester.widget<FilledButton>(find.widgetWithText(FilledButton, 'Xác nhận'));

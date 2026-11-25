@@ -329,6 +329,7 @@ class _SshTerminalPanelState extends State<SshTerminalPanel> {
             ),
           ),
         Expanded(child: _terminalView()),
+        _keyBar(scheme),
       ],
     );
 
@@ -346,4 +347,48 @@ class _SshTerminalPanelState extends State<SshTerminalPanel> {
         autofocus: true,
         theme: TerminalThemes.defaultTheme,
       );
+
+  /// Phím điều hướng và phím điều khiển không có trên bàn phím điện thoại (mũi tên, Esc, Tab, Ctrl+C).
+  /// Gửi qua `keyInput` của terminal nên đi tới server đúng như phím thật.
+  static const _keyBarItems = <(String, TerminalKey, bool)>[
+    ('Esc', TerminalKey.escape, false),
+    ('Tab', TerminalKey.tab, false),
+    ('Ctrl+C', TerminalKey.keyC, true),
+    ('↑', TerminalKey.arrowUp, false),
+    ('↓', TerminalKey.arrowDown, false),
+    ('←', TerminalKey.arrowLeft, false),
+    ('→', TerminalKey.arrowRight, false),
+    ('Enter', TerminalKey.enter, false),
+  ];
+
+  Widget _keyBar(ColorScheme scheme) {
+    final enabled = _sessionId != null && !_closed;
+    return Container(
+      color: scheme.surfaceContainerHigh,
+      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
+      child: SingleChildScrollView(
+        scrollDirection: Axis.horizontal,
+        child: Row(
+          children: [
+            for (final (label, key, ctrl) in _keyBarItems)
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 3),
+                // Không nhận focus: bấm phím không làm mất bàn phím ảo đang mở
+                child: Focus(
+                  canRequestFocus: false,
+                  child: OutlinedButton(
+                    onPressed: enabled ? () => _terminal.keyInput(key, ctrl: ctrl) : null,
+                    style: OutlinedButton.styleFrom(
+                      minimumSize: const Size(44, 36),
+                      padding: const EdgeInsets.symmetric(horizontal: 10),
+                    ),
+                    child: Text(label, style: const TextStyle(fontFamily: 'monospace')),
+                  ),
+                ),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
 }

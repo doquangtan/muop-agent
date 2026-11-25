@@ -31,10 +31,30 @@ class ConnectionRepositoryImpl implements ConnectionRepository {
     return list;
   }
 
-  Future<void> _writeConfig(String address, List<String> servers) =>
+  /// Tên máy đã nhớ: `serverNames` là map địa chỉ → hostname
+  Map<String, String> _names(Map<String, dynamic> config) {
+    final names = <String, String>{};
+    final raw = config['serverNames'];
+    if (raw is Map) {
+      raw.forEach((key, value) {
+        final name = '$value'.trim();
+        if ('$key'.trim().isNotEmpty && name.isNotEmpty) {
+          names['$key'.trim()] = name;
+        }
+      });
+    }
+    return names;
+  }
+
+  Future<void> _writeConfig(
+    String address,
+    List<String> servers,
+    Map<String, String> names,
+  ) =>
       LocalConfigStore.writeJson(_configFileName, {
         'serverAddress': address,
         'servers': servers,
+        'serverNames': names,
         'updatedAt': DateTime.now().toIso8601String(),
       });
 
@@ -52,7 +72,7 @@ class ConnectionRepositoryImpl implements ConnectionRepository {
     final known = _servers(config);
     final previous = '${config['serverAddress'] ?? ''}'.trim();
     if (previous.isNotEmpty && !known.contains(previous)) known.add(previous);
-    await _writeConfig(clean, rememberServer(known, clean));
+    await _writeConfig(clean, rememberServer(known, clean), _names(config));
   }
 
   @override
@@ -71,12 +91,33 @@ class ConnectionRepositoryImpl implements ConnectionRepository {
   Future<void> removeSavedServer(String address) async {
     final config = await _readConfig();
     final servers = forgetServer(_servers(config), address);
+    final names = _names(config)..remove(address.trim());
     final current = '${config['serverAddress'] ?? ''}'.trim();
     // Xóa địa chỉ đang dùng thì chuyển sang mục đầu còn lại (hoặc mặc định)
     final nextCurrent = current == address.trim()
         ? (servers.isNotEmpty ? servers.first : defaultHostAddress)
         : (current.isNotEmpty ? current : defaultHostAddress);
-    await _writeConfig(nextCurrent, servers);
+    await _writeConfig(nextCurrent, servers, names);
+  }
+
+  @override
+  Future<Map<String, String>> loadServerNames() async =>
+      _names(await _readConfig());
+
+  @override
+  Future<void> saveServerName(String address, String name) async {
+    final clean = address.trim();
+    final hostname = name.trim();
+    if (clean.isEmpty || hostname.isEmpty) return;
+    final config = await _readConfig();
+    final names = _names(config)..[clean] = hostname;
+    await _writeConfig(
+      '${config['serverAddress'] ?? ''}'.trim().isNotEmpty
+          ? '${config['serverAddress']}'.trim()
+          : defaultHostAddress,
+      _servers(config),
+      names,
+    );
   }
 
   /// Quét mạng LAN của máy client: thăm `/api/ping` cổng 8787 trên mọi IP của các dải /24

@@ -256,13 +256,34 @@ pub(super) fn refresh_usage_if_due(token: &str) {
     }
 }
 
-/// Đọc accessToken OAuth của Claude Code từ `~/.claude/.credentials.json`.
-/// Trả về `(token, subscriptionType)`. Không ghi log token.
+/// Đọc accessToken OAuth của Claude Code CLI, cùng nguồn với danh sách model (`cli::claude_oauth_token`):
+/// trên macOS thử Keychain trước, rồi tới `~/.claude/.credentials.json`. Trả về `(token, subscriptionType)`.
+/// Không ghi log token.
 pub(super) fn read_oauth_credentials() -> Result<(String, String), String> {
-    let path = home_dir().join(".claude/.credentials.json");
-    let raw = fs::read_to_string(&path)
-        .map_err(|_| "Chưa đăng nhập Claude Code CLI (không tìm thấy credentials)".to_string())?;
-    let v: Value = serde_json::from_str(&raw)
+    let mut sources: Vec<String> = Vec::new();
+    if crate::infra::platform::IS_MACOS {
+        sources.extend(super::cli::keychain_credentials());
+    }
+    if let Ok(raw) = fs::read_to_string(home_dir().join(".claude/.credentials.json")) {
+        sources.push(raw);
+    }
+    if sources.is_empty() {
+        return Err("Chưa đăng nhập Claude Code CLI (không tìm thấy credentials)".to_string());
+    }
+    let now_ms = chrono::Utc::now().timestamp_millis();
+    let mut last_err = String::new();
+    for raw in &sources {
+        match parse_oauth_credentials(raw, now_ms) {
+            Ok(found) => return Ok(found),
+            Err(e) => last_err = e,
+        }
+    }
+    Err(last_err)
+}
+
+/// Phân tích một nguồn credentials (hàm thuần): token, gói; lỗi nếu thiếu hoặc đã hết hạn
+pub(super) fn parse_oauth_credentials(raw: &str, now_ms: i64) -> Result<(String, String), String> {
+    let v: Value = serde_json::from_str(raw)
         .map_err(|_| "File credentials của Claude Code CLI không hợp lệ".to_string())?;
     let oauth = v
         .get("claudeAiOauth")
@@ -273,7 +294,6 @@ pub(super) fn read_oauth_credentials() -> Result<(String, String), String> {
         .ok_or_else(|| "Thiếu accessToken của Claude Code CLI".to_string())?
         .to_string();
     let expires_at = oauth.get("expiresAt").and_then(|x| x.as_i64()).unwrap_or(0);
-    let now_ms = chrono::Utc::now().timestamp_millis();
     if expires_at > 0 && expires_at <= now_ms {
         return Err("Token Claude đã hết hạn — mở Claude Code CLI một lần để làm mới".to_string());
     }
@@ -283,6 +303,24 @@ pub(super) fn read_oauth_credentials() -> Result<(String, String), String> {
         .unwrap_or("")
         .to_string();
     Ok((token, plan))
+}
+
+#[cfg(test)]
+mod oauth_source_tests {
+    use super::*;
+
+    #[test]
+    fn expired_source_is_rejected_and_fresh_one_returns_plan() {
+        let expired =
+            r#"{"claudeAiOauth":{"accessToken":"a","expiresAt":1000,"subscriptionType":"pro"}}"#;
+        let fresh =
+            r#"{"claudeAiOauth":{"accessToken":"b","expiresAt":9000,"subscriptionType":"max"}}"#;
+        assert!(parse_oauth_credentials(expired, 5000).is_err());
+        assert_eq!(
+            parse_oauth_credentials(fresh, 5000),
+            Ok(("b".to_string(), "max".to_string()))
+        );
+    }
 }
 
 /// Gọi endpoint usage (cùng nguồn với `/usage` của Claude Code). Token được đưa qua stdin của curl
@@ -390,13 +428,25 @@ pub fn build_limit_group(
 
 /// Claude Code CLI đã đăng nhập chưa, và gói (ví dụ "pro") từ `~/.claude/.credentials.json`
 pub fn claude_account() -> (bool, String) {
-    if !home_dir().join(".claude/.credentials.json").exists() {
-        return (false, String::new());
+    // Hỏi `claude auth status --json` (native, đúng cả trên macOS: token nằm trong Keychain, không có file
+    // credentials). Cache ngắn để mở màn Tài khoản không chạy CLI mỗi lần.
+    static CACHE: Mutex<Option<(Instant, (bool, String))>> = Mutex::new(None);
+    const TTL: Duration = Duration::from_secs(10);
+    if let Ok(guard) = CACHE.lock() {
+        if let Some((at, value)) = guard.as_ref() {
+            if at.elapsed() < TTL {
+                return value.clone();
+            }
+        }
     }
-    match read_oauth_credentials() {
-        Ok((_, plan)) => (true, plan),
-        Err(_) => (false, String::new()),
+    let value = match crate::claude_auth::cli_auth_status() {
+        Ok(info) if info.logged_in => (true, info.subscription_type),
+        _ => (false, String::new()),
+    };
+    if let Ok(mut guard) = CACHE.lock() {
+        *guard = Some((Instant::now(), value.clone()));
     }
+    value
 }
 
 /// Limit Claude Code CLI dưới dạng `ModelQuotaGroup` để dùng chung luồng quota với Antigravity.

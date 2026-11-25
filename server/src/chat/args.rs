@@ -1,5 +1,10 @@
 use super::*;
 
+/// Thư mục dữ liệu của agy mà server dùng cho mọi lệnh: chat, hub, đăng nhập, `agy models`, đọc log.
+/// Phải giống nhau ở tất cả các chỗ: token đăng nhập nằm ở đâu thì lệnh nào đọc đúng thư mục đó mới thấy.
+/// Thư mục mặc định của CLI là `antigravity-cli`; trên Mac (phiên SSH lưu token ra file) hai thư mục này tách rời.
+pub const AGY_APP_DATA_ARG: &str = "--app_data_dir=antigravity";
+
 pub(super) fn agy_args(
     prompt: &str,
     model: &str,
@@ -7,7 +12,7 @@ pub(super) fn agy_args(
     agent: &str,
 ) -> Vec<String> {
     let mut args = vec![
-        "--app_data_dir=antigravity".to_string(),
+        AGY_APP_DATA_ARG.to_string(),
         "--dangerously-skip-permissions".to_string(),
         "--output-format=stream-json".to_string(),
     ];

@@ -64,6 +64,10 @@ pub fn search_path() -> std::ffi::OsString {
         dirs.push(PathBuf::from(gopath).join("bin"));
     }
     dirs.push(PathBuf::from("/usr/local/bin"));
+    if crate::infra::platform::IS_MACOS {
+        // Homebrew trên Apple Silicon đặt công cụ ở /opt/homebrew/bin
+        dirs.push(PathBuf::from("/opt/homebrew/bin"));
+    }
     let mut unique: Vec<PathBuf> = Vec::new();
     for d in dirs {
         if !d.as_os_str().is_empty() && !unique.contains(&d) {
@@ -116,6 +120,29 @@ fn which_cached(name: &str) -> Option<PathBuf> {
         guard.insert(name.to_string(), (found.clone(), Instant::now()));
     }
     found
+}
+
+/// Như `locate` nhưng dò lại trên đĩa, không dùng cache. Dùng ngay sau khi cài xong:
+/// cache "không tìm thấy" (3 giây) được ghi bởi các lần cập nhật trạng thái trong lúc cài.
+pub fn locate_uncached(name: &str) -> Option<PathBuf> {
+    if !valid_name(name) {
+        return None;
+    }
+    if let Some(p) = override_path(name) {
+        if is_executable(&p) {
+            return Some(p);
+        }
+    }
+    which_raw(name)
+}
+
+/// Bỏ kết quả đã cache của `name` để lần dò kế tiếp đọc lại đĩa
+pub fn forget(name: &str) {
+    if let Some(cache) = CACHE.get() {
+        if let Ok(mut guard) = cache.lock() {
+            guard.remove(name);
+        }
+    }
 }
 
 /// Đường dẫn người dùng đã lưu cho `name` (chuỗi rỗng coi như chưa chọn)
@@ -182,11 +209,7 @@ pub fn set_override(name: &str, raw: &str) -> Result<(), String> {
     if !store::set_app_setting(&format!("{OVERRIDE_PREFIX}{name}"), &value) {
         return Err("Không lưu được đường dẫn công cụ".into());
     }
-    if let Some(cache) = CACHE.get() {
-        if let Ok(mut guard) = cache.lock() {
-            guard.remove(name);
-        }
-    }
+    forget(name);
     Ok(())
 }
 

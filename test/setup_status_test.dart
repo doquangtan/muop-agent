@@ -99,4 +99,18 @@ void main() {
     expect(job.running, isFalse);
     expect(job.log, isEmpty);
   });
+
+  test('reads platform from server and defaults to linux when absent', () {
+    final mac = SetupStatus.fromJson({
+      'ok': true,
+      'platform': 'macos',
+      'aptPackages': [],
+    });
+    expect(mac.platform, 'macos');
+    expect(mac.isMacOS, isTrue);
+
+    final legacy = SetupStatus.fromJson({'ok': true});
+    expect(legacy.platform, 'linux');
+    expect(legacy.isMacOS, isFalse);
+  });
 }

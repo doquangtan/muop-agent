@@ -174,6 +174,64 @@ class SetupSsh {
       );
 }
 
+/// Một thư mục con trong kết quả duyệt thư mục trên server
+class SetupDirEntry {
+  const SetupDirEntry({required this.name, required this.path});
+
+  final String name;
+  final String path;
+
+  factory SetupDirEntry.fromJson(Map<String, dynamic> json) => SetupDirEntry(
+        name: json['name'] as String? ?? '',
+        path: json['path'] as String? ?? '',
+      );
+}
+
+/// Kết quả duyệt một thư mục trên máy server (cây thư mục để chọn project)
+class SetupDirListing {
+  const SetupDirListing({
+    required this.ok,
+    required this.error,
+    required this.path,
+    required this.parent,
+    required this.home,
+    required this.dirs,
+  });
+
+  final bool ok;
+  final String error;
+
+  /// Thư mục đang xem (tuyệt đối, đã chuẩn hóa trên server)
+  final String path;
+
+  /// Thư mục cha; rỗng khi ở thư mục gốc
+  final String parent;
+
+  /// Thư mục home của user chạy server (điểm bắt đầu)
+  final String home;
+  final List<SetupDirEntry> dirs;
+
+  factory SetupDirListing.failure(String error) => SetupDirListing(
+        ok: false,
+        error: error,
+        path: '',
+        parent: '',
+        home: '',
+        dirs: const [],
+      );
+
+  factory SetupDirListing.fromJson(Map<String, dynamic> json) => SetupDirListing(
+        ok: json['ok'] as bool? ?? false,
+        error: json['error'] as String? ?? '',
+        path: json['path'] as String? ?? '',
+        parent: json['parent'] as String? ?? '',
+        home: json['home'] as String? ?? '',
+        dirs: (json['dirs'] as List<dynamic>? ?? const [])
+            .map((e) => SetupDirEntry.fromJson(Map<String, dynamic>.from(e as Map)))
+            .toList(),
+      );
+}
+
 /// Trạng thái khởi tạo của server. `ok == false` nghĩa là không gọi được server hoặc lệnh bị từ chối.
 class SetupStatus {
   const SetupStatus({
@@ -186,9 +244,19 @@ class SetupStatus {
     required this.ssh,
     this.aptPackages = const [],
     this.aptInstallCommand = '',
+    this.brewPackages = const [],
+    this.brewInstallCommand = '',
     this.workspaceRoot = '',
     this.workspaceReady = false,
+    this.platform = 'linux',
   });
+
+  /// Nền tảng của máy chạy server: `linux`, `macos` hoặc `other`. Quyết định nội dung màn Khởi tạo
+  /// (mục apt và FUSE chỉ có trên Linux; macOS dùng Xcode Command Line Tools).
+  final String platform;
+
+  /// Server đang chạy trên macOS
+  bool get isMacOS => platform == 'macos';
 
   /// Thư mục project đã chọn khi khởi tạo (rỗng nếu chưa chọn)
   final String workspaceRoot;
@@ -204,6 +272,12 @@ class SetupStatus {
 
   /// Lệnh cài các gói còn thiếu (rỗng nếu đủ); server tạo, client chạy trong terminal
   final String aptInstallCommand;
+
+  /// Các cask Homebrew server quản lý trên macOS (FUSE-T...), kèm trạng thái đã cài
+  final List<SetupAptPackage> brewPackages;
+
+  /// Lệnh `brew install --cask ...` cho các cask còn thiếu (rỗng nếu đủ hoặc chưa có Homebrew)
+  final String brewInstallCommand;
 
   /// Đã vào màn hình chính ít nhất một lần (hoặc đã bỏ qua bước đăng nhập)
   final bool completed;
@@ -255,8 +329,13 @@ class SetupStatus {
           .map((e) => SetupAptPackage.fromJson(Map<String, dynamic>.from(e as Map)))
           .toList(),
       aptInstallCommand: json['aptInstallCommand'] as String? ?? '',
+      brewPackages: (json['brewPackages'] as List<dynamic>? ?? const [])
+          .map((e) => SetupAptPackage.fromJson(Map<String, dynamic>.from(e as Map)))
+          .toList(),
+      brewInstallCommand: json['brewInstallCommand'] as String? ?? '',
       workspaceRoot: json['workspaceRoot'] as String? ?? '',
       workspaceReady: json['workspaceReady'] as bool? ?? false,
+      platform: json['platform'] as String? ?? 'linux',
     );
   }
 
@@ -271,10 +350,14 @@ class SetupStatus {
 
   /// Cần mở wizard khi thiếu một mục: chưa khởi tạo, chưa chọn CLI, CLI đã chọn chưa cài,
   /// hoặc thiếu tool bắt buộc. SSH không tính: máy này dùng shell của server trực tiếp. Đăng nhập agy/claude không tính.
+  /// Server đang cài một CLI (có thể do app đã thoát và mở lại giữa chừng)
+  bool get installing => job != null && job!.running;
+
   bool get needsSetup =>
       !completed ||
+      installing ||
       workspaceRoot.isEmpty ||
-      selectedClis.isEmpty ||
-      selectedClis.any((id) => !isInstalled(id)) ||
+      // Chỉ cần một CLI đã chọn được cài là đủ (chọn cả hai thì cài thêm sau cũng không chặn)
+      !selectedClis.any(isInstalled) ||
       tools.any((t) => t.group == 'base' && !t.installed);
 }

@@ -128,6 +128,9 @@ fn stream_size(props: &Results) -> Option<(u32, u32)> {
 
 /// Mở phiên ScreenCast: chọn màn hình, bắt đầu, rồi lấy PipeWire remote
 pub async fn open(restore_token: Option<String>) -> Result<OpenedStream, String> {
+    if !crate::infra::platform::IS_LINUX {
+        return Err("Quay màn hình chỉ hỗ trợ Linux (xdg-desktop-portal và PipeWire)".into());
+    }
     let conn = Connection::session()
         .await
         .map_err(err("Không kết nối được session D-Bus"))?;

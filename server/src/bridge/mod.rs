@@ -302,7 +302,12 @@ pub async fn send_chat(mut body: Value) -> Result<Value, String> {
         .trim()
         .to_string();
     if !project.is_empty() {
-        body["remoteProject"] = remote_project(&project, &scanner::detect_lan_ips(), scanner::listen_port(), &origin_label());
+        body["remoteProject"] = remote_project(
+            &project,
+            &scanner::detect_lan_ips(),
+            scanner::listen_port(),
+            &origin_label(),
+        );
     }
     // Prompt gửi nguyên văn: máy phụ không thêm nhãn nguồn, phân biệt bằng màu trên máy chính
     emit_ack("chat:send", body).await
@@ -421,11 +426,7 @@ fn peer_http_client() -> Result<reqwest::Client, String> {
 
 /// Tên máy B, dùng làm nhãn nguồn trong prompt gửi tới A.
 pub fn origin_label() -> String {
-    std::fs::read_to_string("/etc/hostname")
-        .ok()
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| "máy B".to_string())
+    crate::scanner::local_hostname().unwrap_or_else(|| "máy B".to_string())
 }
 
 #[cfg(test)]
@@ -461,7 +462,10 @@ mod tests {
             "projectName": "3b0cf23755d3e304"
         });
         let mapped = map_peer_session_in(&s, &projects).expect("thuộc project của máy này");
-        assert_eq!(mapped["projectPath"], "/home/john/Documents/muop-ecosystem/muop-agent");
+        assert_eq!(
+            mapped["projectPath"],
+            "/home/john/Documents/muop-ecosystem/muop-agent"
+        );
         assert_eq!(mapped["projectName"], "muop-agent");
         assert_eq!(mapped["id"], "cid-1");
     }
@@ -475,7 +479,8 @@ mod tests {
         // Conversation chạy trên chính máy phụ (không qua mount)
         let own = json!({"projectPath": "/home/john/Documents/muop-ecosystem/muop-erp-app"});
         // Mount của project không thuộc máy này
-        let other_mount = json!({"projectPath": "/home/john/.local/share/muop-agent/mounts/0000000000000000"});
+        let other_mount =
+            json!({"projectPath": "/home/john/.local/share/muop-agent/mounts/0000000000000000"});
         assert!(map_peer_session_in(&own, &projects).is_none());
         assert!(map_peer_session_in(&other_mount, &projects).is_none());
         assert!(map_peer_session_in(&json!({}), &projects).is_none());

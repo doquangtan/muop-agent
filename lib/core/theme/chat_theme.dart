@@ -22,6 +22,7 @@ class ChatThemeConfig {
   });
 
   static const ChatThemeConfig defaults = ChatThemeConfig();
+  static const String noWallpaperId = 'none';
 
   final String presetId;
   final String? customWallpaperId;
@@ -211,6 +212,7 @@ class ChatThemePreset {
 @immutable
 class ChatAppearanceColors extends ThemeExtension<ChatAppearanceColors> {
   const ChatAppearanceColors({
+    this.hasWallpaper = true,
     required this.pattern,
     required this.wallpaperGradient,
     required this.wallpaperStroke,
@@ -224,6 +226,7 @@ class ChatAppearanceColors extends ThemeExtension<ChatAppearanceColors> {
     required this.aiBubbleMutedText,
   });
 
+  final bool hasWallpaper;
   final ChatWallpaperPattern pattern;
   final List<Color> wallpaperGradient;
   final Color wallpaperStroke;
@@ -242,6 +245,8 @@ class ChatAppearanceColors extends ThemeExtension<ChatAppearanceColors> {
   ) {
     final isDark = brightness == Brightness.dark;
     final preset = config.preset;
+    final hasWallpaper =
+        config.effectiveWallpaperId != ChatThemeConfig.noWallpaperId;
 
     final wallpaper = kWallpaperPresets.firstWhere(
       (w) => w.id == config.effectiveWallpaperId,
@@ -257,6 +262,7 @@ class ChatAppearanceColors extends ThemeExtension<ChatAppearanceColors> {
     );
 
     return ChatAppearanceColors(
+      hasWallpaper: hasWallpaper,
       pattern: wallpaper.pattern,
       wallpaperGradient: isDark ? wallpaper.darkGradient : wallpaper.lightGradient,
       wallpaperStroke: isDark ? wallpaper.darkStroke : wallpaper.lightStroke,
@@ -279,6 +285,7 @@ class ChatAppearanceColors extends ThemeExtension<ChatAppearanceColors> {
 
   @override
   ChatAppearanceColors copyWith({
+    bool? hasWallpaper,
     ChatWallpaperPattern? pattern,
     List<Color>? wallpaperGradient,
     Color? wallpaperStroke,
@@ -292,6 +299,7 @@ class ChatAppearanceColors extends ThemeExtension<ChatAppearanceColors> {
     Color? aiBubbleMutedText,
   }) {
     return ChatAppearanceColors(
+      hasWallpaper: hasWallpaper ?? this.hasWallpaper,
       pattern: pattern ?? this.pattern,
       wallpaperGradient: wallpaperGradient ?? this.wallpaperGradient,
       wallpaperStroke: wallpaperStroke ?? this.wallpaperStroke,
@@ -318,6 +326,7 @@ class ChatAppearanceColors extends ThemeExtension<ChatAppearanceColors> {
     }
 
     return ChatAppearanceColors(
+      hasWallpaper: t < 0.5 ? hasWallpaper : other.hasWallpaper,
       pattern: t < 0.5 ? pattern : other.pattern,
       wallpaperGradient: lerpColors(wallpaperGradient, other.wallpaperGradient),
       wallpaperStroke: Color.lerp(wallpaperStroke, other.wallpaperStroke, t)!,

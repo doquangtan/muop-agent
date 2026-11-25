@@ -27,7 +27,7 @@ pub async fn handle_agy_auth_check() -> Json<AgyAuthEvent> {
     Json(ev)
 }
 
-/// Đăng xuất agy (RPC `AuthLogout` của hub)
+/// Đăng xuất agy (ACP `logout`)
 pub async fn handle_agy_auth_logout() -> Json<AgyAuthEvent> {
     run(|| {
         let _ = agy_auth::logout();
