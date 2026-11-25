@@ -31,6 +31,10 @@ class _FakeSetupRepository implements SetupRepository {
   Future<SetupStatus> setWorkspace(String path) async => _status;
 
   @override
+  Future<SetupDirListing> browseDirectories(String path) async =>
+      SetupDirListing.failure('không dùng trong test');
+
+  @override
   Future<SetupStatus> setToolPath(String tool, String path) async => _status;
 
   @override
@@ -43,38 +47,50 @@ class _FakeSetupRepository implements SetupRepository {
   Future<SetupStatus> verifySsh(String publicKey) async => _status;
 }
 
-/// Trạng thái có một tool bắt buộc (`fuse`) với [fuseInstalled] tùy chọn
-SetupStatus _status({required bool fuseInstalled}) {
+/// Trạng thái có một tool bắt buộc (`fuse`) với [fuseInstalled] tùy chọn.
+/// [macos]: máy chủ macOS, không có FUSE và không có mục apt (như server trả về trên Mac).
+SetupStatus _status({
+  required bool fuseInstalled,
+  bool macos = false,
+  List<Map<String, dynamic>> brewPackages = const [],
+  String brewInstallCommand = '',
+}) {
   return SetupStatus.fromJson({
     'ok': true,
     'error': '',
+    'platform': macos ? 'macos' : 'linux',
     'completed': false,
     'workspaceRoot': '/home/tester/project',
     'selectedClis': <String>[],
     'tools': [
       {'id': 'git', 'label': 'Git', 'group': 'base', 'installed': true, 'path': '/usr/bin/git', 'installable': false, 'hint': ''},
-      {
-        'id': 'fuse',
-        'label': 'FUSE (fuse3, /dev/fuse)',
-        'group': 'base',
-        'installed': fuseInstalled,
-        'path': fuseInstalled ? '/usr/bin/fusermount3' : '',
-        'installable': false,
-        'hint': 'sudo apt install fuse3',
-      },
+      if (!macos)
+        {
+          'id': 'fuse',
+          'label': 'FUSE (fuse3, /dev/fuse)',
+          'group': 'base',
+          'installed': fuseInstalled,
+          'path': fuseInstalled ? '/usr/bin/fusermount3' : '',
+          'installable': false,
+          'hint': 'sudo apt install fuse3',
+        },
       {'id': 'agy', 'label': 'agy', 'group': 'cli', 'installed': false, 'path': '', 'installable': true, 'hint': ''},
     ],
-    'aptPackages': [
-      {'package': 'git', 'label': 'Git', 'note': 'quản lý mã nguồn', 'installed': true, 'required': true},
-      {
-        'package': 'fuse3',
-        'label': 'FUSE (fusermount3, /dev/fuse)',
-        'note': 'mount project của máy khác',
-        'installed': fuseInstalled,
-        'required': true,
-      },
-    ],
-    'aptInstallCommand': fuseInstalled ? '' : 'sudo apt-get install -y fuse3',
+    'aptPackages': macos
+        ? <Map<String, dynamic>>[]
+        : [
+            {'package': 'git', 'label': 'Git', 'note': 'quản lý mã nguồn', 'installed': true, 'required': true},
+            {
+              'package': 'fuse3',
+              'label': 'FUSE (fusermount3, /dev/fuse)',
+              'note': 'mount project của máy khác',
+              'installed': fuseInstalled,
+              'required': true,
+            },
+          ],
+    'aptInstallCommand': macos || fuseInstalled ? '' : 'sudo apt-get install -y fuse3',
+    'brewPackages': brewPackages,
+    'brewInstallCommand': brewInstallCommand,
     'job': null,
     'ssh': {
       'client': true,
@@ -133,6 +149,77 @@ void main() {
     await _pump(tester, _status(fuseInstalled: true));
 
     expect(find.widgetWithText(FilledButton, 'Tiếp tục'), findsOneWidget);
+  });
+
+  testWidgets('macOS: không hiện mục apt, có ghi chú Xcode CLT, vẫn đi tiếp được', (tester) async {
+    await _pump(tester, _status(fuseInstalled: false, macos: true));
+
+    expect(find.text('Gói hệ thống (apt)'), findsNothing);
+    expect(find.text('Cài các gói còn thiếu bằng sudo'), findsNothing);
+    expect(find.textContaining('Xcode Command Line Tools'), findsOneWidget);
+    expect(find.textContaining('FUSE'), findsWidgets);
+    expect(find.widgetWithText(FilledButton, 'Tiếp tục'), findsOneWidget);
+  });
+
+  testWidgets('macOS: FUSE-T thiếu thì hiện trong Gói Homebrew và có nút chạy lệnh brew của server', (tester) async {
+    await _pump(
+      tester,
+      _status(
+        fuseInstalled: false,
+        macos: true,
+        brewPackages: [
+          {'package': 'fuse-t', 'label': 'FUSE-T', 'note': 'mount project máy khác', 'installed': false, 'required': false},
+        ],
+        brewInstallCommand: 'brew install --cask fuse-t',
+      ),
+    );
+
+    expect(find.text('Gói Homebrew (macOS)'), findsOneWidget);
+    expect(find.textContaining('FUSE-T (fuse-t)'), findsOneWidget);
+    expect(find.text('Cài các gói Homebrew còn thiếu'), findsOneWidget);
+    expect(find.text('brew install --cask fuse-t'), findsOneWidget);
+    // FUSE-T không bắt buộc: vẫn đi tiếp được
+    expect(find.widgetWithText(FilledButton, 'Tiếp tục'), findsOneWidget);
+  });
+
+  testWidgets('macOS: FUSE-T đã cài thì không còn nút cài Homebrew', (tester) async {
+    await _pump(
+      tester,
+      _status(
+        fuseInstalled: false,
+        macos: true,
+        brewPackages: [
+          {'package': 'fuse-t', 'label': 'FUSE-T', 'note': 'mount project máy khác', 'installed': true, 'required': false},
+        ],
+      ),
+    );
+
+    expect(find.text('Gói Homebrew (macOS)'), findsOneWidget);
+    expect(find.text('Cài các gói Homebrew còn thiếu'), findsNothing);
+    expect(find.textContaining('Chưa có Homebrew'), findsNothing);
+  });
+
+  testWidgets('macOS: thiếu FUSE-T mà chưa có Homebrew thì báo cài brew trước', (tester) async {
+    await _pump(
+      tester,
+      _status(
+        fuseInstalled: false,
+        macos: true,
+        brewPackages: [
+          {'package': 'fuse-t', 'label': 'FUSE-T', 'note': 'mount project máy khác', 'installed': false, 'required': false},
+        ],
+      ),
+    );
+
+    expect(find.text('Cài các gói Homebrew còn thiếu'), findsNothing);
+    expect(find.textContaining('Chưa có Homebrew'), findsOneWidget);
+  });
+
+  testWidgets('bước Kiểm tra không liệt kê agy/claude (kiểm tra ở bước Chọn CLI)', (tester) async {
+    await _pump(tester, _status(fuseInstalled: true));
+
+    expect(find.text('agy'), findsNothing);
+    expect(find.text('Git'), findsWidgets);
   });
 
   testWidgets('không có nút back ở thanh tiêu đề', (tester) async {

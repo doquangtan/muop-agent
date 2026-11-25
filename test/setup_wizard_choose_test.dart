@@ -31,6 +31,10 @@ class _FakeSetupRepository implements SetupRepository {
   Future<SetupStatus> setWorkspace(String path) async => _status;
 
   @override
+  Future<SetupDirListing> browseDirectories(String path) async =>
+      SetupDirListing.failure('không dùng trong test');
+
+  @override
   Future<SetupStatus> setToolPath(String tool, String path) async => _status;
 
   @override
@@ -96,17 +100,18 @@ void main() {
       tester,
       _status(selectedClis: ['agy'], installed: ['agy', 'claude']),
     );
-    expect(find.widgetWithText(FilledButton, 'Cài & tiếp tục'), findsNothing);
+    expect(find.widgetWithText(OutlinedButton, 'Cài thêm phần đã chọn'), findsNothing);
     expect(find.widgetWithText(FilledButton, 'Tiếp tục'), findsOneWidget);
   });
 
-  testWidgets('shows Cài & tiếp tục when a selected CLI still needs installing', (tester) async {
+  testWidgets('một CLI đã cài là đi tiếp được, CLI còn lại chỉ là nút cài thêm', (tester) async {
     await _gotoChooseStep(
       tester,
       _status(selectedClis: ['claude'], installed: ['agy']),
     );
-    expect(find.widgetWithText(FilledButton, 'Cài & tiếp tục'), findsOneWidget);
-    expect(find.widgetWithText(FilledButton, 'Tiếp tục'), findsNothing);
+    expect(find.widgetWithText(FilledButton, 'Tiếp tục'), findsOneWidget);
+    expect(find.widgetWithText(OutlinedButton, 'Cài thêm phần đã chọn'), findsOneWidget);
+    expect(find.widgetWithText(FilledButton, 'Cài & tiếp tục'), findsNothing);
   });
 
   testWidgets('chưa có CLI nào cài: chỉ có Cài đã chọn, không có Tiếp tục', (tester) async {
@@ -116,6 +121,5 @@ void main() {
     );
     expect(find.widgetWithText(FilledButton, 'Cài đã chọn'), findsOneWidget);
     expect(find.widgetWithText(FilledButton, 'Tiếp tục'), findsNothing);
-    expect(find.widgetWithText(FilledButton, 'Cài & tiếp tục'), findsNothing);
   });
 }

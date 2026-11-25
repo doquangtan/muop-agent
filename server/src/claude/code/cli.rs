@@ -209,15 +209,52 @@ fn fetch_claude_base_models() -> Option<Vec<String>> {
     Some(parse_claude_model_ids(&body))
 }
 
-/// Access token OAuth của Claude Code CLI (`~/.claude/.credentials.json`). Token hết hạn thì trả None.
+/// Access token OAuth của Claude Code CLI. Trên macOS CLI giữ token thật trong Keychain (mục
+/// "Claude Code-credentials"); file `~/.claude/.credentials.json` là bản sao không được CLI ghi lại khi làm mới,
+/// nên hết hạn sớm (đã gặp: 401 trên Mac trong khi CLI vẫn đăng nhập). Thử Keychain trước, rồi file;
+/// token hết hạn hoặc không hợp lệ thì bỏ qua. Keychain khóa (ví dụ phiên SSH) thì không đọc được và dùng file.
 fn claude_oauth_token() -> Option<String> {
+    let mut sources = Vec::new();
+    if crate::infra::platform::IS_MACOS {
+        sources.extend(keychain_credentials());
+    }
+    sources.extend(file_credentials());
+    sources
+        .iter()
+        .find_map(|raw| token_from_credentials(raw, chrono::Utc::now().timestamp_millis()))
+}
+
+/// Nội dung `.credentials.json` từ file của CLI
+fn file_credentials() -> Option<String> {
     let path = crate::infra::paths::home_dir().join(".claude/.credentials.json");
-    let raw = std::fs::read_to_string(path).ok()?;
-    let v: Value = serde_json::from_str(&raw).ok()?;
+    std::fs::read_to_string(path).ok()
+}
+
+/// Nội dung mục Keychain "Claude Code-credentials" (JSON có cùng cấu trúc với file). Lỗi (khóa, không có mục) thì None.
+pub(crate) fn keychain_credentials() -> Option<String> {
+    let out = std::process::Command::new("security")
+        .args([
+            "find-generic-password",
+            "-s",
+            "Claude Code-credentials",
+            "-w",
+        ])
+        .stdin(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    String::from_utf8(out.stdout).ok()
+}
+
+/// Lấy access token còn hạn từ nội dung credentials (hàm thuần; `now_ms` là thời điểm hiện tại tính bằng ms)
+pub(crate) fn token_from_credentials(raw: &str, now_ms: i64) -> Option<String> {
+    let v: Value = serde_json::from_str(raw.trim()).ok()?;
     let oauth = v.get("claudeAiOauth")?;
     let token = oauth.get("accessToken")?.as_str()?.to_string();
     let expires_ms = oauth.get("expiresAt")?.as_i64()?;
-    let now_ms = chrono::Utc::now().timestamp_millis();
     // Token được ghép vào file cấu hình của curl: chỉ nhận ký tự an toàn
     let token_ok = !token.is_empty()
         && token
@@ -361,5 +398,40 @@ mod claude_model_list_tests {
         assert!(is_dated_snapshot("claude-opus-4-5-20251101"));
         assert!(!is_dated_snapshot("claude-opus-4-5"));
         assert!(!is_dated_snapshot("claude-fable-5-2"));
+    }
+}
+
+#[cfg(test)]
+mod credential_tests {
+    use super::*;
+
+    fn creds(token: &str, expires_ms: i64) -> String {
+        format!(r#"{{"claudeAiOauth":{{"accessToken":"{token}","expiresAt":{expires_ms}}}}}"#)
+    }
+
+    #[test]
+    fn fresh_token_is_used() {
+        assert_eq!(
+            token_from_credentials(&creds("sk-ant-oat01-abc", 2_000), 1_000).as_deref(),
+            Some("sk-ant-oat01-abc")
+        );
+    }
+
+    #[test]
+    fn expired_token_is_rejected() {
+        assert_eq!(token_from_credentials(&creds("abc", 1_000), 1_000), None);
+        assert_eq!(token_from_credentials(&creds("abc", 500), 1_000), None);
+    }
+
+    #[test]
+    fn unsafe_token_chars_are_rejected() {
+        assert_eq!(token_from_credentials(&creds("a b", 2_000), 1_000), None);
+        assert_eq!(token_from_credentials(&creds("a\"b", 2_000), 1_000), None);
+    }
+
+    #[test]
+    fn bad_json_is_rejected() {
+        assert_eq!(token_from_credentials("not json", 1_000), None);
+        assert_eq!(token_from_credentials("{}", 1_000), None);
     }
 }

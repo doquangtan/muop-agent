@@ -20,6 +20,9 @@ abstract class SetupRepository {
   /// Lưu thư mục project (đường dẫn tuyệt đối, server kiểm tra). Việc quét chỉ bắt đầu sau khi khởi tạo xong.
   Future<SetupStatus> setWorkspace(String path);
 
+  /// Liệt kê thư mục con của [path] trên máy server (rỗng = home). Dùng cho cây chọn thư mục project.
+  Future<SetupDirListing> browseDirectories(String path);
+
   /// Đặt đường dẫn một công cụ khi server không tìm thấy bằng `which`. Chuỗi rỗng = bỏ lựa chọn.
   Future<SetupStatus> setToolPath(String tool, String path);
 

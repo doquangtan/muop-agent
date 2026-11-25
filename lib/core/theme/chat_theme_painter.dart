@@ -25,7 +25,7 @@ class ChatWallpaperSurface extends StatelessWidget {
   Widget build(BuildContext context) {
     final resolved = appearance ?? context.chatTheme;
 
-    if (highContrast) {
+    if (highContrast || !resolved.hasWallpaper) {
       return ColoredBox(
         color: Theme.of(context).colorScheme.surface,
         child: child,

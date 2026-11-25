@@ -121,8 +121,15 @@ class _SetupWizardScreenState extends State<SetupWizardScreenView> {
       if (s.ok) {
         _status = s;
         if (_selected.isEmpty) _selected.addAll(s.selectedClis);
-        // Lần mở đầu mà setup đã đủ, chỉ còn đăng nhập agy: vào thẳng bước đăng nhập
-        if (!_firstCheckDone && _onlyLoginLeft(s)) _step = _SetupStep.login;
+        // Lần mở đầu: đang cài dở (app đã thoát giữa chừng) thì ở bước Chọn CLI để thấy tiến trình;
+        // setup đã đủ, chỉ còn đăng nhập agy thì vào thẳng bước đăng nhập
+        if (!_firstCheckDone) {
+          if (s.installing) {
+            _step = _SetupStep.choose;
+          } else if (_onlyLoginLeft(s)) {
+            _step = _SetupStep.login;
+          }
+        }
         _firstCheckDone = true;
       } else {
         _message = s.error;
@@ -132,12 +139,12 @@ class _SetupWizardScreenState extends State<SetupWizardScreenView> {
 
   bool _firstCheckDone = false;
 
-  /// Setup đã đủ (khởi tạo, CLI đã cài); chỉ còn việc đăng nhập
+  /// Setup đã đủ (khởi tạo, có một CLI đã cài); chỉ còn việc đăng nhập
   bool _onlyLoginLeft(SetupStatus s) =>
       s.completed &&
+      !s.installing &&
       s.workspaceRoot.isNotEmpty &&
-      s.selectedClis.isNotEmpty &&
-      s.selectedClis.every(s.isInstalled) &&
+      s.selectedClis.any(s.isInstalled) &&
       !s.tools.any((t) => t.group == 'base' && !t.installed);
 
   List<SetupTool> get _missingRequired => _status.tools
@@ -264,14 +271,28 @@ class _SetupWizardScreenState extends State<SetupWizardScreenView> {
   }
 
   /// Gói bắt buộc (apt) còn thiếu; khi còn thì không hiện nút Tiếp tục
-  List<SetupAptPackage> get _blockingApt => _status.aptPackages
-      .where((p) => p.required && !p.installed)
-      .toList();
+  List<SetupAptPackage> get _blockingApt => _status.isMacOS
+      ? const []
+      : _status.aptPackages.where((p) => p.required && !p.installed).toList();
 
   /// Mở terminal của "Máy này" và chạy lệnh cài gói apt do server tạo (`aptInstallCommand`).
   /// Người dùng nhập mật khẩu sudo trực tiếp trong terminal; app không nhận hay lưu mật khẩu.
   Future<void> _installAptWithSudo() async {
     final command = _status.aptInstallCommand;
+    if (command.isEmpty) return;
+    await showRunCommandDialog(
+      context,
+      serverAddress: widget.serverAddress,
+      command: command,
+    );
+    if (!mounted) return;
+    await _checkTools();
+  }
+
+  /// Mở terminal của "Máy này" và chạy `brew install --cask ...` do server tạo (`brewInstallCommand`).
+  /// Cask cài bằng trình cài của hệ thống nên macOS hỏi mật khẩu admin trong terminal; app không nhận mật khẩu.
+  Future<void> _installBrewCasks() async {
+    final command = _status.brewInstallCommand;
     if (command.isEmpty) return;
     await showRunCommandDialog(
       context,
@@ -295,11 +316,20 @@ class _SetupWizardScreenState extends State<SetupWizardScreenView> {
           'CLI sẽ được cài ở bước sau.',
           style: textTheme.bodyMedium,
         ),
+        if (_status.isMacOS) ...[
+          const SizedBox(height: 8),
+          Text(
+            'Máy chủ đang chạy macOS: git, ssh, curl và python3 đi kèm Xcode Command Line Tools. '
+            'FUSE (mount project của máy khác) cài bằng Homebrew ở mục Gói Homebrew bên dưới.',
+            style: textTheme.bodySmall,
+          ),
+        ],
         const SizedBox(height: 16),
         if (_busy && !hasTools)
           const Center(child: CircularProgressIndicator())
         else
-          for (final tool in _status.tools)
+          // CLI (agy/claude) kiểm tra ở bước Chọn CLI, không ở đây
+          for (final tool in _status.tools.where((t) => t.group != 'cli'))
             _ToolRow(
               tool: tool,
               repository: _repo,
@@ -322,6 +352,40 @@ class _SetupWizardScreenState extends State<SetupWizardScreenView> {
             style: textTheme.bodySmall?.copyWith(color: context.status.warning),
           ),
         ],
+        if (_status.isMacOS && _status.brewPackages.isNotEmpty) ...[
+          const SizedBox(height: 20),
+          Text('Gói Homebrew (macOS)', style: textTheme.titleMedium),
+          const SizedBox(height: 4),
+          Text(
+            'Cài bằng Homebrew trong terminal của máy này (macOS hỏi mật khẩu admin). '
+            'Danh sách do server quản lý.',
+            style: textTheme.bodySmall,
+          ),
+          const SizedBox(height: 8),
+          for (final pkg in _status.brewPackages) _AptPackageRow(pkg: pkg),
+          if (_status.brewInstallCommand.isNotEmpty) ...[
+            const SizedBox(height: 8),
+            OutlinedButton.icon(
+              onPressed: _busy ? null : _installBrewCasks,
+              icon: const Icon(Icons.terminal_rounded),
+              label: const Text('Cài các gói Homebrew còn thiếu'),
+            ),
+            const SizedBox(height: 4),
+            Text(
+              _status.brewInstallCommand,
+              style: textTheme.bodySmall?.copyWith(
+                fontFamily: 'monospace',
+                color: context.scheme.onSurfaceVariant,
+              ),
+            ),
+          ] else if (_status.brewPackages.any((p) => !p.installed)) ...[
+            const SizedBox(height: 8),
+            Text(
+              'Chưa có Homebrew: cài tại brew.sh rồi bấm "Kiểm tra lại".',
+              style: textTheme.bodySmall?.copyWith(color: context.status.warning),
+            ),
+          ],
+        ],
         const SizedBox(height: 20),
         Text('Thư mục project', style: textTheme.titleMedium),
         const SizedBox(height: 4),
@@ -337,7 +401,7 @@ class _SetupWizardScreenState extends State<SetupWizardScreenView> {
           enabled: !_busy,
           onSaved: (s) => setState(() => _status = s),
         ),
-        if (_status.aptPackages.isNotEmpty) ...[
+        if (!_status.isMacOS && _status.aptPackages.isNotEmpty) ...[
           const SizedBox(height: 20),
           Text('Gói hệ thống (apt)', style: textTheme.titleMedium),
           const SizedBox(height: 4),
@@ -400,7 +464,10 @@ class _SetupWizardScreenState extends State<SetupWizardScreenView> {
   Widget _buildChoose(TextTheme textTheme) {
     final job = _status.job;
     final showJob = job != null && job.running;
+    // Đang cài (kể cả job của lần mở trước): không cho bấm cài/đi tiếp chồng lên
+    final busy = _busy || showJob;
     // Phải có ít nhất một CLI đã cài mới được đi tiếp; chưa có thì nút là "Cài đã chọn"
+    // Chỉ cần một CLI đã cài là đi tiếp được; CLI còn lại có thể cài thêm sau
     final anyInstalled = _cliIds.any(_status.isInstalled);
     final needsInstall = _cliIds.any(
       (id) => _selected.contains(id) && !_status.isInstalled(id),
@@ -421,12 +488,12 @@ class _SetupWizardScreenState extends State<SetupWizardScreenView> {
             description: _cliDescriptions[id] ?? '',
             installed: _status.isInstalled(id),
             selected: _selected.contains(id),
-            enabled: !_busy,
+            enabled: !busy,
             onChanged: (value) => setState(() {
               value ? _selected.add(id) : _selected.remove(id);
             }),
           ),
-        if (_busy || showJob) ...[
+        if (busy) ...[
           const SizedBox(height: 12),
           const LinearProgressIndicator(),
           if (showJob) ...[
@@ -440,32 +507,37 @@ class _SetupWizardScreenState extends State<SetupWizardScreenView> {
           ],
         ],
         const SizedBox(height: 20),
-        Row(
+        // Wrap thay Row để hai nút phải không tràn khi chữ dài (màn hẹp)
+        Wrap(
+          alignment: WrapAlignment.spaceBetween,
+          spacing: 8,
+          runSpacing: 8,
           children: [
             TextButton(
-              onPressed: _busy
+              onPressed: busy
                   ? null
                   : () => setState(() => _step = _SetupStep.check),
               child: const Text('Quay lại'),
             ),
-            const Spacer(),
             if (!anyInstalled)
               FilledButton(
-                onPressed: _busy || _selected.isEmpty
+                onPressed: busy || _selected.isEmpty
                     ? null
                     : () => _runInstalls(advance: false),
                 child: const Text('Cài đã chọn'),
               )
-            else if (needsInstall)
+            else ...[
+              if (needsInstall)
+                OutlinedButton(
+                  onPressed: busy ? null : () => _runInstalls(advance: false),
+                  child: const Text('Cài thêm phần đã chọn'),
+                ),
+              const SizedBox(width: 8),
               FilledButton(
-                onPressed: _busy ? null : () => _runInstalls(advance: true),
-                child: const Text('Cài & tiếp tục'),
-              )
-            else
-              FilledButton(
-                onPressed: _busy ? null : _continueToLogin,
+                onPressed: busy ? null : _continueToLogin,
                 child: const Text('Tiếp tục'),
               ),
+            ],
           ],
         ),
       ],
@@ -599,9 +671,15 @@ class _ToolRow extends StatelessWidget {
   Widget build(BuildContext context) {
     final scheme = context.scheme;
     final textTheme = Theme.of(context).textTheme;
+    // Mục tùy chọn: thiếu thì chỉ tính năng liên quan không dùng được, không chặn khởi tạo
+    final optional = tool.group == 'optional';
     final subtitle = tool.installed
         ? tool.path
-        : (tool.hint.isNotEmpty ? 'Gợi ý: ${tool.hint}' : 'Chưa cài');
+        : optional
+            ? (tool.hint.isNotEmpty
+                ? 'Không bắt buộc. Gợi ý: ${tool.hint}'
+                : 'Không bắt buộc')
+            : (tool.hint.isNotEmpty ? 'Gợi ý: ${tool.hint}' : 'Chưa cài');
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 6),
       child: Row(

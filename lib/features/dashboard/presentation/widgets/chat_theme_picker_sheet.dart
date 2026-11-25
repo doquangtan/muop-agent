@@ -130,13 +130,19 @@ class ChatThemePickerSheet extends ConsumerWidget {
           ),
           const SizedBox(height: 10),
 
-          // 1. Kiểu hình nền (6 mẫu)
-          const _SectionLabel(label: 'Hình nền (6 kiểu)'),
+          // 1. Kiểu hình nền (Không nền + 6 mẫu)
+          const _SectionLabel(label: 'Hình nền'),
           const SizedBox(height: 8),
           Wrap(
             spacing: 8,
             runSpacing: 8,
             children: [
+              _buildNoWallpaperChip(
+                config: config,
+                scheme: scheme,
+                theme: theme,
+                onTap: () => notifier.setWallpaper(ChatThemeConfig.noWallpaperId),
+              ),
               for (final wp in kWallpaperPresets)
                 _buildWallpaperChip(
                   context,
@@ -184,6 +190,73 @@ class ChatThemePickerSheet extends ConsumerWidget {
                   onTap: () => notifier.setAiBubble(ab.id),
                 ),
             ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildNoWallpaperChip({
+    required ChatThemeConfig config,
+    required ColorScheme scheme,
+    required ThemeData theme,
+    required VoidCallback onTap,
+  }) {
+    final selected =
+        config.effectiveWallpaperId == ChatThemeConfig.noWallpaperId;
+    return InkWell(
+      key: const Key('wallpaper-option-none'),
+      borderRadius: BorderRadius.circular(12),
+      onTap: onTap,
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Container(
+            width: 72,
+            height: 46,
+            decoration: BoxDecoration(
+              color: scheme.surfaceContainer,
+              borderRadius: BorderRadius.circular(11),
+              border: Border.all(
+                color: selected ? scheme.primary : scheme.outlineVariant,
+                width: selected ? 2.2 : 0.9,
+              ),
+            ),
+            child: Stack(
+              fit: StackFit.expand,
+              children: [
+                Center(
+                  child: Icon(
+                    Icons.hide_image_outlined,
+                    size: 20,
+                    color: selected
+                        ? scheme.primary
+                        : scheme.onSurfaceVariant,
+                  ),
+                ),
+                if (selected)
+                  Align(
+                    alignment: Alignment.topRight,
+                    child: Padding(
+                      padding: const EdgeInsets.all(3),
+                      child: Icon(
+                        Icons.check_circle_rounded,
+                        size: 14,
+                        color: scheme.primary,
+                      ),
+                    ),
+                  ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 3),
+          Text(
+            'Không nền',
+            style: theme.textTheme.labelSmall?.copyWith(
+              fontSize: 10.5,
+              fontWeight: selected ? FontWeight.w700 : FontWeight.w500,
+              color: selected ? scheme.primary : scheme.onSurfaceVariant,
+            ),
           ),
         ],
       ),

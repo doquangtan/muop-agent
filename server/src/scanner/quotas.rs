@@ -228,9 +228,16 @@ pub(crate) fn call_retrieve_user_quota_summary(
     let json_slice = &body_trimmed[json_start..=json_end];
 
     let root: Value = serde_json::from_str(json_slice).ok()?;
+    parse_quota_groups(&root)
+}
+
+/// Nhóm quota từ JSON của `RetrieveUserQuotaSummary`. Hub bọc kết quả trong `response`; API trực tiếp
+/// (`v1internal:retrieveUserQuotaSummary`, xem `agy_account::oauth`) trả ở cấp cao nhất. Chấp nhận cả hai.
+pub(crate) fn parse_quota_groups(root: &Value) -> Option<Vec<ModelQuotaGroup>> {
     let groups_arr = root
         .get("response")
-        .and_then(|r| r.get("groups"))
+        .unwrap_or(root)
+        .get("groups")
         .and_then(|g| g.as_array())?;
 
     let mut result = Vec::new();

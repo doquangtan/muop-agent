@@ -5,8 +5,12 @@
 //! Máy nhận không cần cấu hình gì thêm: chọn địa chỉ kết nối được, mount vào
 //! `$HOME/.local/share/muop-agent/mounts/<mã>`, rồi chạy agent trên điểm mount.
 
+// FUSE chỉ có trên Linux (fuser cần libfuse/pkg-config). Nơi khác: mọi hàm mount báo lỗi rõ ràng.
+#[cfg(any(target_os = "linux", feature = "mac-fuse"))]
 mod fuse;
+#[cfg(any(target_os = "linux", feature = "mac-fuse"))]
 mod inodes;
+#[cfg(any(target_os = "linux", feature = "mac-fuse"))]
 mod remote;
 
 use std::collections::HashMap;
@@ -14,17 +18,30 @@ use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
+#[cfg(any(target_os = "linux", feature = "mac-fuse"))]
 use fuser::{BackgroundSession, Config, MountOption, SessionACL};
 
 use crate::models::RemoteProject;
 use crate::scanner;
+#[cfg(any(target_os = "linux", feature = "mac-fuse"))]
 use fuse::RemoteFs;
+#[cfg(any(target_os = "linux", feature = "mac-fuse"))]
 use remote::Remote;
 
 /// Thời gian chờ khi thăm dò một địa chỉ của máy gửi
 const PROBE_TIMEOUT: Duration = Duration::from_secs(3);
 /// Thư mục cha của các điểm mount, dưới `$HOME`
 const MOUNTS_SUBDIR: &str = ".local/share/muop-agent/mounts";
+/// Máy này có FUSE không: Linux, hoặc macOS khi build với `--features mac-fuse` (cần FUSE-T hoặc macFUSE)
+pub const FUSE_SUPPORTED: bool = cfg!(any(target_os = "linux", feature = "mac-fuse"));
+/// Thông báo khi máy này không hỗ trợ FUSE
+const FUSE_UNSUPPORTED: &str = "mount project của máy khác (FUSE) cần Linux, hoặc macOS build với feature mac-fuse (cài FUSE-T trước)";
+
+/// Phiên mount đang giữ. Chỉ Linux có FUSE; nơi khác không bao giờ tạo được phiên nên dùng `()`.
+#[cfg(any(target_os = "linux", feature = "mac-fuse"))]
+type MountSession = BackgroundSession;
+#[cfg(not(any(target_os = "linux", feature = "mac-fuse")))]
+type MountSession = ();
 
 /// Kết quả mount: điểm mount trên máy này và địa chỉ máy gửi đang dùng
 #[derive(Debug, Clone)]
@@ -36,7 +53,7 @@ pub struct Mounted {
 struct Active {
     origin: String,
     /// Giữ phiên FUSE; khi bỏ đi thì hệ file được gỡ mount
-    _session: BackgroundSession,
+    _session: MountSession,
 }
 
 static ACTIVE: OnceLock<Mutex<HashMap<PathBuf, Active>>> = OnceLock::new();
@@ -96,8 +113,12 @@ pub fn ensure(req: &RemoteProject) -> Result<Mounted, String> {
     // Mount cũ (máy gửi đổi địa chỉ, hoặc phiên đã chết): gỡ rồi mount lại
     registry.remove(&mount_point);
     fusermount_quiet(&mount_point);
-    std::fs::create_dir_all(&mount_point)
-        .map_err(|e| format!("không tạo được thư mục mount {}: {e}", mount_point.display()))?;
+    std::fs::create_dir_all(&mount_point).map_err(|e| {
+        format!(
+            "không tạo được thư mục mount {}: {e}",
+            mount_point.display()
+        )
+    })?;
 
     let session = mount_remote(&origin, &project, &mount_point)?;
     registry.insert(
@@ -129,7 +150,17 @@ fn lock_registry() -> std::sync::MutexGuard<'static, HashMap<PathBuf, Active>> {
     active().lock().unwrap_or_else(|e| e.into_inner())
 }
 
-fn mount_remote(origin: &str, project: &str, mount_point: &Path) -> Result<BackgroundSession, String> {
+#[cfg(not(any(target_os = "linux", feature = "mac-fuse")))]
+fn mount_remote(
+    _origin: &str,
+    _project: &str,
+    _mount_point: &Path,
+) -> Result<MountSession, String> {
+    Err(FUSE_UNSUPPORTED.into())
+}
+
+#[cfg(any(target_os = "linux", feature = "mac-fuse"))]
+fn mount_remote(origin: &str, project: &str, mount_point: &Path) -> Result<MountSession, String> {
     let remote = Remote::with_default_timeout(origin, project)?;
     // SAFETY: getuid/getgid không có điều kiện đầu vào và không thể lỗi
     let (uid, gid) = unsafe { (libc::getuid(), libc::getgid()) };
@@ -159,6 +190,14 @@ fn is_alive(mount_point: &Path) -> bool {
 
 /// Gỡ mount còn sót lại (ví dụ từ lần chạy trước của server); lỗi bỏ qua vì thường là không có gì để gỡ
 fn fusermount_quiet(mount_point: &Path) {
+    if crate::infra::platform::IS_MACOS {
+        // macOS (FUSE-T/macFUSE) không có fusermount: gỡ bằng umount
+        let _ = std::process::Command::new("umount")
+            .arg("-f")
+            .arg(mount_point)
+            .output();
+        return;
+    }
     let Some(bin) = fusermount_bin() else {
         return;
     };
@@ -176,6 +215,13 @@ fn fusermount_bin() -> Option<PathBuf> {
 
 /// Máy có FUSE không: cần `/dev/fuse` và helper `fusermount3` (setuid) để user thường mount được
 pub fn check_fuse_available() -> Result<(), String> {
+    if !FUSE_SUPPORTED {
+        return Err(FUSE_UNSUPPORTED.into());
+    }
+    if crate::infra::platform::IS_MACOS {
+        // macOS không có /dev/fuse hay fusermount: FUSE-T/macFUSE tự đăng ký; lỗi mount sẽ báo khi mount
+        return Ok(());
+    }
     if !Path::new("/dev/fuse").exists() {
         return Err("máy này chưa có /dev/fuse (cần bật FUSE trong kernel)".into());
     }
@@ -199,6 +245,18 @@ pub fn normalize_project(raw: &str) -> Result<String, String> {
 
 /// Thăm dò lần lượt các địa chỉ của máy gửi, trả về địa chỉ đầu tiên đáp ứng được project.
 /// Nếu máy gửi đáp nhưng từ chối (project không tồn tại, nằm ngoài vùng cho phép) thì báo lỗi ngay.
+/// Chuỗi lỗi đầy đủ (lỗi gốc của reqwest nằm ở `source()`, không có trong thông báo ngoài)
+fn chain_of(e: &dyn std::error::Error) -> String {
+    let mut out = e.to_string();
+    let mut cur = e.source();
+    while let Some(inner) = cur {
+        out.push_str(" <- ");
+        out.push_str(&inner.to_string());
+        cur = inner.source();
+    }
+    out
+}
+
 fn probe(candidates: &[String], project: &str) -> Result<String, String> {
     let client = reqwest::blocking::Client::builder()
         .timeout(PROBE_TIMEOUT)
@@ -213,7 +271,7 @@ fn probe(candidates: &[String], project: &str) -> Result<String, String> {
         {
             Ok(resp) => resp,
             Err(e) => {
-                last_error = format!("{url}: {e}");
+                last_error = format!("{url}: {}", chain_of(&e));
                 continue;
             }
         };
@@ -353,8 +411,14 @@ mod tests {
             mount_name("asrock", "/home/john/Documents/muop-ecosystem/muop-agent")
         );
         assert_eq!(a.len(), 16);
-        assert_ne!(a, mount_name("laptop", "/home/john/Documents/muop-ecosystem/muop-agent"));
-        assert_ne!(a, mount_name("asrock", "/home/john/Documents/muop-ecosystem/other"));
+        assert_ne!(
+            a,
+            mount_name("laptop", "/home/john/Documents/muop-ecosystem/muop-agent")
+        );
+        assert_ne!(
+            a,
+            mount_name("asrock", "/home/john/Documents/muop-ecosystem/other")
+        );
         assert_eq!(mount_name("", "/x"), mount_name("  ", "/x"));
     }
 
@@ -373,12 +437,18 @@ mod tests {
             "/home/john/.local/share/muop-agent/mounts2/x",
             root
         ));
-        assert!(!path_under("/home/john/Documents/muop-ecosystem/muop-agent", root));
+        assert!(!path_under(
+            "/home/john/Documents/muop-ecosystem/muop-agent",
+            root
+        ));
     }
 
     #[test]
     fn normalizes_and_rejects_bad_project_paths() {
-        assert_eq!(normalize_project(" /home/john/p/ ").unwrap(), "/home/john/p");
+        assert_eq!(
+            normalize_project(" /home/john/p/ ").unwrap(),
+            "/home/john/p"
+        );
         assert!(normalize_project("relative/path").is_err());
         assert!(normalize_project("").is_err());
         assert!(normalize_project("/home/john/../root").is_err());

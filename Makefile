@@ -3,7 +3,7 @@
 FLUTTER ?= $(shell if [ -x $(HOME)/flutter-3.47.7/bin/flutter ]; then echo $(HOME)/flutter-3.47.7/bin/flutter; elif command -v flutter >/dev/null 2>&1; then command -v flutter; else echo $(HOME)/flutter/bin/flutter; fi)
 CARGO ?= $(HOME)/.cargo/bin/cargo
 
-.PHONY: install-desktop-entry run server build-server build build-linux build-apk build-all analyze restart-linux clean start-daemon stop-daemon restart-daemon status-daemon deb
+.PHONY: install-desktop-entry run server build-server build-server-mac build build-linux build-apk build-all analyze restart-linux clean start-daemon stop-daemon restart-daemon status-daemon deb
 
 ## Chạy ứng dụng giao diện Flutter trên Linux Desktop
 run:
@@ -40,6 +40,31 @@ status-daemon:
 ## Build binary release cho Rust Backend Server
 build-server:
 	cd server && $(CARGO) build --release
+
+## Build server cho macOS NGAY TRÊN máy Mac (rsync source qua SSH, cần Rust trên Mac).
+## Không ảnh hưởng luồng Linux. Đặt MAC_HOST=user@ip (và MAC_SSH_KEY nếu dùng key riêng).
+MAC_BUILD_DIR ?= muop-install
+# Feature Cargo bật thêm khi build trên Mac, ví dụ MAC_FEATURES=mac-fuse sau khi cài FUSE-T (mount project máy khác).
+# FUSE-T chỉ có fuse-t.pc; cần thư mục chứa fuse.pc (alias Name: fuse → -lfuse-t) đặt ở MAC_PKG_CONFIG_PATH trên Mac.
+MAC_FEATURES ?=
+MAC_PKG_CONFIG_PATH ?=
+# Thư mục lib của FUSE-T; pkg-config crate bỏ qua -Wl,-rpath nên phải đưa vào rpath của binary (không thì dyld không tìm thấy libfuse-t)
+MAC_FUSE_LIBDIR ?= /usr/local/lib
+comma := ,
+MAC_SSH = ssh -o BatchMode=yes -o ConnectTimeout=8 $(if $(MAC_SSH_KEY),-i $(MAC_SSH_KEY) -o IdentitiesOnly=yes)
+build-server-mac:
+	@test -n "$(MAC_HOST)" || (echo "Thiếu MAC_HOST, ví dụ: make build-server-mac MAC_HOST=user@192.168.1.10" && exit 1)
+	rsync -az --delete --exclude 'target/' --exclude '__pycache__/' -e "$(MAC_SSH)" server/ $(MAC_HOST):$(MAC_BUILD_DIR)/server/
+	$(MAC_SSH) $(MAC_HOST) 'export PATH="/opt/homebrew/bin:$$PATH"; cd $(MAC_BUILD_DIR)/server && . "$$HOME/.cargo/env" && $(if $(MAC_PKG_CONFIG_PATH),PKG_CONFIG_PATH=$(MAC_PKG_CONFIG_PATH) ,)$(if $(findstring mac-fuse,$(MAC_FEATURES)),RUSTFLAGS="-C link-arg=-Wl$(comma)-rpath$(comma)$(MAC_FUSE_LIBDIR)" ,)cargo build --release $(if $(MAC_FEATURES),--features $(MAC_FEATURES),)'
+	@echo "✅ Binary macOS: $(MAC_HOST):$(MAC_BUILD_DIR)/server/target/release/muop-agent-server"
+
+# App macOS một file: client Flutter + server đi kèm (Contents/Helpers), ký ad-hoc. Build trên Mac, kết quả copy vào ~/Applications.
+# Ví dụ: make build-macos-app MAC_HOST=user@ip MAC_SSH_KEY=... MAC_FEATURES=mac-fuse 'MAC_PKG_CONFIG_PATH=$$HOME/muop-install/pkgconfig'
+MAC_APP_DIR ?= /Volumes/Untitled/muop-agent
+build-macos-app: build-server-mac
+	rsync -az --exclude='.git/' --exclude='build/' --exclude='.dart_tool/' --exclude='server/target/' --exclude='macos/Pods/' --exclude='*.ipa' -e "$(MAC_SSH)" ./ $(MAC_HOST):$(MAC_APP_DIR)/
+	$(MAC_SSH) $(MAC_HOST) 'export PATH="/opt/homebrew/bin:$$HOME/flutter/bin:$$PATH"; cd $(MAC_APP_DIR) && flutter pub get && flutter build macos --release && APP=build/macos/Build/Products/Release/muop_agent.app && mkdir -p "$$APP/Contents/Helpers" && cp "$$HOME/$(MAC_BUILD_DIR)/server/target/release/muop-agent-server" "$$APP/Contents/Helpers/" && codesign --force --deep --sign - --entitlements macos/Runner/Release.entitlements "$$APP" && mkdir -p "$$HOME/Applications" && rm -rf "$$HOME/Applications/muop_agent.app" && cp -R "$$APP" "$$HOME/Applications/" && echo "APP_READY=$$HOME/Applications/muop_agent.app"'
+	@echo "✅ App macOS: $(MAC_HOST) → ~/Applications/muop_agent.app (bản gốc: $(MAC_APP_DIR)/build/macos/Build/Products/Release/muop_agent.app)"
 
 ## Đóng gói server + ứng dụng Linux thành một file .deb (build/deb/)
 deb:

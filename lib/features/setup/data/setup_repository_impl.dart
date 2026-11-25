@@ -34,6 +34,19 @@ class SetupRepositoryImpl implements SetupRepository {
       _command('setup:workspace', {'path': path});
 
   @override
+  Future<SetupDirListing> browseDirectories(String path) async {
+    try {
+      final ack = await _gateway
+          .emitWithAck('setup:browse', {'path': path})
+          .timeout(_commandTimeout);
+      final value = ack is List ? ack.first : ack;
+      return SetupDirListing.fromJson(Map<String, dynamic>.from(value as Map));
+    } catch (e) {
+      return SetupDirListing.failure('Không gọi được server: $e');
+    }
+  }
+
+  @override
   Future<SetupStatus> setToolPath(String tool, String path) =>
       _command('setup:tool-path', {'tool': tool, 'path': path});
 

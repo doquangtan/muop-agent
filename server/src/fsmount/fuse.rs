@@ -11,11 +11,17 @@ use std::sync::{Mutex, MutexGuard};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use fuser::{
-    Errno, FileAttr, FileHandle, FileType, Filesystem, FopenFlags, Generation, INodeNo,
-    LockOwner, OpenAccMode, OpenFlags, RenameFlags, ReplyAttr, ReplyCreate, ReplyData,
-    ReplyDirectory, ReplyEmpty, ReplyEntry, ReplyOpen, ReplyWrite, Request,
+    Errno, FileAttr, FileHandle, FileType, Filesystem, FopenFlags, Generation, INodeNo, LockOwner,
+    OpenAccMode, OpenFlags, RenameFlags, ReplyAttr, ReplyCreate, ReplyData, ReplyDirectory,
+    ReplyEmpty, ReplyEntry, ReplyOpen, ReplyWrite, Request,
 };
 use serde_json::Value;
+
+/// Bit RENAME_NOREPLACE của kernel (chỉ Linux có; nơi khác là 0 nên không bao giờ coi là có cờ này)
+#[cfg(target_os = "linux")]
+const NOREPLACE_BITS: u32 = libc::RENAME_NOREPLACE as u32;
+#[cfg(not(target_os = "linux"))]
+const NOREPLACE_BITS: u32 = 0;
 
 use super::inodes::Inodes;
 use super::remote::{Remote, MAX_FILE_BYTES};
@@ -223,10 +229,7 @@ impl Filesystem for RemoteFs {
         };
         // Handle đang sửa: kích thước là của bộ đệm (chưa đẩy lên máy gửi)
         if let Some(fh) = fh {
-            if let Some(buf) = lock(&self.handles)
-                .get(&fh.0)
-                .and_then(|h| h.buf.as_ref())
-            {
+            if let Some(buf) = lock(&self.handles).get(&fh.0).and_then(|h| h.buf.as_ref()) {
                 attr.size = buf.len() as u64;
             }
         }
@@ -340,11 +343,12 @@ impl Filesystem for RemoteFs {
             Ok(rel) => rel,
             Err(e) => return reply.error(e),
         };
-        // Chỉ hỗ trợ RENAME_NOREPLACE; cờ khác (như RENAME_EXCHANGE) chưa có
-        if flags.bits() & !RenameFlags::RENAME_NOREPLACE.bits() != 0 {
+        // Chỉ hỗ trợ RENAME_NOREPLACE (chỉ có trên Linux; macOS không gửi cờ này); cờ khác (như RENAME_EXCHANGE) chưa có
+        if flags.bits() & !NOREPLACE_BITS != 0 {
             return reply.error(Errno::EINVAL);
         }
-        if flags.contains(RenameFlags::RENAME_NOREPLACE) && self.remote.stat(&to).is_ok() {
+        let noreplace = NOREPLACE_BITS != 0 && flags.bits() & NOREPLACE_BITS != 0;
+        if noreplace && self.remote.stat(&to).is_ok() {
             return reply.error(Errno::EEXIST);
         }
         if let Err(e) = self.remote.rename(&from, &to, true) {
@@ -398,7 +402,10 @@ impl Filesystem for RemoteFs {
             let Some(h) = handles.get(&fh.0) else {
                 return reply.error(Errno::EBADF);
             };
-            (h.rel.clone(), h.buf.as_ref().map(|b| slice_of(b, offset, size)))
+            (
+                h.rel.clone(),
+                h.buf.as_ref().map(|b| slice_of(b, offset, size)),
+            )
         };
         if let Some(data) = cached {
             return reply.data(&data);
@@ -445,14 +452,28 @@ impl Filesystem for RemoteFs {
         reply.written(data.len() as u32);
     }
 
-    fn flush(&self, _req: &Request, _ino: INodeNo, fh: FileHandle, _owner: LockOwner, reply: ReplyEmpty) {
+    fn flush(
+        &self,
+        _req: &Request,
+        _ino: INodeNo,
+        fh: FileHandle,
+        _owner: LockOwner,
+        reply: ReplyEmpty,
+    ) {
         match self.flush_handle(fh.0) {
             Ok(()) => reply.ok(),
             Err(e) => reply.error(e),
         }
     }
 
-    fn fsync(&self, _req: &Request, _ino: INodeNo, fh: FileHandle, _datasync: bool, reply: ReplyEmpty) {
+    fn fsync(
+        &self,
+        _req: &Request,
+        _ino: INodeNo,
+        fh: FileHandle,
+        _datasync: bool,
+        reply: ReplyEmpty,
+    ) {
         match self.flush_handle(fh.0) {
             Ok(()) => reply.ok(),
             Err(e) => reply.error(e),
@@ -546,7 +567,13 @@ impl Filesystem for RemoteFs {
             Err(e) => return reply.error(e),
         };
         let fh = self.insert_handle(rel, Some(Vec::new()), false);
-        reply.created(&TTL, &attr, Generation(0), FileHandle(fh), FopenFlags::empty());
+        reply.created(
+            &TTL,
+            &attr,
+            Generation(0),
+            FileHandle(fh),
+            FopenFlags::empty(),
+        );
     }
 
     fn access(&self, _req: &Request, _ino: INodeNo, _mask: fuser::AccessFlags, reply: ReplyEmpty) {

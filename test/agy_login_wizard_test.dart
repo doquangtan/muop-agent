@@ -74,6 +74,10 @@ class _FakeSetupRepository implements SetupRepository {
   Future<SetupStatus> setWorkspace(String path) async => _setupDone();
 
   @override
+  Future<SetupDirListing> browseDirectories(String path) async =>
+      SetupDirListing.failure('không dùng trong test');
+
+  @override
   Future<SetupStatus> setToolPath(String tool, String path) async => _setupDone();
 
   @override
@@ -153,7 +157,8 @@ void main() {
     final agy = _FakeAgyRepository(status: _terminal(loginUrl: _link, stage: 'awaiting_token'));
     await _pump(tester, agy);
 
-    expect(find.byType(SshTerminalPanel), findsOneWidget);
+    expect(find.byType(SshTerminalPanel), findsNothing);
+    expect(find.text('Mở terminal (chỉ khi cần)'), findsOneWidget);
     expect(find.text('Mở link'), findsOneWidget);
     expect(find.text('Sao chép'), findsOneWidget);
     expect(find.widgetWithText(TextField, 'Mã xác thực'), findsOneWidget);
@@ -164,7 +169,8 @@ void main() {
     final agy = _FakeAgyRepository(status: _terminal(loginUrl: _link, stage: 'verifying'));
     await _pump(tester, agy, settle: false);
 
-    expect(find.byType(SshTerminalPanel), findsOneWidget);
+    expect(find.byType(SshTerminalPanel), findsNothing);
+    expect(find.text('Mở terminal (chỉ khi cần)'), findsOneWidget);
     expect(find.widgetWithText(TextField, 'Mã xác thực'), findsOneWidget);
 
     agy.emit(const AgyAuthState(

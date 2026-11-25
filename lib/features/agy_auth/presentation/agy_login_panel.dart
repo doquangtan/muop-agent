@@ -8,11 +8,12 @@ import 'package:muop_agent/features/agy_auth/presentation/agy_login_code_field.d
 import 'package:muop_agent/features/agy_auth/presentation/agy_login_url_box.dart';
 import 'package:muop_agent/features/ssh/presentation/ssh_terminal_panel.dart';
 
-/// Khung đăng nhập agy khi terminal đăng nhập đang chạy. Dùng chung cho màn Tài khoản và wizard.
+/// Khung đăng nhập agy. Dùng chung cho màn Tài khoản và wizard.
 ///
-/// - Terminal SSH luôn hiện trong suốt quá trình đăng nhập: người dùng theo dõi agy ở mọi bước.
-/// - Khi server báo có link đăng nhập ([AgyAuthState.hasLoginUrl]), hiện bên dưới terminal: nút Mở link,
-///   Sao chép, ô nhập mã và nút Xác nhận. Màn không còn link thì các nút này được ẩn.
+/// - Link đăng nhập do server đọc từ agy và gửi trong [AgyAuthState.loginUrl]. Client chỉ hiển thị link đó
+///   (nút Mở link, Sao chép), ô nhập mã và nút Xác nhận. Client không tự phân tích đầu ra của terminal.
+/// - Terminal SSH chỉ hiện khi người dùng mở ra, hoặc khi agy đang chờ đồng ý điều khoản (bước phải làm trong
+///   terminal). Đây là trường hợp bất đắc dĩ, nên mặc định ẩn.
 /// - Nút mở link, sao chép, ô mã và Xác nhận luôn bấm được khi link đang hiện. Agy báo lỗi thì
 ///   server chuyển sang `failed`, terminal đóng, màn hình quay về nút "Đăng nhập bằng Google".
 /// - Trong lúc khung hiện, gọi `agy:auth:check` định kỳ để biết agy đã đăng nhập chưa.
@@ -54,6 +55,9 @@ class _AgyLoginPanelState extends State<AgyLoginPanel> {
   Timer? _timer;
   bool _checking = false;
 
+  /// Người dùng đã mở terminal SSH (trường hợp bất đắc dĩ)
+  bool _showTerminal = false;
+
   @override
   void initState() {
     super.initState();
@@ -84,28 +88,30 @@ class _AgyLoginPanelState extends State<AgyLoginPanel> {
     final state = widget.state;
     final stage = state.stage;
     final verifying = stage == 'verifying';
+    // Agy chờ đồng ý điều khoản: phải làm trong terminal, nên tự mở
+    final showTerminal = _showTerminal || stage == 'awaiting_terms';
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        SshTerminalPanel(
-          key: ValueKey(state.sshSessionId),
-          hostId: state.sshHostId,
-          hostName: 'Máy này (muop-agent)',
-          hostAddress: '127.0.0.1',
-          sessionId: state.sshSessionId,
-          height: widget.terminalHeight,
-          hint: stage == 'waiting_link'
-              ? 'Làm theo hướng dẫn của agy trong terminal (đồng ý điều khoản nếu có, '
-                  'chọn "1. Google OAuth"). Khi link hiện ra, nút mở link và ô nhập mã sẽ xuất hiện bên dưới.'
-              : null,
-          onRestart: widget.onRestart,
-        ),
         if (state.hasLoginUrl) ...[
-          const SizedBox(height: 10),
           AgyLoginUrlBox(url: state.loginUrl),
           const SizedBox(height: 10),
           AgyLoginCodeField(onSubmit: widget.onSubmitCode),
+        ] else ...[
+          // Chờ server đọc link từ agy: chỉ hiện trạng thái tĩnh (không hoạt ảnh liên tục)
+          Row(
+            children: [
+              Icon(Icons.hourglass_top_rounded, size: 18, color: scheme.onSurfaceVariant),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Text(
+                  'Đang lấy link đăng nhập Google từ máy chủ...',
+                  style: textTheme.bodyMedium,
+                ),
+              ),
+            ],
+          ),
         ],
         if (verifying) ...[
           const SizedBox(height: 10),
@@ -126,12 +132,34 @@ class _AgyLoginPanelState extends State<AgyLoginPanel> {
         if (stage == 'awaiting_terms') ...[
           const SizedBox(height: 10),
           Text(
-            'Mã đã được chấp nhận. agy đang chờ bạn xác nhận điều khoản trong terminal bên trên. '
+            'Mã đã được chấp nhận. agy đang chờ bạn xác nhận điều khoản trong terminal bên dưới. '
             'Khi xong, đăng nhập sẽ tự hoàn tất.',
             style: textTheme.bodySmall?.copyWith(color: scheme.onSurfaceVariant),
           ),
         ],
         const SizedBox(height: 8),
+        if (showTerminal)
+          SshTerminalPanel(
+            key: ValueKey(state.sshSessionId),
+            hostId: state.sshHostId,
+            hostName: 'Máy này (muop-agent)',
+            hostAddress: '127.0.0.1',
+            sessionId: state.sshSessionId,
+            height: widget.terminalHeight,
+            hint: stage == 'awaiting_terms'
+                ? 'agy đang hỏi điều khoản: đồng ý trong terminal này, đăng nhập sẽ tự hoàn tất.'
+                : 'Chỉ dùng khi cần thao tác trực tiếp với agy (ví dụ điều khoản).',
+            onRestart: widget.onRestart,
+          )
+        else
+          Align(
+            alignment: Alignment.centerLeft,
+            child: TextButton.icon(
+              onPressed: () => setState(() => _showTerminal = true),
+              icon: const Icon(Icons.terminal_rounded, size: 18),
+              label: const Text('Mở terminal (chỉ khi cần)'),
+            ),
+          ),
         Align(
           alignment: Alignment.centerRight,
           child: TextButton(

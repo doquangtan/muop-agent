@@ -372,6 +372,7 @@ mod tests {
         assert_eq!(conversation_from_argv(&argv), None);
     }
 
+    #[cfg_attr(not(target_os = "linux"), ignore = "cần /proc của Linux")]
     #[test]
     fn own_process_has_start_ticks() {
         let ticks = process_start_ticks(std::process::id());
@@ -381,6 +382,7 @@ mod tests {
 
     /// Tiến trình thật có argv giống lượt agy (có `--conversation`): được nhận lại khi đang chạy,
     /// đóng lại khi kết thúc. Dùng hàm quét argv để không phụ thuộc bảng SQLite.
+    #[cfg_attr(not(target_os = "linux"), ignore = "cần /proc của Linux")]
     #[test]
     fn adopts_live_process_and_releases_it_after_exit() {
         use std::os::unix::process::CommandExt;

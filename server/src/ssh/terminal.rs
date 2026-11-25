@@ -165,7 +165,8 @@ pub fn open(
             state.io.clone(),
             session_id,
             &crate::ssh::hosts::local_shell(),
-            &["-i"],
+            &["-l", "-i"],
+            &[],
             cols,
             rows,
             row.id,
@@ -398,6 +399,7 @@ pub fn open_local(
     session_id: &str,
     program: &std::path::Path,
     args: &[&str],
+    envs: &[(&str, &str)],
     cols: u16,
     rows: u16,
     host_id: i64,
@@ -412,6 +414,7 @@ pub fn open_local(
     let tmp_dir = make_private_dir().ok_or("Không tạo được thư mục tạm")?;
     let mut cmd = Command::new(program);
     cmd.args(args)
+        .envs(envs.iter().copied())
         .env("TERM", "xterm-256color")
         .env_remove("SSH_CLIENT")
         .env_remove("SSH_CONNECTION")
@@ -479,6 +482,10 @@ pub fn write_input(session_id: &str, data_b64: &str) -> Result<(), String> {
 
 /// Đổi kích thước terminal (gửi SIGWINCH cho ssh qua ioctl)
 pub fn resize(session_id: &str, cols: u16, rows: u16) -> Result<(), String> {
+    // Terminal đăng nhập agy giữ kích thước rộng cố định: thu hẹp (màn điện thoại) làm TUI ngắt link OAuth
+    if crate::agy_auth::is_login_session(session_id) {
+        return Ok(());
+    }
     let (cols, rows) = clamp_size(cols, rows);
     let map = sessions().lock().map_err(|_| "Lỗi khóa phiên")?;
     let s = map.get(session_id).ok_or("Phiên đã kết thúc")?;

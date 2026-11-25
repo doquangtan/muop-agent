@@ -54,6 +54,20 @@ void main() {
     );
   });
 
+  test('tên máy (hostname) được nhớ theo từng địa chỉ và bỏ theo khi xóa máy', () async {
+    final repo = ConnectionRepositoryImpl(SocketGateway());
+    await repo.saveServerAddress('192.168.31.149:8787');
+    await repo.saveServerAddress('10.0.0.5:8787');
+    await repo.saveServerName('192.168.31.149:8787', 'Johns-Mac-Mini.local');
+    // Ghi tên không được làm mất danh sách và địa chỉ đang dùng
+    expect(await repo.loadSavedServerAddress(), '10.0.0.5:8787');
+    expect(await repo.loadSavedServers(), containsAll(['10.0.0.5:8787', '192.168.31.149:8787']));
+    expect(await repo.loadServerNames(), {'192.168.31.149:8787': 'Johns-Mac-Mini.local'});
+
+    await repo.removeSavedServer('192.168.31.149:8787');
+    expect(await repo.loadServerNames(), isEmpty);
+  });
+
   test('lưu và nạp lại địa chỉ server cùng danh sách máy đã kết nối', () async {
     final repo = ConnectionRepositoryImpl(SocketGateway());
     await repo.saveServerAddress('192.168.1.99:8787');

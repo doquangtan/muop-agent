@@ -39,6 +39,28 @@ fn dev_fuse_present() -> bool {
     Path::new("/dev/fuse").exists()
 }
 
+/// Công cụ chỉ có ý nghĩa trên Linux (systemd, FUSE, bản Linux Desktop). Trên macOS không hiện trong Khởi tạo.
+const LINUX_ONLY_TOOL_IDS: [&str; 3] = ["fuse", "systemd-run", "muop-agent"];
+
+/// Công cụ `id` có áp dụng trên máy này không
+pub fn tool_applies(id: &str) -> bool {
+    crate::infra::platform::IS_LINUX || !LINUX_ONLY_TOOL_IDS.contains(&id)
+}
+
+/// Lệnh gợi ý cài theo nền tảng. macOS không dùng apt: git/ssh/curl/python3 đi kèm Xcode Command Line Tools.
+fn hint_for(t: &ToolSpec) -> &'static str {
+    if !crate::infra::platform::IS_MACOS {
+        return t.hint;
+    }
+    match t.id {
+        "git" | "ssh" | "curl" | "python3" => {
+            "Cài Xcode Command Line Tools: xcode-select --install"
+        }
+        "docker" => "Cài Docker Desktop (cung cấp lệnh docker), để quản lý container qua SSH",
+        _ => t.hint,
+    }
+}
+
 const TOOLS: &[ToolSpec] = &[
     ToolSpec {
         id: "git",
@@ -87,7 +109,7 @@ const TOOLS: &[ToolSpec] = &[
     },
     ToolSpec {
         id: "docker",
-        label: "Docker (tùy chọn)",
+        label: "Docker (tùy chọn, chỉ cần cho tính năng Docker)",
         group: "optional",
         bin: "docker",
         install_script: None,
@@ -219,7 +241,11 @@ pub struct AptPackageStatus {
     pub installed: bool,
 }
 
+/// Gói apt do server quản lý. Chỉ có trên Linux (Debian/Ubuntu); macOS trả về rỗng, không hiện mục apt.
 pub fn probe_apt() -> Vec<AptPackageStatus> {
+    if !crate::infra::platform::IS_LINUX {
+        return Vec::new();
+    }
     APT_PACKAGES
         .iter()
         .map(|p| AptPackageStatus {
@@ -243,6 +269,70 @@ pub fn apt_install_command(packages: &[AptPackageStatus]) -> String {
         String::new()
     } else {
         format!("sudo apt-get install -y {}", missing.join(" "))
+    }
+}
+
+/// Gói Homebrew (cask) server quản lý trên macOS, hiển thị như danh sách apt bên Linux.
+/// Thêm gói mới: thêm một dòng vào `BREW_PACKAGES`. Server không tự cài (cask cần quyền admin):
+/// chỉ tạo lệnh `brew install --cask ...` để người dùng chạy trong terminal của máy.
+pub struct BrewPackage {
+    pub cask: &'static str,
+    pub label: &'static str,
+    /// Lý do cần gói, hiển thị cho người dùng
+    pub note: &'static str,
+    /// Bắt buộc: chưa cài thì wizard không cho đi tiếp
+    pub required: bool,
+    /// Dò đã cài (file cài của gói tồn tại)
+    pub installed: fn() -> bool,
+}
+
+pub const BREW_PACKAGES: &[BrewPackage] = &[BrewPackage {
+    cask: "fuse-t",
+    label: "FUSE-T",
+    note: "mount project của máy khác để agent làm việc trên đó (không cần kext)",
+    required: false,
+    installed: fuse_t_installed,
+}];
+
+/// FUSE-T cài `libfuse-t` vào thư mục lib của hệ thống (hoặc Homebrew)
+fn fuse_t_installed() -> bool {
+    [
+        "/usr/local/lib/libfuse-t.dylib",
+        "/opt/homebrew/lib/libfuse-t.dylib",
+    ]
+    .iter()
+    .any(|p| Path::new(p).exists())
+}
+
+/// Trạng thái các cask Homebrew do server quản lý. Chỉ có trên macOS; nơi khác trả về rỗng.
+pub fn probe_brew() -> Vec<AptPackageStatus> {
+    if !crate::infra::platform::IS_MACOS {
+        return Vec::new();
+    }
+    BREW_PACKAGES
+        .iter()
+        .map(|p| AptPackageStatus {
+            package: p.cask,
+            label: p.label,
+            note: p.note,
+            required: p.required,
+            installed: (p.installed)(),
+        })
+        .collect()
+}
+
+/// Lệnh cài các cask còn thiếu, rỗng nếu đã đủ hoặc chưa có Homebrew (`brew_available`).
+/// Chạy trong terminal của người dùng để họ nhập mật khẩu admin.
+pub fn brew_install_command(packages: &[AptPackageStatus], brew_available: bool) -> String {
+    let missing: Vec<&str> = packages
+        .iter()
+        .filter(|p| !p.installed)
+        .map(|p| p.package)
+        .collect();
+    if missing.is_empty() || !brew_available {
+        String::new()
+    } else {
+        format!("brew install --cask {}", missing.join(" "))
     }
 }
 
@@ -341,6 +431,7 @@ pub fn tool_bin(id: &str) -> Option<&'static str> {
 pub fn probe_all() -> Vec<ToolStatus> {
     TOOLS
         .iter()
+        .filter(|t| tool_applies(t.id))
         .map(|t| {
             let (path, source) = locate_tool(t.bin);
             let extra_ok = t.extra_check.is_none_or(|check| check());
@@ -355,7 +446,7 @@ pub fn probe_all() -> Vec<ToolStatus> {
                     .map(|p| p.display().to_string())
                     .unwrap_or_default(),
                 installable: t.install_script.is_some(),
-                hint: t.hint,
+                hint: hint_for(t),
             }
         })
         .collect()
@@ -443,8 +534,11 @@ async fn run(id: &'static str, bin: &'static str, script: &'static str) {
     let result = run_script(script).await;
     finished.store(true, Ordering::Relaxed);
 
+    // Kiểm tra bằng cách dò lại trên đĩa, không dùng cache (có thể còn ghi "không thấy" từ lúc đang cài)
+    let installed = tools::locate_uncached(bin).is_some();
+    tools::forget(bin);
     let (state, error) = match result {
-        Ok(0) if find_bin(bin).is_some() => ("done", String::new()),
+        Ok(0) if installed => ("done", String::new()),
         Ok(0) => (
             "failed",
             format!("Cài xong nhưng không thấy `{bin}` trong ~/.local/bin hoặc PATH"),
@@ -513,6 +607,24 @@ mod tests {
         assert!(fuse.install_script.is_none(), "apt cần root, chỉ báo lệnh");
         assert!(fuse.hint.contains("apt install fuse3"));
         assert!(fuse.extra_check.is_some());
+    }
+
+    #[test]
+    fn brew_command_lists_only_missing_casks() {
+        let st = |package: &'static str, installed: bool| AptPackageStatus {
+            package,
+            label: "x",
+            note: "",
+            required: false,
+            installed,
+        };
+        assert_eq!(brew_install_command(&[st("fuse-t", true)], true), "");
+        assert_eq!(
+            brew_install_command(&[st("fuse-t", false)], true),
+            "brew install --cask fuse-t"
+        );
+        // Chưa có Homebrew thì không tạo lệnh (người dùng cần cài brew trước)
+        assert_eq!(brew_install_command(&[st("fuse-t", false)], false), "");
     }
 
     #[test]

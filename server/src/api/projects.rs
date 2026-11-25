@@ -1,4 +1,3 @@
-use serde_json::json;
 use crate::chat::AppState;
 use crate::models::*;
 use crate::scanner;
@@ -8,6 +7,7 @@ use axum::{
     response::IntoResponse,
     Json,
 };
+use serde_json::json;
 use std::collections::HashMap;
 use std::path::PathBuf;
 

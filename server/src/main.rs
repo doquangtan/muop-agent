@@ -1,5 +1,5 @@
-mod agy_auth;
 mod agy_account;
+mod agy_auth;
 mod api;
 mod bridge;
 mod chat;
@@ -31,6 +31,12 @@ const MAX_REQUEST_BODY_BYTES: usize = 64 * 1024 * 1024;
 
 #[tokio::main]
 async fn main() {
+    // Biến SSH của phiên đăng nhập (khi server được chạy qua ssh) bị các tiến trình con kế thừa.
+    // agy thấy SSH_CLIENT/SSH_CONNECTION thì chuyển sang lưu token dạng file, nên hub và chat không đọc được
+    // tài khoản trong keychain: hub báo "not logged into Antigravity". Server không cần các biến này.
+    for key in ["SSH_CLIENT", "SSH_CONNECTION", "SSH_TTY"] {
+        std::env::remove_var(key);
+    }
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()

@@ -4,6 +4,7 @@
 //! Client chỉ gửi lệnh (socket ack `setup:*` hoặc REST `/api/setup/*`). Mọi lệnh shell do server tự chạy.
 //! Trạng thái đẩy cho mọi client qua `setup:update`.
 
+pub mod browse;
 pub mod install;
 pub mod ssh;
 
@@ -82,6 +83,8 @@ pub struct WorkspaceRequest {
 pub struct SetupStatus {
     pub ok: bool,
     pub error: String,
+    /// Nền tảng của máy chạy server (`linux` | `macos` | `other`): client chọn nội dung hiển thị theo đây
+    pub platform: &'static str,
     pub completed: bool,
     pub selected_clis: Vec<String>,
     pub tools: Vec<install::ToolStatus>,
@@ -89,6 +92,10 @@ pub struct SetupStatus {
     pub apt_packages: Vec<install::AptPackageStatus>,
     /// Lệnh cài các gói apt còn thiếu (rỗng nếu đủ). Client chạy trong terminal, không tự ghép lệnh.
     pub apt_install_command: String,
+    /// Danh sách cask Homebrew server quản lý trên macOS (xem `install::BREW_PACKAGES`); rỗng ở nơi khác
+    pub brew_packages: Vec<install::AptPackageStatus>,
+    /// Lệnh `brew install --cask ...` cho các cask còn thiếu (rỗng nếu đủ hoặc chưa có Homebrew)
+    pub brew_install_command: String,
     pub job: Option<install::JobStatus>,
     /// SSH của máy này: điều kiện bắt buộc của màn cài đặt (`ssh.ready`)
     pub ssh: ssh::SshStatus,
@@ -154,11 +161,15 @@ pub fn status(ok: bool, error: impl Into<String>) -> SetupStatus {
         .collect();
     let apt_packages = install::probe_apt();
     let apt_install_command = install::apt_install_command(&apt_packages);
+    let brew_packages = install::probe_brew();
+    let brew_available = install::find_bin("brew").is_some();
+    let brew_install_command = install::brew_install_command(&brew_packages, brew_available);
     let workspace_root = configured_workspace();
     let workspace_ready = completed && !workspace_root.is_empty();
     SetupStatus {
         ok,
         error: error.into(),
+        platform: crate::infra::platform::name(),
         completed,
         selected_clis,
         workspace_root,
@@ -167,6 +178,8 @@ pub fn status(ok: bool, error: impl Into<String>) -> SetupStatus {
         tools: install::probe_all(),
         apt_packages,
         apt_install_command,
+        brew_packages,
+        brew_install_command,
         job: install::current(),
         ssh: ssh::status(),
     }
@@ -249,6 +262,28 @@ pub fn register(socket: &SocketRef) {
                 Err(e) => to_ack_error(e),
             };
             let _ = ack.send(&res);
+        },
+    );
+
+    // Duyệt thư mục trên máy server để chọn project (cây thư mục, chỉ thư mục)
+    socket.on(
+        "setup:browse",
+        move |Data::<browse::BrowseRequest>(req), ack: AckSender| async move {
+            match tokio::task::spawn_blocking(move || browse::list_dirs(&req.path)).await {
+                Ok(listing) => {
+                    let _ = ack.send(&listing);
+                }
+                Err(e) => {
+                    let _ = ack.send(&serde_json::json!({
+                        "ok": false,
+                        "error": format!("Lỗi nội bộ khi đọc thư mục: {e}"),
+                        "path": "",
+                        "parent": "",
+                        "home": "",
+                        "dirs": [],
+                    }));
+                }
+            }
         },
     );
 

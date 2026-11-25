@@ -9,7 +9,8 @@ mod login;
 pub mod socket;
 
 pub use login::{
-    cancel as login_cancel, pending_url, start as login_start, submit as login_submit,
+    cancel as login_cancel, cli_auth_status, pending_url, start as login_start,
+    submit as login_submit,
 };
 
 use crate::models::ClaudeAuthEvent;

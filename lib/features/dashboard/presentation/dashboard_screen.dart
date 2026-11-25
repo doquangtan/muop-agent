@@ -37,11 +37,11 @@ import 'package:muop_agent/features/server_files/presentation/server_file_browse
 import 'package:muop_agent/features/sessions/domain/session_entities.dart';
 import 'package:muop_agent/features/sessions/domain/session_repository.dart';
 import 'package:muop_agent/features/sessions/presentation/desktop_conversation_rail.dart';
-import 'package:muop_agent/features/setup/presentation/setup_splash_screen.dart';
-import 'package:muop_agent/features/setup/presentation/setup_wizard_screen.dart';
+import 'package:muop_agent/features/setup/presentation/setup_flow.dart';
 import 'package:muop_agent/features/ssh/presentation/ssh_hosts_screen.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:muop_agent/core/state/server_address_provider.dart';
+import 'package:muop_agent/core/state/setup_check_provider.dart';
 
 /// Màn gắn với server đang kết nối: đổi địa chỉ (provider toàn cục) thì dựng lại và tải lại dữ liệu
 class DashboardScreen extends ConsumerWidget {
@@ -359,33 +359,19 @@ class _DashboardScreenState extends ConsumerState<DashboardScreenView> {
     });
   }
 
-  /// Đang chạy splash/wizard kiểm tra cài đặt (tránh mở chồng nhiều lần)
-  bool _setupFlowRunning = false;
-
   /// Splash kiểm tra cài đặt trên server đang chọn; thiếu mục nào thì mở wizard cài đặt.
-  /// Gọi khi mở app và mỗi khi đổi IP server (không gọi lại khi socket tự kết nối lại).
+  /// Gọi khi mở app. Khi đổi IP từ màn Cài đặt, màn đó đã tự mở luồng (xem `ServerConfigSection`)
+  /// nên chỉ mở lại khi địa chỉ này chưa được kiểm tra.
   Future<void> _runSetupCheck() async {
-    if (_setupFlowRunning || !mounted) return;
-    _setupFlowRunning = true;
-    try {
-      final needsSetup = await Navigator.of(context).push<bool>(
-        MaterialPageRoute<bool>(
-          builder: (_) => SetupSplashScreen(
-            serverAddress: _serverAddress,
-            // Đóng splash rồi mở hộp thoại IP; đổi máy chủ sẽ dựng lại dashboard và kiểm tra lại
-            onChangeServer: () => unawaited(_openSettings()),
-          ),
-        ),
-      );
-      if (!mounted || needsSetup != true) return;
-      await Navigator.of(context).push<bool>(
-        MaterialPageRoute<bool>(
-          builder: (_) => SetupWizardScreen(),
-        ),
-      );
-    } finally {
-      _setupFlowRunning = false;
-    }
+    if (!mounted) return;
+    final address = _serverAddress;
+    if (!ref.read(setupCheckedAddressProvider.notifier).claim(address)) return;
+    await runSetupFlow(
+      Navigator.of(context),
+      address,
+      // Đóng splash rồi mở hộp thoại IP; đổi máy chủ sẽ dựng lại dashboard và kiểm tra lại
+      onChangeServer: () => unawaited(_openSettings()),
+    );
   }
 
   void _bindRealtimeSocketStreams() {
