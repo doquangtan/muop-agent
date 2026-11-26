@@ -56,17 +56,18 @@
     });
   });
 
-  // Số lượt tải: đọc /stats/downloads.json do sidecar tổng hợp (không có thì giữ "—")
-  var dlNodes = document.querySelectorAll("[data-dl]");
+  // Số lượt tải: đọc /stats/downloads.json do sidecar tổng hợp (không có thì giữ "—").
+  // Hiển thị theo NỀN TẢNG, cộng dồn mọi phiên bản: đổi tên file theo version không làm mất số cũ.
+  var dlNodes = document.querySelectorAll("[data-dl-platform]");
   var dlTotal = document.querySelector("[data-dl-total]");
   if (dlNodes.length || dlTotal) {
     fetch("/stats/downloads.json", { cache: "no-store" })
       .then(function (r) { if (!r.ok) throw new Error("HTTP " + r.status); return r.json(); })
       .then(function (d) {
         var fmt = function (n) { return Number(n || 0).toLocaleString("vi-VN"); };
+        var platforms = d.platforms || {};
         dlNodes.forEach(function (el) {
-          var f = d.files && d.files[el.getAttribute("data-dl")];
-          el.textContent = f ? fmt(f.total) : "0";
+          el.textContent = fmt(platforms[el.getAttribute("data-dl-platform")]);
         });
         if (dlTotal) dlTotal.textContent = fmt(d.total);
       })

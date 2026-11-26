@@ -129,7 +129,11 @@ pub fn query() -> ClaudeAuthEvent {
 pub fn logout() -> Result<AuthView, String> {
     let res = logout_inner();
     match &res {
-        Ok(_) => publish("logged_out", false, "", "", "", ""),
+        Ok(_) => {
+            // Đăng xuất: xóa danh sách model đã lưu để không còn hiện model Claude
+            crate::claude::code::clear_saved_claude_model_ids();
+            publish("logged_out", false, "", "", "", "")
+        }
         Err(e) => {
             let info = login::cli_auth_status().unwrap_or_default();
             publish(

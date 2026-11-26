@@ -5,43 +5,63 @@ import 'package:flutter/services.dart';
 import 'package:muop_agent/core/config/server_config.dart';
 import 'package:muop_agent/features/server_files/domain/server_file_entities.dart';
 import 'package:muop_agent/features/server_files/domain/server_files_repository.dart';
+import 'package:muop_agent/features/sftp/data/download_saver.dart';
+import 'package:muop_agent/features/sftp/data/local_sftp.dart';
+import 'package:muop_agent/features/sftp/data/sftp_transfers.dart';
+import 'package:muop_agent/features/sftp/domain/sftp_entities.dart';
 
+/// Duyệt và tải file của máy server qua API SFTP chung ("Máy này"): không còn endpoint file riêng.
+/// Đọc nội dung, diff git và phân trang dòng vẫn đi qua `/api/files/*` vì cần git (SFTP không có).
 class ServerFilesRepositoryImpl implements ServerFilesRepository {
-  ServerFilesRepositoryImpl();
+  ServerFilesRepositoryImpl(this._local, this._transfers);
 
-  /// Duyệt danh sách file và thư mục trên Rust Server (`/api/files/list`)
+  final LocalSftp _local;
+  final SftpTransfers _transfers;
+
+  /// Duyệt thư mục trên "Máy này" (`/api/sftp/list` với phiên của máy này)
   @override
   Future<ServerDirListResponse> fetchServerDirectory({
     required String address,
     required String path,
     bool showHidden = false,
   }) async {
-    final baseUrl = normalizeBaseUrl(address);
-    final client = HttpClient()
-      ..connectionTimeout = const Duration(seconds: 4);
-    try {
-      final uri = Uri.parse('$baseUrl/api/files/list').replace(
-        queryParameters: {
-          'path': path,
-          'showHidden': showHidden ? 'true' : 'false',
-        },
-      );
-      final req = await client.getUrl(uri);
-      final resp = await req.close().timeout(const Duration(seconds: 6));
-      final body = await resp.transform(utf8.decoder).join();
-      final map = jsonDecode(body) as Map<String, dynamic>;
-      return ServerDirListResponse.fromJson(map);
-    } catch (e) {
+    final reply = await _local.run(
+      address,
+      (sid) => _local.repo.list(address, sid, path),
+    );
+    if (!reply.ok) {
       return ServerDirListResponse(
         ok: false,
         currentPath: path,
         parentPath: '',
         entries: const [],
-        error: '$e',
+        error: reply.error,
       );
-    } finally {
-      client.close(force: true);
     }
+    final entries = reply.entries
+        .where((e) => showHidden || !e.name.startsWith('.'))
+        .map(_toFileEntry)
+        .toList();
+    return ServerDirListResponse(
+      ok: true,
+      currentPath: path,
+      parentPath: sftpParentOf(path),
+      entries: entries,
+    );
+  }
+
+  static ServerFileEntry _toFileEntry(SftpEntry e) {
+    final unix = e.modifiedUnix;
+    return ServerFileEntry(
+      name: e.name,
+      path: e.path,
+      isDir: e.isDir,
+      size: e.size,
+      modifiedAt: unix != null
+          ? DateTime.fromMillisecondsSinceEpoch(unix * 1000)
+          : DateTime.fromMillisecondsSinceEpoch(0),
+      permissions: e.mode,
+    );
   }
 
   /// Đọc nội dung tệp và Git Diff trên Rust Server (`/api/files/read`)
@@ -155,97 +175,41 @@ class ServerFilesRepositoryImpl implements ServerFilesRepository {
         .toString();
   }
 
-  /// Tải file từ Rust Server (`/api/files/download`) về thư mục Downloads trên thiết bị
+  /// Tải file của máy server về thiết bị bằng luồng SFTP chung (chuẩn bị rồi tải theo khối, có tiến trình).
+  /// File lưu vào Downloads (máy để bàn) hoặc Downloads/Documents trên điện thoại.
   @override
   Future<FileDownloadResult> downloadFileFromServer({
     required String address,
     required String remotePath,
     void Function(int receivedBytes, int totalBytes)? onProgress,
   }) async {
-    final baseUrl = normalizeBaseUrl(address);
-    final client = HttpClient()
-      ..connectionTimeout = const Duration(seconds: 8);
     try {
-      final uri = Uri.parse('$baseUrl/api/files/download').replace(
-        queryParameters: {'path': remotePath},
+      final prepared = await _local.run(
+        address,
+        (sid) => _local.repo.prepareDownload(address, sid, [remotePath]),
       );
-      final req = await client.getUrl(uri);
-      final resp = await req.close();
-
-      if (resp.statusCode != 200) {
-        final errBody = await resp.transform(utf8.decoder).join();
+      if (!prepared.ok || prepared.downloadId.isEmpty) {
         return FileDownloadResult(
           ok: false,
           savedPath: '',
           sizeBytes: 0,
-          error: 'HTTP ${resp.statusCode}: $errBody',
+          error: prepared.error.isNotEmpty
+              ? prepared.error
+              : 'Không chuẩn bị được file tải xuống',
         );
       }
-
-      final filename = remotePath
-          .split('/')
-          .where((s) => s.isNotEmpty)
-          .lastOrNull ??
-          'downloaded_file';
-
-      // Android: dùng systemTemp (app cache dir) — không cần quyền external storage.
-      // Desktop: ưu tiên ~/Downloads, fallback về systemTemp.
-      Directory targetDir = Directory.systemTemp;
-      if (!Platform.isAndroid) {
-        final home = Platform.environment['HOME'] ?? '';
-        if (home.isNotEmpty) {
-          final dl = Directory('$home/Downloads');
-          if (await dl.exists()) targetDir = dl;
-        }
-      }
-
-      File outFile = File('${targetDir.path}/$filename');
-
-      // RandomAccessFile.writeFrom() ghi mỗi chunk thẳng ra disk và await từng lần,
-      // không buffer toàn bộ file → tránh flush() block ở cuối gây "đứng im ở 100%".
-      late RandomAccessFile raf;
-      try {
-        raf = await outFile.open(mode: FileMode.write);
-      } catch (_) {
-        // Fallback về systemTemp nếu thư mục đích không ghi được
-        outFile = File('${Directory.systemTemp.path}/$filename');
-        raf = await outFile.open(mode: FileMode.write);
-      }
-
-      final totalBytes = resp.contentLength;
-      int received = 0;
-
-      try {
-        await for (final chunk in resp) {
-          await raf.writeFrom(chunk);
-          received += chunk.length;
-          onProgress?.call(received, totalBytes);
-        }
-      } finally {
-        await raf.close();
-      }
-
-      var savedPath = outFile.path;
-      if (Platform.isAndroid || Platform.isIOS) {
-        // Android: chuyển bản tạm sang Downloads công khai (MediaStore).
-        // iOS: chuyển sang thư mục Documents (hiện trong app Tệp).
-        // Nếu thất bại (ví dụ Android < 10) thì giữ bản trong cache.
-        try {
-          final saved = await _fileOpenerChannel.invokeMethod<String>(
-            Platform.isIOS ? 'saveToDocuments' : 'saveToDownloads',
-            {'path': outFile.path, 'name': filename},
-          );
-          if (saved != null && saved.isNotEmpty) {
-            await outFile.delete();
-            savedPath = saved;
-          }
-        } catch (_) {}
-      }
-
+      final file = await _transfers.fetchToTemp(
+        address: address,
+        downloadId: prepared.downloadId,
+        name: prepared.downloadName,
+        expectedSize: prepared.size,
+        onProgress: onProgress,
+      );
+      final savedPath = await saveToDownloads(file);
       return FileDownloadResult(
         ok: true,
         savedPath: savedPath,
-        sizeBytes: received,
+        sizeBytes: file.size,
       );
     } catch (e) {
       return FileDownloadResult(
@@ -254,8 +218,6 @@ class ServerFilesRepositoryImpl implements ServerFilesRepository {
         sizeBytes: 0,
         error: '$e',
       );
-    } finally {
-      client.close(force: true);
     }
   }
 

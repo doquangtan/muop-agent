@@ -38,3 +38,5 @@ fuser = { version = "0.19", optional = true }
 
 [features]
 mac-fuse = ["dep:fuser"]
+# Build tĩnh cho gói .deb server (NAS, máy không có libsqlite3 đúng phiên bản): đóng gói SQLite vào binary.
+bundled-sqlite = ["rusqlite/bundled"]

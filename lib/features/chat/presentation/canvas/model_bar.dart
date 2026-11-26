@@ -430,6 +430,73 @@ extension _CanvasExtModelBar on _ChatCanvasViewState {
   }
 
   /// [2] THANH THÔNG TIN GỌN TRÊN ĐỈNH ĐẢO CHAT: Model, Effort, Context % và Quota ngắn gọn
+  /// Nút mở cấu hình tự gửi lại khi chạm giới hạn của conversation đang mở.
+  /// Có lịch đang chờ thì đổi icon sang đồng hồ cát màu cảnh báo.
+  Widget _buildRetryConfigButton(BuildContext context) {
+    final conversationId = widget.session?.id;
+    final fetch = widget.onFetchRetryConfig;
+    final save = widget.onSaveRetryConfig;
+    final enabled =
+        conversationId != null &&
+        fetch != null &&
+        save != null &&
+        !widget.isPeerSession;
+    final hasPending =
+        widget.pendingRetry != null &&
+        widget.pendingRetry!.conversationId == conversationId;
+    final color = hasPending
+        ? context.status.warning
+        : context.scheme.onSurfaceVariant;
+
+    return Tooltip(
+      message: enabled
+          ? 'Tự gửi lại khi chạm giới hạn'
+          : 'Mở một conversation để cấu hình tự gửi lại',
+      child: IconButton(
+        visualDensity: VisualDensity.compact,
+        constraints: const BoxConstraints(minWidth: 30, minHeight: 30),
+        padding: EdgeInsets.zero,
+        iconSize: 16,
+        onPressed: enabled
+            ? () => _openRetryConfig(
+                context,
+                conversationId,
+                fetch,
+                save,
+              )
+            : null,
+        icon: Icon(
+          hasPending
+              ? Icons.hourglass_top_rounded
+              : Icons.autorenew_rounded,
+          color: color,
+        ),
+      ),
+    );
+  }
+
+  Future<void> _openRetryConfig(
+    BuildContext context,
+    String conversationId,
+    Future<ConversationRetryConfig?> Function(String conversationId) fetch,
+    Future<({bool ok, String message})> Function(ConversationRetryConfig config)
+    save,
+  ) async {
+    final loaded = await fetch(conversationId);
+    if (!context.mounted) return;
+    final pending = widget.pendingRetry?.conversationId == conversationId
+        ? widget.pendingRetry
+        : null;
+    await showRetryConfigSheet(
+      context: context,
+      initial:
+          loaded ?? ConversationRetryConfig(conversationId: conversationId),
+      onSave: save,
+      pending: pending,
+      onCancelPending: widget.onCancelRetry,
+    );
+  }
+
   Widget _buildModelUsageMiddleBar(BuildContext context, bool isMobile) {
     final colorScheme = Theme.of(context).colorScheme;
     final textTheme = Theme.of(context).textTheme;
@@ -450,6 +517,8 @@ extension _CanvasExtModelBar on _ChatCanvasViewState {
           _buildModelSelector(colorScheme, textTheme, isMobile),
           const SizedBox(width: 6),
           _buildContextChip(colorScheme, textTheme, compact: isMobile),
+          const SizedBox(width: 2),
+          _buildRetryConfigButton(context),
           const Spacer(),
           if (widget.onOpenAgentMap != null && !isMobile) ...[
             InkWell(

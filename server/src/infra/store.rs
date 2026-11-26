@@ -1,6 +1,7 @@
 //! Lưu trữ trạng thái của app trong một cơ sở dữ liệu SQLite duy nhất,
 //! thay cho các file JSON/JSONL rời rạc.
 
+use crate::models::RetryConfigDto;
 use rusqlite::{params, Connection};
 use serde_json::Value;
 use std::collections::HashMap;
@@ -91,6 +92,15 @@ fn open() -> Option<Connection> {
              email TEXT NOT NULL,
              plan TEXT NOT NULL,
              quota_json TEXT NOT NULL,
+             updated_at TEXT NOT NULL
+         );
+         CREATE TABLE IF NOT EXISTS conversation_retry_config (
+             conversation_id TEXT PRIMARY KEY,
+             enabled INTEGER NOT NULL,
+             prompt TEXT NOT NULL,
+             max_attempts INTEGER NOT NULL,
+             interval_minutes INTEGER NOT NULL,
+             use_quota_reset INTEGER NOT NULL,
              updated_at TEXT NOT NULL
          );
          CREATE TABLE IF NOT EXISTS model_context_limits (
@@ -599,6 +609,18 @@ pub fn save_ssh_host(row: &SshHostRow) -> Option<i64> {
     })
 }
 
+/// Cập nhật mật khẩu đã lưu của máy SSH (chuỗi rỗng = xóa). Trả về false nếu lỗi DB.
+pub fn set_ssh_password(id: i64, password: &str) -> bool {
+    with_db(|c| {
+        c.execute(
+            "UPDATE ssh_hosts SET password = ?2, updated_at = ?3 WHERE id = ?1",
+            params![id, password, chrono::Utc::now().to_rfc3339()],
+        )
+        .ok()
+    })
+    .is_some()
+}
+
 pub fn delete_ssh_host(id: i64) -> bool {
     with_db(|c| {
         c.execute("DELETE FROM ssh_hosts WHERE id = ?1", params![id])
@@ -685,4 +707,55 @@ pub fn load_agy_account() -> Option<AgyAccountRow> {
 /// Xóa thông tin tài khoản agy (khi đăng xuất)
 pub fn clear_agy_account() -> bool {
     with_db(|c| c.execute("DELETE FROM agy_account", []).ok()).is_some()
+}
+
+/// Cấu hình tự gửi lại đã lưu của một conversation, None nếu chưa từng đặt
+pub fn conversation_retry_config(conversation_id: &str) -> Option<RetryConfigDto> {
+    with_db(|c| {
+        c.query_row(
+            "SELECT enabled, prompt, max_attempts, interval_minutes, use_quota_reset
+             FROM conversation_retry_config WHERE conversation_id = ?1",
+            params![conversation_id],
+            |r| {
+                Ok(RetryConfigDto {
+                    conversation_id: conversation_id.to_string(),
+                    enabled: r.get::<_, i64>(0)? != 0,
+                    prompt: r.get(1)?,
+                    max_attempts: r.get::<_, i64>(2)?.clamp(0, i64::from(u32::MAX)) as u32,
+                    interval_minutes: r.get::<_, i64>(3)?.clamp(1, i64::from(u32::MAX)) as u32,
+                    use_quota_reset: r.get::<_, i64>(4)? != 0,
+                })
+            },
+        )
+        .ok()
+    })
+}
+
+/// Lưu cấu hình tự gửi lại của một conversation (ghi đè)
+pub fn set_conversation_retry_config(cfg: &RetryConfigDto) -> bool {
+    with_db(|c| {
+        c.execute(
+            "INSERT INTO conversation_retry_config
+                 (conversation_id, enabled, prompt, max_attempts, interval_minutes, use_quota_reset, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+             ON CONFLICT(conversation_id) DO UPDATE SET
+                 enabled = excluded.enabled,
+                 prompt = excluded.prompt,
+                 max_attempts = excluded.max_attempts,
+                 interval_minutes = excluded.interval_minutes,
+                 use_quota_reset = excluded.use_quota_reset,
+                 updated_at = excluded.updated_at",
+            params![
+                cfg.conversation_id,
+                cfg.enabled as i64,
+                cfg.prompt,
+                i64::from(cfg.max_attempts),
+                i64::from(cfg.interval_minutes),
+                cfg.use_quota_reset as i64,
+                chrono::Utc::now().to_rfc3339(),
+            ],
+        )
+        .ok()
+    })
+    .is_some()
 }

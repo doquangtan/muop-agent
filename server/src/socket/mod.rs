@@ -194,15 +194,18 @@ pub fn setup_socket_handlers(io: &SocketIo, state: AppState) {
                 let room = crate::ssh::terminal::room_for(&req.session_id);
                 let _ = s.join(room.clone());
                 let res = match crate::ssh::terminal::attach(&req.session_id) {
-                    Ok((host_name, bytes)) => SshTerminalAttachResponse {
+                    Ok(info) => SshTerminalAttachResponse {
                         ok: true,
                         session_id: req.session_id.clone(),
-                        host_name,
+                        host_name: info.host_name,
                         buffer: base64::Engine::encode(
                             &base64::engine::general_purpose::STANDARD,
-                            bytes,
+                            info.buffer,
                         ),
                         error: String::new(),
+                        awaiting_password: info.awaiting_password,
+                        password_wrong: info.password_wrong,
+                        password_kind: info.password_kind.to_string(),
                     },
                     Err(e) => {
                         let _ = s.leave(room);
@@ -212,6 +215,9 @@ pub fn setup_socket_handlers(io: &SocketIo, state: AppState) {
                             host_name: String::new(),
                             buffer: String::new(),
                             error: e,
+                            awaiting_password: false,
+                            password_wrong: false,
+                            password_kind: String::new(),
                         }
                     }
                 };
@@ -236,6 +242,24 @@ pub fn setup_socket_handlers(io: &SocketIo, state: AppState) {
             "ssh:close",
             move |Data::<SshTerminalSessionRequest>(req)| async move {
                 let _ = crate::ssh::terminal::close(&req.session_id);
+            },
+        );
+        // Mật khẩu người dùng nhập khi ssh đang hỏi trên PTY (không đi qua log, không lưu ngoài DB khi save)
+        socket.on(
+            "ssh:password",
+            move |Data::<SshPasswordSubmitRequest>(req), ack: AckSender| async move {
+                let res = match crate::ssh::terminal::submit_password(
+                    &req.session_id,
+                    &req.password,
+                    req.save_password,
+                ) {
+                    Ok(()) => SshPasswordSubmitResponse {
+                        ok: true,
+                        error: String::new(),
+                    },
+                    Err(error) => SshPasswordSubmitResponse { ok: false, error },
+                };
+                let _ = ack.send(&res);
             },
         );
 

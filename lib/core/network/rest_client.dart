@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:muop_agent/core/config/server_config.dart';
 
@@ -27,6 +28,38 @@ Future<(int, Map<String, dynamic>)> restRequest(
       return (resp.statusCode, {'items': decoded});
     }
     return (resp.statusCode, Map<String, dynamic>.from(decoded as Map));
+  } finally {
+    client.close(force: true);
+  }
+}
+
+/// GET một endpoint trả dữ liệu nhị phân (file tải xuống). Ném lỗi kèm thông báo của server nếu không phải 200.
+Future<Uint8List> restGetBytes(
+  String address,
+  String path, {
+  Duration timeout = const Duration(minutes: 5),
+}) async {
+  final baseUrl = normalizeBaseUrl(address);
+  final client = HttpClient()..connectionTimeout = const Duration(seconds: 6);
+  try {
+    final req = await client.getUrl(Uri.parse('$baseUrl$path'));
+    final resp = await req.close().timeout(timeout);
+    final builder = BytesBuilder(copy: false);
+    await for (final chunk in resp.timeout(timeout)) {
+      builder.add(chunk);
+    }
+    final bytes = builder.takeBytes();
+    if (resp.statusCode != 200) {
+      String message = 'Lỗi ${resp.statusCode}';
+      try {
+        final json = jsonDecode(utf8.decode(bytes));
+        if (json is Map && json['error'] is String) {
+          message = json['error'] as String;
+        }
+      } catch (_) {}
+      throw Exception(message);
+    }
+    return bytes;
   } finally {
     client.close(force: true);
   }

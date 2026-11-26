@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- LaunchAgent: mở Mướp Agents khi đăng nhập (kể cả sau khi khởi động lại máy).
+     __HOME__ được thay bằng thư mục Home của user khi chạy `make macos-autostart-on`. -->
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>vn.muop.agents.autostart</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/usr/bin/open</string>
+		<string>-g</string>
+		<string>-a</string>
+		<string>__HOME__/Applications/muop_agent.app</string>
+	</array>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>StandardOutPath</key>
+	<string>__HOME__/Library/Logs/muop-agent/autostart.log</string>
+	<key>StandardErrorPath</key>
+	<string>__HOME__/Library/Logs/muop-agent/autostart.log</string>
+</dict>
+</plist>

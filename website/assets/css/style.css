@@ -228,6 +228,7 @@ p { margin: 0 0 1em; color: var(--text-dim); }
 .dl-count span { font-family: var(--mono); font-weight: 700; color: var(--text); }
 .dl-total { margin: 18px 0 0; font-size: 0.95rem; color: var(--text-dim); }
 .dl-total strong { font-family: var(--mono); color: var(--text); }
+.dl-total-note { font-size: 0.85rem; color: var(--text-faint); }
 
 /* ---------- Donate ---------- */
 .donate {
@@ -244,7 +245,8 @@ p { margin: 0 0 1em; color: var(--text-dim); }
 
 /* ---------- Install order: server first, then clients ---------- */
 .dl-flow { display: flex; flex-direction: column; align-items: stretch; }
-.dl-server { width: 100%; max-width: 760px; margin: 0 auto; }
+.dl-servers { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+.dl-server { width: 100%; min-width: 0; }
 .dl-step-tag {
   display: inline-block; align-self: flex-start;
   font-size: 0.72rem; font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase;
@@ -261,7 +263,7 @@ p { margin: 0 0 1em; color: var(--text-dim); }
 .dl-link p { margin: 6px 0 0; font-size: 0.92rem; color: var(--text-dim); }
 .dl-link code { font-size: 0.85em; }
 .dl-clients-head { display: flex; justify-content: center; margin: 8px 0 16px; }
-.dl-clients { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; }
+.dl-clients { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
 .dl-client { min-width: 0; }
 .dl-hint { font-size: 0.85rem; color: var(--text-faint); margin: -4px 0 14px; }
 
@@ -438,6 +440,7 @@ tr:last-child td { border-bottom: none; }
   .steps { grid-template-columns: 1fr; }
   .downloads { grid-template-columns: 1fr; }
   .dl-clients { grid-template-columns: 1fr; }
+  .dl-servers { grid-template-columns: 1fr; }
   .donate { grid-template-columns: 1fr; padding: 24px; gap: 28px; }
   .donate-qr { max-width: 300px; margin: 0 auto; }
   .stats { grid-template-columns: repeat(2, 1fr); }

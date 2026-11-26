@@ -284,14 +284,19 @@ pub fn ensure_local_host() -> Option<i64> {
     let existing_id = local_host_id()
         .filter(|id| store::get_ssh_host(*id).is_some())
         .unwrap_or(0);
+    // Giữ mật khẩu đã lưu (dùng cho sudo trong máy này): đồng bộ lại dòng không được xóa nó
+    let kept = store::get_ssh_host(existing_id);
     let row = store::SshHostRow {
         id: existing_id,
         name: HOST_NAME.into(),
         host: LOCAL_HOST.into(),
         port: LOCAL_PORT,
         username: crate::ssh::hosts::server_user(),
-        password: String::new(),
-        private_key: String::new(),
+        password: kept
+            .as_ref()
+            .map(|r| r.password.clone())
+            .unwrap_or_default(),
+        private_key: kept.map(|r| r.private_key).unwrap_or_default(),
     };
     let id = store::save_ssh_host(&row)?;
     store::set_app_setting(KEY_HOST_ID, &id.to_string());

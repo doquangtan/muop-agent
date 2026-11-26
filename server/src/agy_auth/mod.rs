@@ -128,7 +128,7 @@ fn reset_login_state() {
 fn terminal_output(sid: &str) -> Option<Vec<u8>> {
     crate::ssh::terminal::attach(sid)
         .ok()
-        .map(|(_, bytes)| bytes)
+        .map(|info| info.buffer)
 }
 
 fn terminal_slot() -> MutexGuard<'static, Option<(String, i64)>> {

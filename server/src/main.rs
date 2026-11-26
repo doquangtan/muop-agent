@@ -16,6 +16,7 @@ mod models;
 mod scanner;
 mod screen;
 mod setup;
+mod sftp;
 mod socket;
 mod ssh;
 
@@ -151,6 +152,22 @@ async fn main() {
         }
     });
 
+    // FUSE-T cài sau khi server chạy: khởi động lại server khi không có lượt chat nào đang chạy
+    let fuse_state = app_state.clone();
+    fsmount::spawn_fuse_reload_watch(move || {
+        let streams_idle = fuse_state
+            .active_streams
+            .lock()
+            .map(|m| m.is_empty())
+            .unwrap_or(false);
+        let pids_idle = fuse_state
+            .running_pids
+            .lock()
+            .map(|m| m.is_empty())
+            .unwrap_or(false);
+        streams_idle && pids_idle
+    });
+
     // Dọn phiên terminal SSH không được dùng quá lâu
     tokio::spawn(async {
         let mut ticker = interval(Duration::from_secs(600));
@@ -167,6 +184,10 @@ async fn main() {
             let closed_docker = crate::docker::sessions::reap_idle().await;
             if closed_docker > 0 {
                 tracing::info!("Đã đóng {closed_docker} phiên Docker không hoạt động");
+            }
+            let closed_sftp = crate::sftp::reap_idle().await;
+            if closed_sftp > 0 {
+                tracing::info!("Đã đóng {closed_sftp} phiên SFTP không hoạt động");
             }
         }
     });
@@ -199,6 +220,7 @@ async fn main() {
 
     // Phiên Docker của lần chạy trước (ControlMaster còn sót) đã mất theo tiến trình cũ: dọn đi
     crate::docker::sessions::cleanup_stale();
+    crate::sftp::cleanup_stale();
     crate::setup::ssh::ensure_local_host();
 
     let listener = tokio::net::TcpListener::bind(addr)

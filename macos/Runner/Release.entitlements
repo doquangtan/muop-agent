@@ -5,6 +5,11 @@
 	<!-- Tắt sandbox: app chạy server đi kèm và server cần đọc ~/.claude, ~/.gemini, ~/.local (ngoài container) -->
 	<key>com.apple.security.app-sandbox</key>
 	<false/>
+	<!-- file_picker kiểm tra entitlement này trước khi mở hộp thoại chọn file (không có thì hộp thoại không hiện) -->
+	<key>com.apple.security.files.user-selected.read-only</key>
+	<true/>
+	<key>com.apple.security.files.user-selected.read-write</key>
+	<true/>
 	<key>com.apple.security.network.client</key>
 	<true/>
 	<key>com.apple.security.network.server</key>

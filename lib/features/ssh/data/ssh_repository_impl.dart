@@ -27,6 +27,12 @@ class SshRepositoryImpl implements SshRepository {
         exitCode: (map['exitCode'] as num?)?.toInt(),
       ));
     });
+    _gateway.on('ssh:password:request').listen((data) {
+      if (_passwordRequestController.isClosed || data is! Map) return;
+      _passwordRequestController.add(
+        SshPasswordRequest.fromJson(Map<String, dynamic>.from(data)),
+      );
+    });
   }
 
   final StreamController<SshTerminalData> _sshDataController =
@@ -41,6 +47,13 @@ class SshRepositoryImpl implements SshRepository {
 
   @override
   Stream<SshTerminalClosed> get sshClosedStream => _sshClosedController.stream;
+
+  final StreamController<SshPasswordRequest> _passwordRequestController =
+      StreamController<SshPasswordRequest>.broadcast();
+
+  @override
+  Stream<SshPasswordRequest> get sshPasswordRequestStream =>
+      _passwordRequestController.stream;
 
   /// Danh sách máy SSH đã lưu trên server
   @override
@@ -104,6 +117,8 @@ class SshRepositoryImpl implements SshRepository {
     required int hostId,
     required String command,
     int timeoutSecs = 30,
+    String password = '',
+    bool savePassword = false,
   }) async {
     try {
       final (_, body) = await restRequest(
@@ -114,6 +129,8 @@ class SshRepositoryImpl implements SshRepository {
           'hostId': hostId,
           'command': command,
           'timeoutSecs': timeoutSecs,
+          'password': password,
+          'savePassword': savePassword,
         },
         timeout: Duration(seconds: timeoutSecs + 10),
       );
@@ -215,6 +232,9 @@ class SshRepositoryImpl implements SshRepository {
             ? base64Decode(map['buffer'] as String)
             : const [],
         error: '${map['error'] ?? ''}',
+        awaitingPassword: map['awaitingPassword'] == true,
+        passwordWrong: map['passwordWrong'] == true,
+        passwordKind: '${map['passwordKind'] ?? 'ssh'}',
       );
     } catch (e) {
       return SshTerminalAttachResult(
@@ -234,6 +254,31 @@ class SshRepositoryImpl implements SshRepository {
       'sessionId': sessionId,
       'data': base64Encode(bytes),
     });
+  }
+
+  /// Mật khẩu cho prompt của `ssh`. Server ghi vào PTY; nếu `save` thì lưu vào máy.
+  @override
+  Future<String?> sendSshPassword(
+    String sessionId, {
+    required String password,
+    required bool save,
+  }) async {
+    if (!_gateway.connected) return 'Chưa kết nối tới server';
+    try {
+      final ack = await _gateway.emitWithAck('ssh:password', {
+        'sessionId': sessionId,
+        'password': password,
+        'savePassword': save,
+      }).timeout(sshAckTimeout);
+      final map = Map<String, dynamic>.from(
+        (ack is List ? ack.first : ack) as Map,
+      );
+      if (map['ok'] == true) return null;
+      final error = '${map['error'] ?? ''}';
+      return error.isEmpty ? 'Không gửi được mật khẩu' : error;
+    } catch (e) {
+      return 'Không gửi được mật khẩu: $e';
+    }
   }
 
   @override

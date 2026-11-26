@@ -88,6 +88,55 @@ pub async fn handle_chat_retry_cancel(
     )
 }
 
+/// Cấu hình tự gửi lại của conversation: `GET /api/chat/retry/config?id=<cid>` (mặc định nếu chưa đặt)
+pub async fn handle_chat_retry_config_get(
+    Query(q): Query<HashMap<String, String>>,
+) -> impl IntoResponse {
+    let cid = q.get("id").map(|s| s.trim().to_string()).unwrap_or_default();
+    if cid.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"ok": false, "error": "Thiếu conversationId"})),
+        );
+    }
+    let config = crate::infra::store::conversation_retry_config(&cid).unwrap_or_else(|| {
+        RetryConfigDto {
+            conversation_id: cid.clone(),
+            ..RetryConfigDto::default()
+        }
+    });
+    (StatusCode::OK, Json(json!({"ok": true, "config": config})))
+}
+
+/// Lưu cấu hình tự gửi lại: `POST /api/chat/retry/config`. Áp dụng ngay cho lịch đang chờ của conversation.
+pub async fn handle_chat_retry_config_save(
+    State(state): State<AppState>,
+    Json(mut cfg): Json<RetryConfigDto>,
+) -> impl IntoResponse {
+    cfg.conversation_id = cfg.conversation_id.trim().to_string();
+    cfg.prompt = cfg.prompt.trim().to_string();
+    if cfg.conversation_id.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"ok": false, "error": "Thiếu conversationId"})),
+        );
+    }
+    if let Err(error) = crate::chat::retry::validate(&cfg) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"ok": false, "error": error})),
+        );
+    }
+    if !crate::infra::store::set_conversation_retry_config(&cfg) {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"ok": false, "error": "Không lưu được cấu hình tự gửi lại"})),
+        );
+    }
+    crate::chat::retry::apply_config(&state, &cfg);
+    (StatusCode::OK, Json(json!({"ok": true, "config": cfg})))
+}
+
 pub async fn handle_chat_stop(
     State(state): State<AppState>,
     Json(req): Json<ChatStopRequest>,

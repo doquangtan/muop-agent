@@ -63,6 +63,68 @@ class InteractionsRepositoryImpl implements InteractionsRepository {
     }
   }
 
+  /// Đọc cấu hình tự gửi lại (`GET /api/chat/retry/config?id=`)
+  @override
+  Future<ConversationRetryConfig?> fetchRetryConfig({
+    required String address,
+    required String conversationId,
+  }) async {
+    final baseUrl = normalizeBaseUrl(address);
+    final client = HttpClient()
+      ..connectionTimeout = const Duration(seconds: 4);
+    try {
+      final uri = Uri.parse('$baseUrl/api/chat/retry/config').replace(
+        queryParameters: {'id': conversationId},
+      );
+      final req = await client.getUrl(uri);
+      final resp = await req.close().timeout(const Duration(seconds: 4));
+      if (resp.statusCode != 200) return null;
+      final body = await resp.transform(utf8.decoder).join();
+      final data = jsonDecode(body);
+      if (data is Map && data['config'] is Map) {
+        return ConversationRetryConfig.fromJson(
+          Map<String, dynamic>.from(data['config'] as Map),
+        );
+      }
+      return null;
+    } catch (_) {
+      return null;
+    } finally {
+      client.close(force: true);
+    }
+  }
+
+  /// Lưu cấu hình tự gửi lại (`POST /api/chat/retry/config`)
+  @override
+  Future<({bool ok, String message})> saveRetryConfig({
+    required String address,
+    required ConversationRetryConfig config,
+  }) async {
+    final baseUrl = normalizeBaseUrl(address);
+    final client = HttpClient()
+      ..connectionTimeout = const Duration(seconds: 4);
+    try {
+      final uri = Uri.parse('$baseUrl/api/chat/retry/config');
+      final req = await client.postUrl(uri);
+      req.headers.contentType = ContentType.json;
+      req.write(jsonEncode(config.toJson()));
+      final resp = await req.close().timeout(const Duration(seconds: 6));
+      final body = await resp.transform(utf8.decoder).join();
+      final data = jsonDecode(body);
+      if (resp.statusCode == 200 && data is Map && data['ok'] == true) {
+        return (ok: true, message: 'Đã lưu cấu hình tự gửi lại');
+      }
+      final err = (data is Map && data['error'] != null)
+          ? data['error'].toString()
+          : 'Không lưu được cấu hình (HTTP ${resp.statusCode})';
+      return (ok: false, message: err);
+    } catch (e) {
+      return (ok: false, message: 'Không lưu được cấu hình: $e');
+    } finally {
+      client.close(force: true);
+    }
+  }
+
   /// Lấy danh sách kế hoạch đang chờ duyệt (`/api/plan/pending`)
   @override
   Future<List<PlanArtifactInfo>> fetchPendingPlans({

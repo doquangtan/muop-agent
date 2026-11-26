@@ -1,0 +1,59 @@
+#!/bin/sh
+# Gói muop-agent-server (không GUI): tạo unit systemd hệ thống chạy dưới user đã gọi sudo.
+# Cài mới: enable + start. Nâng cấp: enable + try-restart (nạp binary mới).
+set -e
+
+UNIT=muop-agent-server.service
+UNIT_FILE="/etc/systemd/system/$UNIT"
+
+case "$1" in
+    configure)
+        # User chạy server: người gọi sudo (SUDO_USER). Chạy dpkg trực tiếp bằng root thì dùng root.
+        RUN_USER="${SUDO_USER:-root}"
+        # getent không có trên DSM (Synology): đọc /etc/passwd trực tiếp, getent chỉ là phương án dự phòng.
+        RUN_HOME="$(awk -F: -v u="$RUN_USER" '$1 == u { print $6; exit }' /etc/passwd 2>/dev/null)"
+        if [ -z "$RUN_HOME" ]; then
+            RUN_HOME="$(getent passwd "$RUN_USER" 2>/dev/null | cut -d: -f6)"
+        fi
+        [ -n "$RUN_HOME" ] || RUN_HOME=/root
+        RUN_GROUP="$(id -gn "$RUN_USER" 2>/dev/null || echo root)"
+
+        mkdir -p /etc/systemd/system
+        cat > "$UNIT_FILE" <<UNIT_EOF
+# Tạo bởi gói muop-agent-server (postinst). Sửa tay sẽ bị ghi đè khi cài lại gói.
+[Unit]
+Description=Muop Agent Server Engine (Rust Backend, headless)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=$RUN_USER
+Group=$RUN_GROUP
+Environment=HOME=$RUN_HOME
+Environment=RUST_LOG=info
+ExecStart=/usr/bin/muop-agent-server
+Restart=on-failure
+RestartSec=2s
+LimitNOFILE=65535
+
+[Install]
+WantedBy=multi-user.target
+UNIT_EOF
+        chmod 0644 "$UNIT_FILE"
+
+        if [ -d /run/systemd/system ] && command -v systemctl >/dev/null 2>&1; then
+            systemctl daemon-reload >/dev/null 2>&1 || true
+            systemctl enable "$UNIT" >/dev/null 2>&1 || true
+            if [ -n "$2" ]; then
+                systemctl try-restart "$UNIT" >/dev/null 2>&1 || true
+            else
+                systemctl start "$UNIT" >/dev/null 2>&1 || true
+            fi
+        else
+            echo "Không thấy systemd. Chạy tay: sudo -u $RUN_USER /usr/bin/muop-agent-server" >&2
+        fi
+        ;;
+esac
+
+exit 0

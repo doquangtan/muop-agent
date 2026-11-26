@@ -3,10 +3,13 @@
 //! - Mỗi phiên có một PTY (master/slave). `ssh` nhận slave làm stdin/stdout/stderr và controlling terminal.
 //! - Thread đọc master đẩy dữ liệu ra client qua Socket.IO (`ssh:data`), mã hóa base64.
 //! - Client gửi phím (`ssh:input`), đổi kích thước (`ssh:resize`), đóng (`ssh:close`).
+//! - Khi `ssh` hỏi mật khẩu trên PTY ([`super::prompt`]): mật khẩu đã lưu được gửi tự động; nếu chưa có,
+//!   server phát `ssh:password:request` và chờ client gửi `ssh:password`.
 //! - Dữ liệu chỉ phát tới room `ssh:<sessionId>`, mà chỉ socket mở phiên mới join vào.
-//! - Mật khẩu đi qua biến môi trường cho `SSH_ASKPASS`; key tạm nằm trong thư mục 0700 và bị xóa khi phiên kết thúc.
 
+use super::prompt::{PromptDetector, PromptKind, Signal, Source};
 use crate::chat::AppState;
+use crate::infra::store;
 use crate::infra::store::SshHostRow;
 use base64::{engine::general_purpose::STANDARD as B64, Engine};
 use serde::Serialize;
@@ -30,6 +33,8 @@ const MAX_SESSIONS: usize = 8;
 const SCROLLBACK_BYTES: usize = 256 * 1024;
 /// Phiên không có tương tác quá lâu thì tự đóng
 pub const IDLE_TIMEOUT: Duration = Duration::from_secs(6 * 3600);
+/// Số lần `ssh` được hỏi lại mật khẩu trong một phiên (lần sai thì ssh hỏi lại trên PTY)
+const NUMBER_OF_PASSWORD_PROMPTS: u8 = 3;
 
 struct TermSession {
     /// Đầu ghi vào PTY (cũng dùng cho ioctl đổi kích thước)
@@ -42,6 +47,11 @@ struct TermSession {
     last_active: Instant,
     /// Đầu ra gần nhất, gửi lại khi client gắn vào phiên
     scrollback: VecDeque<u8>,
+    /// Theo dõi prompt mật khẩu. Không có với phiên không hỏi mật khẩu (agy đăng nhập...)
+    detect_password: bool,
+    prompt: PromptDetector,
+    /// Đang chờ người dùng nhập mật khẩu (đã phát `ssh:password:request`)
+    awaiting_password: bool,
 }
 
 /// Thông tin một phiên đang chạy (gửi xuống client)
@@ -72,12 +82,30 @@ pub fn list() -> Vec<SshSessionInfo> {
     items
 }
 
+/// Kết quả gắn lại phiên: đầu ra đã đệm và trạng thái mật khẩu
+pub struct AttachInfo {
+    pub host_name: String,
+    pub buffer: Vec<u8>,
+    /// Đang chờ mật khẩu: client phải hiện hộp thoại nhập
+    pub awaiting_password: bool,
+    /// Lần nhập trước bị từ chối
+    pub password_wrong: bool,
+    /// Loại prompt đang chờ (`ssh` | `sudo`)
+    pub password_kind: &'static str,
+}
+
 /// Đầu ra đã đệm của phiên, để client vẽ lại màn hình khi gắn vào. Đánh dấu phiên còn được dùng.
-pub fn attach(session_id: &str) -> Result<(String, Vec<u8>), String> {
+pub fn attach(session_id: &str) -> Result<AttachInfo, String> {
     let mut map = sessions().lock().map_err(|_| "Lỗi khóa phiên")?;
     let s = map.get_mut(session_id).ok_or("Phiên đã kết thúc")?;
     s.last_active = Instant::now();
-    Ok((s.host_name.clone(), s.scrollback.iter().copied().collect()))
+    Ok(AttachInfo {
+        host_name: s.host_name.clone(),
+        buffer: s.scrollback.iter().copied().collect(),
+        awaiting_password: s.awaiting_password,
+        password_wrong: s.prompt.rejected,
+        password_kind: s.prompt.kind().label(),
+    })
 }
 
 /// Đóng các phiên không được dùng quá `IDLE_TIMEOUT`. Trả về số phiên đã yêu cầu đóng.
@@ -96,18 +124,6 @@ pub fn reap_idle() -> usize {
     idle.len()
 }
 
-fn append_scrollback(session_id: &str, bytes: &[u8]) {
-    if let Ok(mut map) = sessions().lock() {
-        if let Some(s) = map.get_mut(session_id) {
-            s.scrollback.extend(bytes.iter().copied());
-            let overflow = s.scrollback.len().saturating_sub(SCROLLBACK_BYTES);
-            if overflow > 0 {
-                s.scrollback.drain(..overflow);
-            }
-        }
-    }
-}
-
 static SESSIONS: OnceLock<Mutex<HashMap<String, TermSession>>> = OnceLock::new();
 
 fn sessions() -> &'static Mutex<HashMap<String, TermSession>> {
@@ -116,6 +132,11 @@ fn sessions() -> &'static Mutex<HashMap<String, TermSession>> {
 
 enum Event {
     Data(Vec<u8>),
+    /// `ssh` cần mật khẩu mà server chưa có; `wrong`: lần trước bị từ chối
+    PasswordRequest {
+        wrong: bool,
+        kind: PromptKind,
+    },
     Closed(Option<i32>),
 }
 
@@ -188,10 +209,6 @@ pub fn open_with(
     if row.username.is_empty() || row.host.is_empty() {
         return Err("Thiếu host hoặc username".into());
     }
-    let use_key = row.password.is_empty() && !row.private_key.trim().is_empty();
-    if !use_key && row.password.is_empty() {
-        return Err("Máy này chưa có mật khẩu hoặc private key".into());
-    }
     {
         let map = sessions().lock().map_err(|_| "Lỗi khóa phiên")?;
         if map.len() >= MAX_SESSIONS {
@@ -204,15 +221,18 @@ pub fn open_with(
         let _ = fs::remove_dir_all(dir);
     };
 
+    let number_of_prompts = format!("NumberOfPasswordPrompts={NUMBER_OF_PASSWORD_PROMPTS}");
     let mut cmd = Command::new("ssh");
     cmd.arg("-tt")
         .arg("-p")
         .arg(row.port.to_string())
         .args(["-o", "StrictHostKeyChecking=accept-new"])
         .args(["-o", "ConnectTimeout=10"])
-        .args(["-o", "NumberOfPasswordPrompts=1"]);
+        .args(["-o", number_of_prompts.as_str()])
+        // Không dùng askpass: mật khẩu được trả lời trên PTY (xem `PromptDetector`)
+        .env("SSH_ASKPASS_REQUIRE", "never");
 
-    if use_key {
+    if !row.private_key.trim().is_empty() {
         let key_path = tmp_dir.join("key");
         let mut key = row.private_key.trim_end().to_string();
         key.push('\n');
@@ -226,25 +246,11 @@ pub fn open_with(
             .arg(&key_path)
             .args(["-o", "IdentitiesOnly=yes"]);
     } else {
-        let askpass = tmp_dir.join("askpass.sh");
-        if fs::write(
-            &askpass,
-            "#!/bin/sh\nprintf '%s\\n' \"$MUOP_SSH_PASSWORD\"\n",
-        )
-        .is_err()
-            || fs::set_permissions(&askpass, fs::Permissions::from_mode(0o700)).is_err()
-        {
-            cleanup(&tmp_dir);
-            return Err("Không tạo được script xác thực tạm".into());
-        }
-        cmd.env("SSH_ASKPASS", &askpass)
-            .env("SSH_ASKPASS_REQUIRE", "force")
-            .env("MUOP_SSH_PASSWORD", &row.password)
-            .args(["-o", "PubkeyAuthentication=no"])
-            .args([
-                "-o",
-                "PreferredAuthentications=password,keyboard-interactive",
-            ]);
+        // Không có khóa: ssh hỏi mật khẩu trên PTY, server (hoặc người dùng) trả lời
+        cmd.args(["-o", "PubkeyAuthentication=no"]).args([
+            "-o",
+            "PreferredAuthentications=password,keyboard-interactive",
+        ]);
     }
     // Shell tương tác của user (đọc .bashrc) thay cho shell đăng nhập (chỉ đọc .bash_profile)
     cmd.arg(format!("{}@{}", row.username, row.host))
@@ -260,6 +266,7 @@ pub fn open_with(
         tmp_dir,
         row.id,
         row.name.clone(),
+        Some(PromptKind::Ssh),
     )
 }
 
@@ -275,6 +282,7 @@ fn spawn_pty(
     tmp_dir: PathBuf,
     host_id: i64,
     host_name: String,
+    prompt_kind: Option<PromptKind>,
 ) -> Result<(), String> {
     let cleanup = |dir: &PathBuf| {
         let _ = fs::remove_dir_all(dir);
@@ -342,6 +350,7 @@ fn spawn_pty(
     };
 
     let room = room_for(session_id);
+    let host_label = host_name.clone();
     if let Ok(mut map) = sessions().lock() {
         map.insert(
             session_id.to_string(),
@@ -354,6 +363,9 @@ fn spawn_pty(
                 started_at: chrono::Utc::now().to_rfc3339(),
                 last_active: Instant::now(),
                 scrollback: VecDeque::new(),
+                detect_password: prompt_kind.is_some(),
+                prompt: PromptDetector::new(prompt_kind.unwrap_or_default()),
+                awaiting_password: false,
             },
         );
     }
@@ -375,6 +387,18 @@ fn spawn_pty(
                     let _ = ns.to(room.clone()).emit(
                         "ssh:data",
                         &json!({"sessionId": sid, "data": B64.encode(&bytes)}),
+                    );
+                }
+                Event::PasswordRequest { wrong, kind } => {
+                    let _ = ns.to(room.clone()).emit(
+                        "ssh:password:request",
+                        &json!({
+                            "sessionId": sid,
+                            "hostId": host_id,
+                            "hostName": host_label,
+                            "wrong": wrong,
+                            "kind": kind.label(),
+                        }),
                     );
                 }
                 Event::Closed(code) => {
@@ -425,6 +449,7 @@ pub fn open_local(
     {
         cmd.current_dir(home);
     }
+    // Shell của máy này không phải ssh: không theo dõi prompt mật khẩu (sudo, passwd...)
     spawn_pty(
         io,
         session_id,
@@ -434,6 +459,8 @@ pub fn open_local(
         tmp_dir,
         host_id,
         host_name.to_string(),
+        // Shell của máy này: hỏi mật khẩu sudo (không hỏi ssh/passwd)
+        Some(PromptKind::Sudo),
     )
 }
 
@@ -449,9 +476,13 @@ fn read_loop(
         match reader.read(&mut buf) {
             Ok(0) => break,
             Ok(n) => {
-                append_scrollback(&session_id, &buf[..n]);
                 if tx.send(Event::Data(buf[..n].to_vec())).is_err() {
                     break;
+                }
+                for ev in ingest_output(&session_id, &buf[..n]) {
+                    if tx.send(ev).is_err() {
+                        break;
+                    }
                 }
             }
             Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
@@ -467,6 +498,83 @@ fn read_loop(
         let _ = fs::remove_dir_all(&s.tmp_dir);
     }
     let _ = tx.send(Event::Closed(code));
+}
+
+/// Đầu ra của PTY: lưu scrollback, theo dõi prompt mật khẩu, tự trả lời khi đã có mật khẩu lưu.
+/// Trả về các sự kiện cần gửi tới client.
+fn ingest_output(session_id: &str, bytes: &[u8]) -> Vec<Event> {
+    let Ok(mut map) = sessions().lock() else {
+        return Vec::new();
+    };
+    let Some(s) = map.get_mut(session_id) else {
+        return Vec::new();
+    };
+    s.scrollback.extend(bytes.iter().copied());
+    let overflow = s.scrollback.len().saturating_sub(SCROLLBACK_BYTES);
+    if overflow > 0 {
+        s.scrollback.drain(..overflow);
+    }
+    if !s.detect_password {
+        return Vec::new();
+    }
+    let mut events = Vec::new();
+    let kind = s.prompt.kind();
+    for sig in s.prompt.feed(bytes) {
+        match sig {
+            Signal::Rejected(Source::Stored) => {
+                // Mật khẩu đã lưu bị từ chối: xóa khỏi DB, không tự dùng lại
+                store::set_ssh_password(s.host_id, "");
+            }
+            Signal::Rejected(Source::Typed) => {}
+            Signal::Prompt => {
+                // ssh và sudo: có mật khẩu đã lưu thì tự điền; chưa có hoặc đã bị từ chối thì hỏi lại
+                let stored = store::get_ssh_host(s.host_id)
+                    .map(|r| r.password)
+                    .unwrap_or_default();
+                let auto = !stored.is_empty()
+                    && !s.prompt.rejected
+                    && write_line(&mut s.master, &stored).is_ok();
+                if auto {
+                    s.prompt.on_submit(Source::Stored);
+                } else {
+                    s.awaiting_password = true;
+                    events.push(Event::PasswordRequest {
+                        wrong: s.prompt.rejected,
+                        kind,
+                    });
+                }
+            }
+        }
+    }
+    events
+}
+
+/// Ghi một dòng (kèm ký tự xuống dòng) vào PTY
+fn write_line(master: &mut File, text: &str) -> std::io::Result<()> {
+    master.write_all(text.as_bytes())?;
+    master.write_all(b"\n")
+}
+
+/// Mật khẩu người dùng nhập khi `ssh` hỏi. Gửi vào PTY; nếu `save` thì lưu vào DB của máy.
+pub fn submit_password(session_id: &str, password: &str, save: bool) -> Result<(), String> {
+    let pw = password.trim_end_matches(['\r', '\n']);
+    if pw.is_empty() {
+        return Err("Mật khẩu trống".into());
+    }
+    let mut map = sessions().lock().map_err(|_| "Lỗi khóa phiên")?;
+    let s = map.get_mut(session_id).ok_or("Phiên đã kết thúc")?;
+    if !s.awaiting_password {
+        return Err("Phiên không đang chờ mật khẩu".into());
+    }
+    if save && !store::set_ssh_password(s.host_id, pw) {
+        return Err("Không lưu được mật khẩu".into());
+    }
+    write_line(&mut s.master, pw).map_err(|e| format!("Không ghi được vào PTY: {e}"))?;
+    s.awaiting_password = false;
+    s.last_active = Instant::now();
+    s.prompt
+        .on_submit(if save { Source::Stored } else { Source::Typed });
+    Ok(())
 }
 
 /// Ghi dữ liệu bàn phím vào PTY

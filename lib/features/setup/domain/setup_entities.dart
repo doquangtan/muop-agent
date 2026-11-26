@@ -359,5 +359,7 @@ class SetupStatus {
       workspaceRoot.isEmpty ||
       // Chỉ cần một CLI đã chọn được cài là đủ (chọn cả hai thì cài thêm sau cũng không chặn)
       !selectedClis.any(isInstalled) ||
-      tools.any((t) => t.group == 'base' && !t.installed);
+      tools.any((t) => t.group == 'base' && !t.installed) ||
+      // macOS: gói Homebrew bắt buộc (FUSE-T) phải cài qua wizard
+      brewPackages.any((p) => p.required && !p.installed);
 }

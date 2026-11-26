@@ -26,6 +26,17 @@
 	<string>$(MACOSX_DEPLOYMENT_TARGET)</string>
 	<key>NSHumanReadableCopyright</key>
 	<string>$(PRODUCT_COPYRIGHT)</string>
+	<!-- Lý do truy cập thư mục: macOS dùng các chuỗi này khi hỏi quyền lần đầu (hộp thoại tự hiện, không cần vào Privacy & Security) -->
+	<key>NSDesktopFolderUsageDescription</key>
+	<string>Mướp Agents đọc và sửa các project nằm trên Desktop.</string>
+	<key>NSDocumentsFolderUsageDescription</key>
+	<string>Mướp Agents đọc và sửa các project nằm trong Documents.</string>
+	<key>NSDownloadsFolderUsageDescription</key>
+	<string>Mướp Agents đọc và sửa các project nằm trong Downloads.</string>
+	<key>NSRemovableVolumesUsageDescription</key>
+	<string>Mướp Agents đọc và sửa project nằm trên ổ đĩa ngoài (thư mục project của bạn).</string>
+	<key>NSNetworkVolumesUsageDescription</key>
+	<string>Mướp Agents đọc và sửa project nằm trên ổ mạng.</string>
 	<key>NSMainNibFile</key>
 	<string>MainMenu</string>
 	<key>NSPrincipalClass</key>

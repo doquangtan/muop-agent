@@ -587,6 +587,68 @@ pub struct PendingRetryDto {
     /// Lần gửi lại thứ mấy (1 = lần đầu tự thử lại)
     pub attempt: u32,
     pub max_attempts: u32,
+    /// Căn cứ chọn thời điểm: `quota` (reset quota), `message` (CLI báo thời gian chờ), `interval` (cấu hình)
+    pub wait_source: String,
+    /// Mô tả ngắn cho người dùng, ví dụ `Chờ reset quota · Phiên 5 giờ`
+    pub wait_detail: String,
+    /// Thời điểm quota reset (RFC3339, UTC) khi `wait_source` là `quota`
+    pub reset_at: Option<String>,
+}
+
+/// Cấu hình tự gửi lại của một conversation. Chưa lưu thì dùng giá trị mặc định.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct RetryConfigDto {
+    #[serde(default)]
+    pub conversation_id: String,
+    /// Tắt: lượt bị giới hạn không được gửi lại tự động
+    #[serde(default = "retry_default_true")]
+    pub enabled: bool,
+    /// Nội dung gửi lại. Rỗng = gửi lại đúng nội dung của lượt bị giới hạn
+    #[serde(default)]
+    pub prompt: String,
+    /// Số lần gửi lại tối đa cho một lượt (0 = không gửi lại)
+    #[serde(default = "retry_default_max_attempts")]
+    pub max_attempts: u32,
+    /// Khoảng chờ (phút) khi không có thời điểm reset quota hoặc khi tắt `use_quota_reset`
+    #[serde(default = "retry_default_interval_minutes")]
+    pub interval_minutes: u32,
+    /// Chờ đến thời điểm quota reset (đọc từ dữ liệu quota của provider)
+    #[serde(default = "retry_default_true")]
+    pub use_quota_reset: bool,
+}
+
+/// Giới hạn cấu hình tự gửi lại (kiểm tra ở API và khi lưu)
+pub const RETRY_MAX_ATTEMPTS_LIMIT: u32 = 20;
+pub const RETRY_INTERVAL_MINUTES_MIN: u32 = 1;
+pub const RETRY_INTERVAL_MINUTES_MAX: u32 = 720;
+pub const RETRY_PROMPT_MAX_CHARS: usize = 4000;
+const RETRY_DEFAULT_MAX_ATTEMPTS: u32 = 8;
+const RETRY_DEFAULT_INTERVAL_MINUTES: u32 = 5;
+
+fn retry_default_true() -> bool {
+    true
+}
+
+fn retry_default_max_attempts() -> u32 {
+    RETRY_DEFAULT_MAX_ATTEMPTS
+}
+
+fn retry_default_interval_minutes() -> u32 {
+    RETRY_DEFAULT_INTERVAL_MINUTES
+}
+
+impl Default for RetryConfigDto {
+    fn default() -> Self {
+        Self {
+            conversation_id: String::new(),
+            enabled: true,
+            prompt: String::new(),
+            max_attempts: RETRY_DEFAULT_MAX_ATTEMPTS,
+            interval_minutes: RETRY_DEFAULT_INTERVAL_MINUTES,
+            use_quota_reset: true,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -659,6 +721,12 @@ pub struct SshExecRequest {
     pub command: String,
     #[serde(default = "default_exec_timeout")]
     pub timeout_secs: u64,
+    /// Mật khẩu người dùng vừa nhập sau khi server báo `needsPassword`. Rỗng = dùng mật khẩu đã lưu.
+    #[serde(default)]
+    pub password: String,
+    /// Lưu `password` vào máy này trước khi chạy
+    #[serde(default)]
+    pub save_password: bool,
 }
 
 fn default_exec_timeout() -> u64 {
@@ -673,6 +741,10 @@ pub struct SshExecResponse {
     pub stdout: String,
     pub stderr: String,
     pub error: String,
+    /// `ssh` cần mật khẩu (chưa có hoặc sai): app hỏi người dùng rồi chạy lại
+    pub needs_password: bool,
+    /// Loại mật khẩu cần (`ssh` | `sudo`), để app hiện đúng hộp thoại
+    pub password_kind: String,
 }
 
 /// Mở phiên terminal SSH tương tác trên máy đã lưu
@@ -731,6 +803,31 @@ pub struct SshTerminalAttachResponse {
     pub session_id: String,
     pub host_name: String,
     pub buffer: String,
+    pub error: String,
+    /// Phiên đang chờ mật khẩu: app hiện hộp thoại nhập
+    pub awaiting_password: bool,
+    /// Lần nhập mật khẩu trước bị từ chối
+    pub password_wrong: bool,
+    /// Loại mật khẩu đang chờ (`ssh` | `sudo`)
+    pub password_kind: String,
+}
+
+/// Mật khẩu người dùng nhập cho phiên terminal đang chờ (`ssh:password`)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SshPasswordSubmitRequest {
+    #[serde(default)]
+    pub session_id: String,
+    #[serde(default)]
+    pub password: String,
+    #[serde(default)]
+    pub save_password: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SshPasswordSubmitResponse {
+    pub ok: bool,
     pub error: String,
 }
 
@@ -987,4 +1084,89 @@ pub struct AccountsStatus {
     pub claude_logged_in: bool,
     /// Gói của tài khoản Claude, ví dụ "pro" (từ credentials)
     pub claude_plan: String,
+}
+
+// ---- SFTP (máy SSH đã lưu) ----
+
+/// Mở hoặc gắn lại phiên SFTP cho một máy đã lưu. `password` rỗng = dùng mật khẩu đã lưu.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SftpOpenRequest {
+    #[serde(default)]
+    pub host_id: i64,
+    #[serde(default)]
+    pub password: String,
+    #[serde(default)]
+    pub save_password: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SftpSessionRequest {
+    #[serde(default)]
+    pub session_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SftpPathRequest {
+    #[serde(default)]
+    pub session_id: String,
+    #[serde(default)]
+    pub path: String,
+}
+
+/// Thao tác trên mục: `mkdir`, `rename` (đến `target`), `delete` (`isDir` = xóa cả cây)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SftpOpRequest {
+    #[serde(default)]
+    pub session_id: String,
+    #[serde(default)]
+    pub action: String,
+    #[serde(default)]
+    pub path: String,
+    #[serde(default)]
+    pub target: String,
+    #[serde(default)]
+    pub is_dir: bool,
+}
+
+/// Tải lên file (base64). `overwrite` = ghi đè khi đã có file cùng tên.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SftpUploadRequest {
+    #[serde(default)]
+    pub session_id: String,
+    #[serde(default)]
+    pub path: String,
+    #[serde(default)]
+    pub data_base64: String,
+    #[serde(default)]
+    pub overwrite: bool,
+}
+
+/// Mục trong thư mục trên máy đích
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SftpEntryDto {
+    pub name: String,
+    pub path: String,
+    pub is_dir: bool,
+    pub is_link: bool,
+    pub size: u64,
+    pub modified: String,
+    pub mode: String,
+    /// Giây unix; null khi máy đích không cho biết (SSH)
+    pub modified_unix: Option<i64>,
+}
+
+/// Chuẩn bị tải xuống các mục đã chọn (một file trực tiếp, nhiều mục/thư mục thành zip)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SftpDownloadRequest {
+    #[serde(default)]
+    pub session_id: String,
+    #[serde(default)]
+    pub paths: Vec<String>,
 }

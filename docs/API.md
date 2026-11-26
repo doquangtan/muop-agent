@@ -150,6 +150,17 @@ Trả nội dung ảnh. Lỗi trả JSON `{ "ok": false, "error" }` với 404 ho
 
 Hủy lịch tự gửi lại sau rate limit. Body: `{ "conversationId": "..." }`. Phản hồi: `{ "ok": true, "cancelled": <bool>, "conversationId" }`. Thiếu `conversationId` trả 400.
 
+### `GET /api/chat/retry/config?id=<conversationId>`
+
+Cấu hình tự gửi lại của một conversation. Chưa đặt thì trả mặc định. Phản hồi: `{ "ok": true, "config": RetryConfigDto }` với `RetryConfigDto` = `{ conversationId, enabled (true), prompt (""), maxAttempts (8), intervalMinutes (5), useQuotaReset (true) }`.
+
+- `prompt` rỗng: gửi lại đúng nội dung của lượt bị giới hạn.
+- `useQuotaReset`: chờ đến mốc reset muộn nhất của quota đã hết; không có thì dùng `message` (thời gian CLI báo) rồi tới `intervalMinutes`.
+
+### `POST /api/chat/retry/config`
+
+Body: `RetryConfigDto` (đủ các trường như trên). Lưu và áp dụng ngay cho lịch đang chờ (tắt thì hủy lịch). Phản hồi `{ "ok": true, "config" }`. Lỗi 400 khi `maxAttempts` > 20, `intervalMinutes` ngoài 1..720, `prompt` dài hơn 4000 ký tự, hoặc thiếu `conversationId`.
+
 ---
 
 ## 4. Dự án
@@ -297,6 +308,8 @@ Sửa tay giới hạn context của một model. Body `{ "model": "claude-cli:.
 
 ### `GET /api/files/list?path=<dir>&showHidden=<bool>`
 
+> Giữ cho client cũ. App không còn dùng endpoint này để duyệt thư mục: dùng `POST /api/sftp/local` + `/api/sftp/list` (xem mục 20).
+
 Phản hồi `ServerDirListResponse`: `{ "ok", "currentPath", "parentPath", "entries": [ServerFileEntry], "error" }`. `ServerFileEntry`: `name`, `path`, `isDir`, `size`, `modifiedAt`, `permissions`.
 
 ### `GET /api/files/read?path=<file>`
@@ -326,6 +339,8 @@ Phản hồi `ServerFileReadResponse`: `{ "ok", "path", "name", "size", "isBinar
 `gitDiff` chỉ có khi `offset = 0`, cắt tối đa 200KB, và bỏ qua với file lớn hơn 20MB. Tệp nhị phân trả `isBinary: true` và không có dòng.
 
 ### `GET /api/files/download?path=<file>`
+
+> Giữ cho client cũ và ảnh xem trước (URL trực tiếp). App tải file bằng `/api/sftp/download/prepare` + `GET /api/sftp/download/{id}` (mục 20) để có tiến trình.
 
 Tải file với `Content-Type` theo đuôi, `Content-Length` và `Cache-Control: no-cache`. Thiếu `path` trả 400; file không tồn tại trả 404 kèm JSON lỗi.
 
@@ -409,10 +424,10 @@ Tiến trình đẩy qua socket `setup:update`. Các endpoint `ssh/*` vẫn còn
 | GET | `/api/ssh/hosts` | | Trả **mảng** `SshHostDto`. |
 | POST | `/api/ssh/hosts/save` | `SshHostSaveRequest` | `{ id, name, host, port, username, authType, password, privateKey }`. Để trống `password`/`privateKey` khi sửa = giữ nguyên. Trả `{ ok, id }`. Lỗi 400/500. |
 | POST | `/api/ssh/hosts/delete` | `{ "id" }` | Trả `{ ok }`; 404 nếu không có. |
-| POST | `/api/ssh/exec` | `{ hostId, command, timeoutSecs }` (mặc định 30s) | Chạy lệnh một lần. Trả `SshExecResponse`: `{ ok, exitCode, stdout, stderr, error }`. Máy này chạy `$SHELL -i -c`. Không tìm thấy máy 404. |
+| POST | `/api/ssh/exec` | `{ hostId, command, timeoutSecs (mặc định 30s), password (tùy chọn), savePassword (tùy chọn) }` | Chạy lệnh một lần. Trả `SshExecResponse`: `{ ok, exitCode, stdout, stderr, error, needsPassword }`. `needsPassword: true` khi `ssh` hỏi mật khẩu mà server chưa có (`error` = "Máy yêu cầu mật khẩu") hoặc mật khẩu bị từ chối (`error` = "Sai mật khẩu"): app hỏi người dùng rồi gọi lại kèm `password`. `passwordKind` là `ssh`, hoặc `sudo` khi lệnh chạy trên "Máy này" cần mật khẩu sudo (mật khẩu đã lưu được dùng tự động cho `sudo`). `savePassword: true` lưu `password` vào máy trước khi chạy; nếu bị từ chối thì xóa khỏi DB. Máy này chạy `$SHELL -i -c`. Không tìm thấy máy 404. |
 | GET | `/api/ssh/sessions` | | Trả **mảng** `SshSessionInfo`: `{ sessionId, hostId, hostName, startedAt }` (phiên terminal đang chạy). |
 
-Lệnh chạy bằng binary `ssh` của hệ thống. Mật khẩu đi qua `SSH_ASKPASS` trong thư mục tạm 0700; key ghi vào file tạm 0600 rồi xóa. Trừ "Máy này" (chạy shell trực tiếp, không qua ssh).
+Lệnh chạy bằng binary `ssh` của hệ thống. Mật khẩu đi qua `SSH_ASKPASS` trong thư mục tạm 0700 (script chỉ in biến môi trường; không có mật khẩu thì đánh dấu `asked` và từ chối); key ghi vào file tạm 0600 rồi xóa. Trừ "Máy này" (chạy shell trực tiếp, không qua ssh). Máy kiểu `password` không cần có mật khẩu sẵn: `POST /api/ssh/hosts/save` vẫn nhận.
 
 ---
 
@@ -496,7 +511,8 @@ Ngay khi kết nối, server gửi: `retry:update`, `screen:status`, `setup:upda
 | `leave-conversation` | `{ "conversationId" }` | Rời room. |
 | `ssh:list` | | Mảng `SshSessionInfo`. |
 | `ssh:open` | `{ "hostId", "cols", "rows" }` | `{ ok, sessionId, error }`. Socket tự join room `ssh:<sessionId>` trước khi PTY chạy. |
-| `ssh:attach` | `{ "sessionId" }` | `{ ok, sessionId, hostName, buffer (base64), error }`. Join room, nhận đầu ra đã đệm (256KB). |
+| `ssh:attach` | `{ "sessionId" }` | `{ ok, sessionId, hostName, buffer (base64), error, awaitingPassword, passwordWrong }`. Join room, nhận đầu ra đã đệm (256KB). `awaitingPassword: true` = phiên đang chờ mật khẩu, app phải hiện hộp thoại. |
+| `ssh:password` | `{ "sessionId", "password", "savePassword" }` | `{ ok, error }`. Gửi mật khẩu trả lời prompt của `ssh` trên PTY. `savePassword: true` lưu vào máy (xóa lại nếu bị từ chối). Lỗi khi phiên không chờ mật khẩu. |
 | `ssh:input` | `{ "sessionId", "data" (base64) }` | Không ack. |
 | `ssh:resize` | `{ "sessionId", "cols", "rows" }` | Không ack. |
 | `ssh:close` | `{ "sessionId" }` | Đóng phiên. |
@@ -541,7 +557,7 @@ Ngay khi kết nối, server gửi: `retry:update`, `screen:status`, `setup:upda
 | `joined-conversation` | Sau `join-conversation` | `{ "ok": true, "conversationId" }`. |
 | `projects:update` | Danh sách project thay đổi | Mảng `ProjectWorkspace`. |
 | `quotas:update` | Số liệu quota đổi (và khi kết nối) | `QuotaSnapshot`: `{ "agy": QuotaReport, "claude": QuotaReport }` (mục 1). Client tải lại quota khi nhận. |
-| `retry:update` | Khi kết nối và mỗi lần lịch tự gửi lại đổi | Mảng `PendingRetryDto`: `conversationId`, `provider`, `reason`, `retryAt` (RFC3339 UTC), `attempt`, `maxAttempts`. |
+| `retry:update` | Khi kết nối và mỗi lần lịch tự gửi lại đổi | Mảng `PendingRetryDto`: `conversationId`, `provider`, `reason`, `retryAt` (RFC3339 UTC), `attempt`, `maxAttempts`, `waitSource` (`quota`/`message`/`interval`), `waitDetail`, `resetAt` (RFC3339, chỉ khi `quota`). |
 | `ai-question:answered` | Sau khi trả lời câu hỏi AI | `AIQuestion` đã trả lời. |
 | `screen:status` | Khi kết nối, sau `request-screen-status`, khi trạng thái quay màn hình đổi | Trạng thái quay màn hình (có URL RTSP khi đang bật). |
 | `setup:update` | Khi kết nối và khi tiến trình cài đổi | `SetupStatus`, kèm `job.log` 300 dòng cuối. |
@@ -549,6 +565,7 @@ Ngay khi kết nối, server gửi: `retry:update`, `screen:status`, `setup:upda
 | `claude:auth:update` | Khi kết nối và khi trạng thái đăng nhập Claude đổi | `ClaudeAuthResponse`. |
 | `ssh:data` | Đầu ra terminal SSH | `{ sessionId, data (base64) }`, phát vào room `ssh:<sessionId>`. |
 | `ssh:closed` | Phiên terminal kết thúc | `{ sessionId, exitCode }`. |
+| `ssh:password:request` | Prompt mật khẩu trên PTY cần người dùng nhập (ssh chưa có mật khẩu lưu, hoặc sudo trên "Máy này") | `{ sessionId, hostId, hostName, wrong, kind }`. `kind`: `ssh` \| `sudo`. `wrong: true` = lần trước bị từ chối. Phát vào room `ssh:<sessionId>`. |
 | `docker:logs:data` | Có dòng log mới | `{ streamId, lines: [...] }`, gom theo lô 150ms hoặc 80 dòng. |
 | `docker:logs:end` | Luồng log kết thúc | `{ streamId, exitCode }`. |
 | `explore:update` | Nội dung thư mục đang xem đổi (tạo, xóa, đổi tên, sửa file trực tiếp trong thư mục). Gom trong 300ms, chỉ phát vào room của thư mục đó | `{ room, path }`: `path` là đường dẫn tuyệt đối đã giải symlink. Client nạp lại thư mục đó. |
@@ -693,6 +710,30 @@ Route `POST /api/fsmount/ensure` chạy đúng bước 1 đến 3 với body là
 - Lệnh git chạy trong điểm mount (ví dụ `git status` của agent) có thể ghi vào `.git` của máy gửi qua mount (đã thấy thư mục `.git` bị đổi thời gian sau lượt chạy thử).
 
 ---
+
+## 20. SFTP trên máy SSH đã lưu
+
+Mở từ nút **SFTP** trong danh sách máy SSH. Mỗi máy từ xa có tối đa một phiên: một kết nối ControlMaster (`ssh -MNf`) giữ socket trong thư mục tạm 0700, mỗi thao tác là một lệnh batch `sftp -b -` qua socket đó. "Máy này" (máy chạy server, mục mặc định) không qua ssh: thao tác trực tiếp trên hệ thống file với quyền user của server, nên app khác kết nối tới server này dùng được mà không cần sshd. Phiên đóng khi không dùng quá 6 giờ hoặc khi gọi `close`.
+
+Mật khẩu dùng cùng luồng với "Chạy lệnh": mật khẩu đã lưu được dùng trước. Thiếu hoặc sai thì trả `needsPassword: true` (`passwordWrong: true` khi bị từ chối) để app hỏi rồi gọi lại `open` kèm `password`/`savePassword`. Mật khẩu sai khi đã lưu thì server xóa mật khẩu đã lưu.
+
+Mọi phản hồi là HTTP 200 với `ok`, `error` và các cờ: `needsPassword`, `passwordWrong`, `exists` (đích đã có khi tải lên không ghi đè), `sessionGone` (phiên đã mất, cần `open` lại). Đường dẫn phải tuyệt đối; tên có khoảng trắng, dấu nháy, gạch chéo ngược được xử lý.
+
+| Method | Path | Body | Phản hồi |
+| :--- | :--- | :--- | :--- |
+| POST | `/api/sftp/open` | `{ hostId, password, savePassword }` | `{ ok, error, needsPassword, passwordWrong, session: { sessionId, hostId, hostName, home, startedAt } }` |
+| POST | `/api/sftp/local` | `{}` | Như `open` nhưng mở phiên "Máy này" (không cần biết `hostId`). Đây là đường duy nhất để app truy cập file của máy server (duyệt, tải xuống từ khung chat, cây project). |
+| POST | `/api/sftp/close` | `{ sessionId }` | `{ ok }` |
+| POST | `/api/sftp/list` | `{ sessionId, path }` | `{ ok, path, entries: [{ name, path, isDir, isLink, size, modified, mode, modifiedUnix }] }`. Thư mục trước, rồi theo tên. `modifiedUnix` là giây unix, chỉ có với "Máy này" (`null` với máy SSH, vì `ls` không cho năm chính xác). |
+| POST | `/api/sftp/op` | `{ sessionId, action: "mkdir" \| "rename" \| "delete", path, target, isDir }` | `{ ok }`. `rename` cần `target`; `delete` với `isDir: true` xóa cả cây (tối đa 5000 mục). |
+| POST | `/api/sftp/upload` | `{ sessionId, path, dataBase64, overwrite }` | `{ ok }`. Tối đa 50 MB. Không ghi đè khi `overwrite` = false (trả `exists`). |
+| POST | `/api/sftp/read` | `{ sessionId, path }` | `{ ok, content, binary, size }`. Tối đa 1 MB; file nhị phân trả `binary: true` và `content` rỗng. |
+| POST | `/api/sftp/download/prepare` | `{ sessionId, paths[] }` | `{ ok, downloadId, name, size }`. Một file thì `name` là tên file; nhiều mục hoặc thư mục thì đóng thành zip (`name` là `muop-download.zip`, hoặc `<tên>.zip` khi chọn đúng một thư mục). Tối đa 5000 mục, 1 GB. Liên kết hết hạn sau 15 phút. |
+| GET | `/api/sftp/download/{downloadId}` | | Nội dung file dạng stream (`application/octet-stream`, `Content-Disposition` có tên UTF-8). 404 khi hết hạn. Liên kết tải lại được trong thời gian hạn. |
+
+Đóng gói zip không nén (stored), không có zip64; liên kết mềm bên trong thư mục bị bỏ qua. Các endpoint trên không có xác thực (LAN tin cậy), giống phần còn lại của server.
+
+Lúc khởi động, server thoát các kết nối ControlMaster còn sót (thư mục `muop-sftp-sess-*` trong thư mục tạm) và xóa thư mục đó.
 
 ## Ghi chú
 

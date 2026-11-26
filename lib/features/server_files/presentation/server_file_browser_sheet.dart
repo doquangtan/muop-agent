@@ -13,6 +13,7 @@ import 'package:muop_agent/features/lsp/domain/lsp_entities.dart';
 import 'package:muop_agent/features/lsp/presentation/lsp_settings_screen.dart';
 import 'package:muop_agent/features/projects/domain/project_entities.dart';
 import 'package:muop_agent/features/projects/presentation/project_git_history_sheet.dart';
+import 'package:muop_agent/features/sftp/presentation/download_progress.dart';
 import 'package:muop_agent/features/server_files/domain/server_file_entities.dart';
 import 'package:muop_agent/features/sessions/domain/session_entities.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -502,7 +503,8 @@ class _ServerFileBrowserSheetState extends State<ServerFileBrowserSheetView> {
           padding: const EdgeInsets.fromLTRB(12, 10, 12, 6),
           child: Row(
             children: [
-              Expanded(
+              if (!isMobile)
+                Expanded(
                 child: GlassHeaderSurface(
                   borderRadius: 22,
                   padding: const EdgeInsets.symmetric(horizontal: 10),
@@ -553,16 +555,20 @@ class _ServerFileBrowserSheetState extends State<ServerFileBrowserSheetView> {
                   ),
                 ),
               ),
-              const SizedBox(width: 8),
-              GlassHeaderSurface(
+              if (!isMobile) const SizedBox(width: 8),
+              Flexible(
+                fit: isMobile ? FlexFit.tight : FlexFit.loose,
+                child: GlassHeaderSurface(
                 borderRadius: 21,
                 padding: const EdgeInsets.symmetric(horizontal: 6),
                 child: SizedBox(
                   height: 42,
                   child: Row(
-                    mainAxisSize: MainAxisSize.min,
+                    mainAxisSize: isMobile ? MainAxisSize.max : MainAxisSize.min,
                     children: [
-                      SegmentedButton<int>(
+                      Flexible(
+                        fit: isMobile ? FlexFit.tight : FlexFit.loose,
+                      child: SegmentedButton<int>(
                         showSelectedIcon: !isMobile,
                         segments: [
                           ButtonSegment<int>(
@@ -593,6 +599,7 @@ class _ServerFileBrowserSheetState extends State<ServerFileBrowserSheetView> {
                           visualDensity: VisualDensity.compact,
                         ),
                       ),
+                      ),
                       IconButton(
                         visualDensity: VisualDensity.compact,
                         icon: const Icon(Icons.account_tree_outlined, size: 18),
@@ -607,6 +614,7 @@ class _ServerFileBrowserSheetState extends State<ServerFileBrowserSheetView> {
                     ],
                   ),
                 ),
+              ),
               ),
               const SizedBox(width: 8),
               GlassHeaderSurface(
@@ -691,8 +699,8 @@ class _ServerFileBrowserSheetState extends State<ServerFileBrowserSheetView> {
                     ),
                     Text(
                       _totalBytes > 0
-                          ? '${(_receivedBytes / 1024).toStringAsFixed(0)} / ${(_totalBytes / 1024).toStringAsFixed(0)} KB'
-                          : '${(_receivedBytes / 1024).toStringAsFixed(0)} KB',
+                          ? '${((_receivedBytes * 100) / _totalBytes).clamp(0, 100).toStringAsFixed(0)}% · ${formatDownloadSize(_receivedBytes)} / ${formatDownloadSize(_totalBytes)}'
+                          : formatDownloadSize(_receivedBytes),
                       style: textTheme.labelSmall?.copyWith(
                         fontFamily: 'monospace',
                       ),
@@ -988,8 +996,9 @@ class _ServerFileBrowserSheetState extends State<ServerFileBrowserSheetView> {
                   onChanged: (v) => setState(() => _searchFilter = v.trim()),
                   style: textTheme.bodySmall,
                   decoration: InputDecoration(
-                    hintText:
-                        'Tìm tệp trong thư mục ($dirCount thư mục, $fileCount tệp)...',
+                    hintText: isMobile
+                        ? 'Tìm tệp...'
+                        : 'Tìm tệp trong thư mục ($dirCount thư mục, $fileCount tệp)...',
                     prefixIcon: const Icon(Icons.search_rounded, size: 15),
                     isDense: true,
                     contentPadding: const EdgeInsets.symmetric(vertical: 7),
@@ -1132,7 +1141,15 @@ class _ServerFileBrowserSheetState extends State<ServerFileBrowserSheetView> {
                                         : colorScheme.outlineVariant,
                                   ),
                                 ),
-                                child: Row(
+                                child: isMobile
+                                    ? _buildMobileExplorerRow(
+                                        entry,
+                                        colorScheme,
+                                        textTheme,
+                                        isSelected: isSelected,
+                                        isDownloadingThis: isDownloadingThis,
+                                      )
+                                    : Row(
                                   children: [
                                     if (!entry.isDir)
                                       SizedBox(
@@ -1287,6 +1304,102 @@ class _ServerFileBrowserSheetState extends State<ServerFileBrowserSheetView> {
                             );
                           },
                         ),
+        ),
+      ],
+    );
+  }
+
+  /// Dòng trên điện thoại: hàng 1 là checkbox, icon, tên và nút mở/tải; hàng 2 là quyền, kích thước,
+  /// thời gian thẳng hàng với tên. Chạm dòng để mở thư mục hoặc xem nội dung file.
+  Widget _buildMobileExplorerRow(
+    ServerFileEntry entry,
+    ColorScheme colorScheme,
+    TextTheme textTheme, {
+    required bool isSelected,
+    required bool isDownloadingThis,
+  }) {
+    final meta = [
+      entry.permissions,
+      if (!entry.isDir) entry.formattedSize,
+      _formatDateShort(entry.modifiedAt),
+    ].where((t) => t.isNotEmpty).join('  ·  ');
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          children: [
+            if (!entry.isDir)
+              SizedBox(
+                width: 26,
+                height: 24,
+                child: Checkbox(
+                  value: isSelected,
+                  visualDensity: VisualDensity.compact,
+                  onChanged: (v) {
+                    setState(() {
+                      if (v == true) {
+                        _selectedFilePaths.add(entry.path);
+                      } else {
+                        _selectedFilePaths.remove(entry.path);
+                      }
+                    });
+                  },
+                ),
+              )
+            else
+              const SizedBox(width: 26),
+            Icon(
+              entry.isDir ? Icons.folder_rounded : _iconForFileName(entry.name),
+              size: 20,
+              color: entry.isDir ? context.status.warning : colorScheme.primary,
+            ),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Text(
+                entry.name,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: textTheme.bodyMedium?.copyWith(
+                  fontWeight: entry.isDir ? FontWeight.w700 : FontWeight.w600,
+                  color: colorScheme.onSurface,
+                ),
+              ),
+            ),
+            if (entry.isDir)
+              Icon(
+                Icons.chevron_right_rounded,
+                size: 20,
+                color: colorScheme.onSurfaceVariant,
+              )
+            else
+              IconButton.filledTonal(
+                tooltip: 'Tải về',
+                visualDensity: VisualDensity.compact,
+                onPressed:
+                    isDownloadingThis ? null : () => _downloadFile(entry.path),
+                icon: isDownloadingThis
+                    ? const SizedBox(
+                        width: 14,
+                        height: 14,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : const Icon(Icons.download_rounded, size: 18),
+              ),
+          ],
+        ),
+        Padding(
+          padding: const EdgeInsets.only(left: 56),
+          child: Text(
+            meta,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: textTheme.labelSmall?.copyWith(
+              fontFamily: 'monospace',
+              fontSize: 10.5,
+              color: colorScheme.onSurfaceVariant,
+            ),
+          ),
         ),
       ],
     );

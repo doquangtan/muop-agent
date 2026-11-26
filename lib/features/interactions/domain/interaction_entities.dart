@@ -209,6 +209,9 @@ class PendingRetry {
     required this.retryAt,
     required this.attempt,
     required this.maxAttempts,
+    this.waitSource = '',
+    this.waitDetail = '',
+    this.resetAt,
   });
 
   final String conversationId;
@@ -219,11 +222,18 @@ class PendingRetry {
   /// Lần gửi lại thứ mấy (1 = lần đầu)
   final int attempt;
   final int maxAttempts;
+  /// Căn cứ chọn giờ gửi lại: `quota` | `message` | `interval` (rỗng với server cũ)
+  final String waitSource;
+  /// Mô tả ngắn từ server, ví dụ `Chờ reset quota · Phiên 5 giờ`
+  final String waitDetail;
+  /// Thời điểm quota reset (chỉ có khi `waitSource == 'quota'`)
+  final DateTime? resetAt;
 
   /// Key để nhận biết cùng một lịch (không đổi khi đếm ngược)
   String get key => '$conversationId#$attempt';
 
   factory PendingRetry.fromJson(Map<String, dynamic> json) {
+    final resetRaw = '${json['resetAt'] ?? ''}';
     return PendingRetry(
       conversationId: '${json['conversationId'] ?? ''}',
       provider: '${json['provider'] ?? ''}',
@@ -232,6 +242,81 @@ class PendingRetry {
           DateTime.now().add(const Duration(minutes: 5)),
       attempt: (json['attempt'] as num?)?.toInt() ?? 1,
       maxAttempts: (json['maxAttempts'] as num?)?.toInt() ?? 8,
+      waitSource: '${json['waitSource'] ?? ''}',
+      waitDetail: '${json['waitDetail'] ?? ''}',
+      resetAt: resetRaw.isEmpty ? null : DateTime.tryParse(resetRaw),
     );
   }
+}
+
+/// Cấu hình tự gửi lại của một conversation (`GET/POST /api/chat/retry/config`)
+class ConversationRetryConfig {
+  const ConversationRetryConfig({
+    required this.conversationId,
+    this.enabled = true,
+    this.prompt = '',
+    this.maxAttempts = 8,
+    this.intervalMinutes = 5,
+    this.useQuotaReset = true,
+  });
+
+  /// Giới hạn khớp với server (`models.rs`)
+  static const int maxAttemptsLimit = 20;
+  static const int intervalMinutesMin = 1;
+  static const int intervalMinutesMax = 720;
+  static const int promptMaxChars = 4000;
+
+  final String conversationId;
+  /// Tắt: lượt bị giới hạn không được gửi lại tự động
+  final bool enabled;
+  /// Nội dung gửi lại. Rỗng = gửi lại đúng nội dung của lượt bị giới hạn
+  final String prompt;
+  /// Số lần gửi lại tối đa cho một lượt (0 = không gửi lại)
+  final int maxAttempts;
+  /// Khoảng chờ dự phòng (phút), dùng khi không có thời điểm reset hoặc tắt chờ theo quota
+  final int intervalMinutes;
+  /// Chờ đến thời điểm quota reset, đọc từ dữ liệu quota của provider
+  final bool useQuotaReset;
+
+  ConversationRetryConfig copyWith({
+    bool? enabled,
+    String? prompt,
+    int? maxAttempts,
+    int? intervalMinutes,
+    bool? useQuotaReset,
+  }) {
+    return ConversationRetryConfig(
+      conversationId: conversationId,
+      enabled: enabled ?? this.enabled,
+      prompt: prompt ?? this.prompt,
+      maxAttempts: maxAttempts ?? this.maxAttempts,
+      intervalMinutes: intervalMinutes ?? this.intervalMinutes,
+      useQuotaReset: useQuotaReset ?? this.useQuotaReset,
+    );
+  }
+
+  factory ConversationRetryConfig.fromJson(Map<String, dynamic> json) {
+    final defaults = ConversationRetryConfig(
+      conversationId: '${json['conversationId'] ?? ''}',
+    );
+    return ConversationRetryConfig(
+      conversationId: '${json['conversationId'] ?? ''}',
+      enabled: json['enabled'] as bool? ?? defaults.enabled,
+      prompt: '${json['prompt'] ?? ''}',
+      maxAttempts:
+          (json['maxAttempts'] as num?)?.toInt() ?? defaults.maxAttempts,
+      intervalMinutes:
+          (json['intervalMinutes'] as num?)?.toInt() ?? defaults.intervalMinutes,
+      useQuotaReset: json['useQuotaReset'] as bool? ?? defaults.useQuotaReset,
+    );
+  }
+
+  Map<String, dynamic> toJson() => {
+        'conversationId': conversationId,
+        'enabled': enabled,
+        'prompt': prompt,
+        'maxAttempts': maxAttempts,
+        'intervalMinutes': intervalMinutes,
+        'useQuotaReset': useQuotaReset,
+      };
 }
