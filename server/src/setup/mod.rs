@@ -221,6 +221,13 @@ pub fn complete() -> Result<SetupStatus, String> {
     if configured_workspace().is_empty() {
         return Err("Hãy chọn thư mục project trước khi hoàn tất khởi tạo".into());
     }
+    // Gói Homebrew bắt buộc (FUSE-T trên macOS) phải cài qua wizard trước khi hoàn tất
+    if install::probe_brew()
+        .iter()
+        .any(|p| p.required && !p.installed)
+    {
+        return Err("Cần cài FUSE-T (mục Gói Homebrew) trước khi hoàn tất khởi tạo".into());
+    }
     if !store::set_app_setting(KEY_COMPLETED, "1") {
         return Err("Không lưu được trạng thái khởi tạo".into());
     }

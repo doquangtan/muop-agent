@@ -108,6 +108,9 @@ class _ServerConfigSectionState extends ConsumerState<ServerConfigSection> {
     final messenger = ScaffoldMessenger.of(context);
     final ping = await _connectionRepo.pingRemoteServer(clean);
     await _connectionRepo.saveServerAddress(clean);
+    // Nối socket tới máy mới ngay, trước khi splash gửi setup:status. Nếu không, lệnh đi qua socket
+    // của máy cũ (có thể đã chết, không có ack) và splash đứng ở "1/15" đến khi hết thời gian chờ.
+    _connectionRepo.connectSocket(clean);
     if (ping.isOnline) {
       // Đánh dấu trước khi đổi để dashboard dựng lại không mở splash lần thứ hai
       ref.read(setupCheckedAddressProvider.notifier).mark(clean);

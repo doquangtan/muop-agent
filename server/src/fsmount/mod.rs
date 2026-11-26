@@ -5,10 +5,13 @@
 //! Máy nhận không cần cấu hình gì thêm: chọn địa chỉ kết nối được, mount vào
 //! `$HOME/.local/share/muop-agent/mounts/<mã>`, rồi chạy agent trên điểm mount.
 
-// FUSE chỉ có trên Linux (fuser cần libfuse/pkg-config). Nơi khác: mọi hàm mount báo lỗi rõ ràng.
-#[cfg(any(target_os = "linux", feature = "mac-fuse"))]
+// FUSE: Linux dùng `fuser` (kernel /dev/fuse); macOS dùng API libfuse của FUSE-T (`fuse_mac`), vì `fuser`
+// không nói chuyện được với FUSE-T. Nơi khác: mọi hàm mount báo lỗi rõ ràng.
+#[cfg(target_os = "linux")]
 mod fuse;
-#[cfg(any(target_os = "linux", feature = "mac-fuse"))]
+#[cfg(all(target_os = "macos", feature = "mac-fuse"))]
+mod fuse_mac;
+#[cfg(target_os = "linux")]
 mod inodes;
 #[cfg(any(target_os = "linux", feature = "mac-fuse"))]
 mod remote;
@@ -18,14 +21,14 @@ use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
-#[cfg(any(target_os = "linux", feature = "mac-fuse"))]
+#[cfg(target_os = "linux")]
 use fuser::{BackgroundSession, Config, MountOption, SessionACL};
 
 use crate::models::RemoteProject;
 use crate::scanner;
-#[cfg(any(target_os = "linux", feature = "mac-fuse"))]
+#[cfg(target_os = "linux")]
 use fuse::RemoteFs;
-#[cfg(any(target_os = "linux", feature = "mac-fuse"))]
+#[cfg(target_os = "linux")]
 use remote::Remote;
 
 /// Thời gian chờ khi thăm dò một địa chỉ của máy gửi
@@ -36,11 +39,82 @@ const MOUNTS_SUBDIR: &str = ".local/share/muop-agent/mounts";
 pub const FUSE_SUPPORTED: bool = cfg!(any(target_os = "linux", feature = "mac-fuse"));
 /// Thông báo khi máy này không hỗ trợ FUSE
 const FUSE_UNSUPPORTED: &str = "mount project của máy khác (FUSE) cần Linux, hoặc macOS build với feature mac-fuse (cài FUSE-T trước)";
+/// Biến đánh dấu tiến trình vừa được khởi động lại để nạp FUSE-T (tránh vòng lặp khởi động lại)
+#[cfg(all(target_os = "macos", feature = "mac-fuse"))]
+const FUSE_RELOAD_ENV: &str = "MUOP_FUSE_RELOADED";
 
-/// Phiên mount đang giữ. Chỉ Linux có FUSE; nơi khác không bao giờ tạo được phiên nên dùng `()`.
-#[cfg(any(target_os = "linux", feature = "mac-fuse"))]
+/// macOS: FUSE-T có được nạp vào tiến trình này không. Binary build với `mac-fuse` link yếu tới
+/// `libfuse-t` (xem Makefile), nên server vẫn khởi động khi chưa cài FUSE-T. Dò bằng symbol `fuse_mount`.
+#[cfg(all(target_os = "macos", feature = "mac-fuse"))]
+pub fn fuse_loaded() -> bool {
+    let name = b"fuse_mount\0";
+    // SAFETY: tra cứu tên symbol trên RTLD_DEFAULT, không gọi hàm nào
+    unsafe { !libc::dlsym(libc::RTLD_DEFAULT, name.as_ptr() as *const libc::c_char).is_null() }
+}
+
+#[cfg(not(all(target_os = "macos", feature = "mac-fuse")))]
+pub fn fuse_loaded() -> bool {
+    false
+}
+
+/// FUSE-T đã có trên máy nhưng tiến trình này chưa nạp (cài sau khi server đã chạy): cần khởi động lại
+#[cfg(all(target_os = "macos", feature = "mac-fuse"))]
+pub fn restart_needed() -> bool {
+    crate::setup::install::fuse_t_installed() && !fuse_loaded()
+}
+
+/// macOS: thư viện link lúc khởi động nên FUSE-T cài sau đó chưa dùng được. Khi thấy FUSE-T đã có mà
+/// chưa nạp, chờ lúc rảnh (`is_idle`) rồi khởi động lại server: cùng PID, cùng cổng, client tự kết nối lại.
+pub fn spawn_fuse_reload_watch(is_idle: impl Fn() -> bool + Send + 'static) {
+    #[cfg(all(target_os = "macos", feature = "mac-fuse"))]
+    {
+        if std::env::var_os(FUSE_RELOAD_ENV).is_some() {
+            return;
+        }
+        tokio::spawn(async move {
+            // Chờ 5 giây trước lần kiểm tra đầu: không khởi động lại ngay lúc server vừa lên
+            let start = tokio::time::Instant::now() + Duration::from_secs(5);
+            let mut ticker = tokio::time::interval_at(start, Duration::from_secs(5));
+            loop {
+                ticker.tick().await;
+                if restart_needed() && is_idle() {
+                    tracing::info!("FUSE-T vừa được cài: khởi động lại server để nạp thư viện");
+                    restart_self();
+                }
+            }
+        });
+    }
+    #[cfg(not(all(target_os = "macos", feature = "mac-fuse")))]
+    {
+        let _ = is_idle;
+    }
+}
+
+/// Thay tiến trình hiện tại bằng bản server mới (cùng binary, cùng tham số). Chỉ trả về khi lỗi.
+#[cfg(all(target_os = "macos", feature = "mac-fuse"))]
+fn restart_self() {
+    use std::os::unix::process::CommandExt;
+    let exe = match std::env::current_exe() {
+        Ok(p) => p,
+        Err(e) => {
+            tracing::error!("không lấy được đường dẫn server để khởi động lại: {e}");
+            return;
+        }
+    };
+    let err = std::process::Command::new(exe)
+        .args(std::env::args_os().skip(1))
+        .env(FUSE_RELOAD_ENV, "1")
+        .exec();
+    tracing::error!("không khởi động lại được server: {err}");
+}
+
+/// Phiên mount đang giữ: Linux giữ `BackgroundSession` của fuser; macOS giữ `MacMount` (FUSE-T).
+/// Nơi không có FUSE không bao giờ tạo được phiên nên dùng `()`.
+#[cfg(target_os = "linux")]
 type MountSession = BackgroundSession;
-#[cfg(not(any(target_os = "linux", feature = "mac-fuse")))]
+#[cfg(all(target_os = "macos", feature = "mac-fuse"))]
+type MountSession = fuse_mac::MacMount;
+#[cfg(not(any(target_os = "linux", all(target_os = "macos", feature = "mac-fuse"))))]
 type MountSession = ();
 
 /// Kết quả mount: điểm mount trên máy này và địa chỉ máy gửi đang dùng
@@ -150,7 +224,7 @@ fn lock_registry() -> std::sync::MutexGuard<'static, HashMap<PathBuf, Active>> {
     active().lock().unwrap_or_else(|e| e.into_inner())
 }
 
-#[cfg(not(any(target_os = "linux", feature = "mac-fuse")))]
+#[cfg(not(any(target_os = "linux", all(target_os = "macos", feature = "mac-fuse"))))]
 fn mount_remote(
     _origin: &str,
     _project: &str,
@@ -159,7 +233,12 @@ fn mount_remote(
     Err(FUSE_UNSUPPORTED.into())
 }
 
-#[cfg(any(target_os = "linux", feature = "mac-fuse"))]
+#[cfg(all(target_os = "macos", feature = "mac-fuse"))]
+fn mount_remote(origin: &str, project: &str, mount_point: &Path) -> Result<MountSession, String> {
+    fuse_mac::mount(origin, project, mount_point)
+}
+
+#[cfg(target_os = "linux")]
 fn mount_remote(origin: &str, project: &str, mount_point: &Path) -> Result<MountSession, String> {
     let remote = Remote::with_default_timeout(origin, project)?;
     // SAFETY: getuid/getgid không có điều kiện đầu vào và không thể lỗi
@@ -219,8 +298,18 @@ pub fn check_fuse_available() -> Result<(), String> {
         return Err(FUSE_UNSUPPORTED.into());
     }
     if crate::infra::platform::IS_MACOS {
-        // macOS không có /dev/fuse hay fusermount: FUSE-T/macFUSE tự đăng ký; lỗi mount sẽ báo khi mount
-        return Ok(());
+        // macOS không có /dev/fuse hay fusermount: FUSE-T tự đăng ký; kiểm tra thư viện đã được nạp chưa
+        if fuse_loaded() {
+            return Ok(());
+        }
+        if crate::setup::install::fuse_t_installed() {
+            return Err(
+                "FUSE-T vừa được cài, server đang chờ khởi động lại để nạp thư viện; thử lại sau vài giây".into(),
+            );
+        }
+        return Err(
+            "máy này chưa cài FUSE-T: cài ở Khởi tạo (mục Gói Homebrew) rồi thử lại".into(),
+        );
     }
     if !Path::new("/dev/fuse").exists() {
         return Err("máy này chưa có /dev/fuse (cần bật FUSE trong kernel)".into());

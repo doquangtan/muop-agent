@@ -14,8 +14,10 @@ pub mod models;
 pub mod plans;
 pub mod projects;
 pub mod quota;
+pub mod screen;
 pub mod sessions;
 pub mod setup;
+pub mod sftp;
 pub mod ssh;
 
 use crate::chat::AppState;
@@ -29,6 +31,9 @@ pub fn router() -> Router<AppState> {
     Router::new()
         .route("/api/sessions", get(sessions::handle_sessions_list))
         .route("/api/meta", get(meta::handle_meta))
+        .route("/api/screen/status", get(screen::handle_screen_status))
+        .route("/api/screen/toggle", post(screen::handle_screen_toggle))
+        .route("/api/server/shutdown", post(screen::handle_server_shutdown))
         .route("/api/streams", get(meta::handle_streams))
         .route("/api/quota", get(quota::handle_quota_all))
         .route("/api/quota/agy", get(quota::handle_quota_agy))
@@ -45,6 +50,10 @@ pub fn router() -> Router<AppState> {
         .route(
             "/api/chat/retry/cancel",
             post(chat::handle_chat_retry_cancel),
+        )
+        .route(
+            "/api/chat/retry/config",
+            get(chat::handle_chat_retry_config_get).post(chat::handle_chat_retry_config_save),
         )
         .route(
             "/api/agy/auth/status",
@@ -148,6 +157,21 @@ pub fn router() -> Router<AppState> {
         .route(
             "/api/docker/sessions/close",
             post(docker::handle_docker_session_close),
+        )
+        .route("/api/sftp/open", post(sftp::handle_sftp_open))
+        .route("/api/sftp/local", post(sftp::handle_sftp_local_open))
+        .route("/api/sftp/close", post(sftp::handle_sftp_close))
+        .route("/api/sftp/list", post(sftp::handle_sftp_list))
+        .route("/api/sftp/op", post(sftp::handle_sftp_op))
+        .route("/api/sftp/upload", post(sftp::handle_sftp_upload))
+        .route("/api/sftp/read", post(sftp::handle_sftp_read))
+        .route(
+            "/api/sftp/download/prepare",
+            post(sftp::handle_sftp_download_prepare),
+        )
+        .route(
+            "/api/sftp/download/:id",
+            get(sftp::handle_sftp_download_get),
         )
         .route(
             "/api/conversation/model",

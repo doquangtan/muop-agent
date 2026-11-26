@@ -274,6 +274,10 @@ pub async fn start_chat_turn_attempt(
         provider,
     };
 
+    // Quota agy lấy khi bắt đầu lượt (không chờ): watcher lấy từ API/hub rồi đẩy `quotas:update`
+    if provider == Provider::Agy {
+        crate::agy_account::request_refresh();
+    }
     if !clean_conv_id.is_empty() {
         ctx.register(&clean_conv_id);
         ctx.emit(&clean_conv_id, String::new(), "starting", String::new());

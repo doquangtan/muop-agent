@@ -39,10 +39,17 @@ extension _CanvasExtComposer on _ChatCanvasViewState {
       _showComposerNotice('Tối đa $_kMaxComposerImages ảnh cho mỗi tin nhắn');
       return;
     }
-    final files = await FilePicker.pickFiles(
-      type: FileType.custom,
-      allowedExtensions: const ['png', 'jpg', 'jpeg', 'webp'],
-    );
+    final List<PlatformFile> files;
+    try {
+      files = await FilePicker.pickFiles(
+        type: FileType.custom,
+        allowedExtensions: const ['png', 'jpg', 'jpeg', 'webp'],
+      );
+    } catch (e) {
+      // Plugin lỗi (ví dụ thiếu entitlement trên macOS): báo rõ thay vì không có gì xảy ra
+      if (mounted) _showComposerNotice('Không mở được hộp thoại chọn ảnh: $e');
+      return;
+    }
     if (!mounted || files.isEmpty) return;
 
     final picked = <ChatImageAttachment>[];

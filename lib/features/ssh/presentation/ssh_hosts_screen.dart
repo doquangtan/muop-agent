@@ -6,6 +6,8 @@ import 'package:muop_agent/core/widgets/desktop_panel.dart';
 import 'package:muop_agent/core/widgets/glass_scaffold.dart';
 import 'package:muop_agent/features/ssh/domain/ssh_entities.dart';
 import 'package:muop_agent/features/ssh/presentation/ssh_terminal_screen.dart';
+import 'package:muop_agent/features/ssh/presentation/ssh_password_dialog.dart';
+import 'package:muop_agent/features/sftp/presentation/sftp_browser_screen.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:muop_agent/core/state/server_address_provider.dart';
 
@@ -125,6 +127,18 @@ class _SshHostsScreenState extends State<SshHostsScreenView> {
     if (mounted) _reload();
   }
 
+  /// Duyệt và sửa file của máy qua SFTP (cùng kết nối SSH của máy)
+  Future<void> _openSftp(SshHost host) async {
+    await openPanelPage(
+      context,
+      SftpBrowserScreen(
+        hostId: host.id,
+        hostName: host.name,
+        hostAddress: host.address,
+      ),
+    );
+  }
+
   Future<void> _openExec(SshHost host) async {
     await showModalBottomSheet<void>(
       context: context,
@@ -167,10 +181,56 @@ class _SshHostsScreenState extends State<SshHostsScreenView> {
     _reload();
   }
 
+  /// Trên màn hẹp: nút SFTP và một menu cho các thao tác còn lại (đỡ chiếm chỗ của tên máy)
+  Widget _compactTrailing(SshHost host, ColorScheme scheme) {
+    final running = _runningSessionFor(host) != null;
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        IconButton(
+          tooltip: 'Quản lý file (SFTP)',
+          icon: const Icon(Icons.folder_open_rounded),
+          onPressed: () => _openSftp(host),
+        ),
+        PopupMenuButton<String>(
+          tooltip: 'Thao tác',
+          onSelected: (value) {
+            switch (value) {
+              case 'terminal':
+                _openTerminal(host, forceNew: true);
+              case 'exec':
+                _openExec(host);
+              case 'edit':
+                _openForm(host);
+              case 'delete':
+                _confirmDelete(host);
+            }
+          },
+          itemBuilder: (_) => [
+            PopupMenuItem(
+              value: 'terminal',
+              child: Text(running ? 'Mở phiên mới' : 'Mở terminal'),
+            ),
+            const PopupMenuItem(value: 'exec', child: Text('Chạy lệnh')),
+            // Máy mặc định: không sửa, không xóa
+            if (!host.builtin) ...[
+              const PopupMenuItem(value: 'edit', child: Text('Sửa')),
+              PopupMenuItem(
+                value: 'delete',
+                child: Text('Xóa', style: TextStyle(color: scheme.error)),
+              ),
+            ],
+          ],
+        ),
+      ],
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final scheme = context.scheme;
     final textTheme = Theme.of(context).textTheme;
+    final compact = MediaQuery.sizeOf(context).width < 760;
 
     return GlassScreenScaffold(
       title: 'Máy SSH',
@@ -252,6 +312,8 @@ class _SshHostsScreenState extends State<SshHostsScreenView> {
                               ),
                             ),
                             title: Text(host.name,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
                                 style: textTheme.titleSmall
                                     ?.copyWith(fontWeight: FontWeight.w600)),
                             subtitle: Text(
@@ -259,13 +321,22 @@ class _SshHostsScreenState extends State<SshHostsScreenView> {
                                   ? 'Máy chủ này · mở shell trực tiếp'
                                   : '${host.address} · ${isKey ? 'SSH key' : 'mật khẩu'}'
                               '${_runningSessionFor(host) != null ? ' · đang có phiên chạy' : ''}',
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
                               style: textTheme.bodySmall?.copyWith(
                                 color: scheme.onSurfaceVariant,
                               ),
                             ),
-                            trailing: Row(
+                            trailing: compact
+                                ? _compactTrailing(host, scheme)
+                                : Row(
                               mainAxisSize: MainAxisSize.min,
                               children: [
+                                IconButton(
+                                  tooltip: 'Quản lý file (SFTP)',
+                                  icon: const Icon(Icons.folder_open_rounded),
+                                  onPressed: () => _openSftp(host),
+                                ),
                                 IconButton(
                                   tooltip: 'Chạy lệnh',
                                   icon: const Icon(Icons.bolt_rounded),
@@ -561,11 +632,30 @@ class _SshExecSheetState extends State<_SshExecSheet> {
       _running = true;
       _result = null;
     });
-    final res = await AppDependencies.ssh.execSshCommand(
+    var res = await AppDependencies.ssh.execSshCommand(
       widget.serverAddress,
       hostId: widget.host.id,
       command: cmd,
     );
+    // ssh cần mật khẩu (chưa có hoặc sai): hỏi rồi chạy lại. Hủy thì giữ kết quả báo lỗi.
+    while (res.needsPassword) {
+      if (!mounted) return;
+      final input = await showSshPasswordDialog(
+        context,
+        hostName: widget.host.name,
+        address: widget.host.address,
+        hint: res.error,
+        kind: res.passwordKind,
+      );
+      if (input == null || !mounted) break;
+      res = await AppDependencies.ssh.execSshCommand(
+        widget.serverAddress,
+        hostId: widget.host.id,
+        command: cmd,
+        password: input.password,
+        savePassword: input.save,
+      );
+    }
     if (!mounted) return;
     setState(() {
       _running = false;

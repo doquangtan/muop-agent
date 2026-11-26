@@ -69,6 +69,8 @@ pub(super) fn finish_turn(
 
     if provider == Provider::Agy {
         spawn_agy_sync(st.tracked_id.clone(), 300);
+        // Lượt vừa kết thúc (hoàn tất, lỗi hoặc bị dừng): lấy lại quota sau khi agy đã ghi nhận lượt
+        crate::agy_account::request_refresh();
     }
 
     let cleanup_state = state.clone();

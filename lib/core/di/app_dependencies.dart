@@ -11,6 +11,10 @@ import 'package:muop_agent/features/chat/data/chat_repository_impl.dart';
 import 'package:muop_agent/features/chat/domain/chat_repository.dart';
 import 'package:muop_agent/features/connection/data/connection_repository_impl.dart';
 import 'package:muop_agent/features/connection/domain/connection_repository.dart';
+import 'package:muop_agent/features/sftp/data/local_sftp.dart';
+import 'package:muop_agent/features/sftp/data/sftp_repository_impl.dart';
+import 'package:muop_agent/features/sftp/data/sftp_transfers.dart';
+import 'package:muop_agent/features/sftp/domain/sftp_repository.dart';
 import 'package:muop_agent/features/docker/data/docker_repository_impl.dart';
 import 'package:muop_agent/features/docker/domain/docker_repository.dart';
 import 'package:muop_agent/features/interactions/data/interactions_repository_impl.dart';
@@ -48,9 +52,13 @@ class AppDependencies {
   static final ProjectsRepository projects = ProjectsRepositoryImpl(socket);
   static final ExploreRepository explore = ExploreRepositoryImpl(socket);
   static final ServerFilesRepository serverFiles =
-      ServerFilesRepositoryImpl();
+      ServerFilesRepositoryImpl(localSftp, sftpTransfers);
   static final SshRepository ssh = SshRepositoryImpl(socket);
   static final DockerRepository docker = DockerRepositoryImpl(socket);
+  static final SftpRepository sftp = SftpRepositoryImpl();
+  /// Phiên "Máy này" và luồng tải xuống dùng chung cho mọi tính năng file (duyệt, chat, cây project)
+  static final LocalSftp localSftp = LocalSftp(sftp);
+  static final SftpTransfers sftpTransfers = SftpTransfers(sftp);
   static final LspRepository lsp = LspRepositoryImpl();
   static final BridgeRepository bridge = BridgeRepositoryImpl(socket);
   static final QuotaRepository quota = QuotaRepositoryImpl();

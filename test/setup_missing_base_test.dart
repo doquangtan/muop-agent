@@ -161,14 +161,14 @@ void main() {
     expect(find.widgetWithText(FilledButton, 'Tiếp tục'), findsOneWidget);
   });
 
-  testWidgets('macOS: FUSE-T thiếu thì hiện trong Gói Homebrew và có nút chạy lệnh brew của server', (tester) async {
+  testWidgets('macOS: FUSE-T là bắt buộc, thiếu thì hiện nút cài brew và không cho Tiếp tục', (tester) async {
     await _pump(
       tester,
       _status(
         fuseInstalled: false,
         macos: true,
         brewPackages: [
-          {'package': 'fuse-t', 'label': 'FUSE-T', 'note': 'mount project máy khác', 'installed': false, 'required': false},
+          {'package': 'fuse-t', 'label': 'FUSE-T', 'note': 'mount project máy khác', 'installed': false, 'required': true},
         ],
         brewInstallCommand: 'brew install --cask fuse-t',
       ),
@@ -178,7 +178,23 @@ void main() {
     expect(find.textContaining('FUSE-T (fuse-t)'), findsOneWidget);
     expect(find.text('Cài các gói Homebrew còn thiếu'), findsOneWidget);
     expect(find.text('brew install --cask fuse-t'), findsOneWidget);
-    // FUSE-T không bắt buộc: vẫn đi tiếp được
+    // FUSE-T bắt buộc: chưa cài thì không đi tiếp được
+    expect(find.widgetWithText(FilledButton, 'Tiếp tục'), findsNothing);
+    expect(find.textContaining('Cần cài đủ gói bắt buộc'), findsOneWidget);
+  });
+
+  testWidgets('macOS: FUSE-T đã cài thì cho Tiếp tục', (tester) async {
+    await _pump(
+      tester,
+      _status(
+        fuseInstalled: false,
+        macos: true,
+        brewPackages: [
+          {'package': 'fuse-t', 'label': 'FUSE-T', 'note': 'mount project máy khác', 'installed': true, 'required': true},
+        ],
+      ),
+    );
+
     expect(find.widgetWithText(FilledButton, 'Tiếp tục'), findsOneWidget);
   });
 

@@ -268,14 +268,18 @@ fn finish_login(mut session: Session, from: usize) {
     let outcome = wait_result(&mut session, from);
     session.close();
     match outcome {
-        Ok(info) => publish(
-            "logged_in",
-            true,
-            &info.email,
-            &info.subscription_type,
-            "",
-            "",
-        ),
+        Ok(info) => {
+            // Đăng nhập xong: lấy danh sách model từ API và lưu vào DB để UI dùng sau này
+            crate::claude::code::save_claude_model_ids_from_api();
+            publish(
+                "logged_in",
+                true,
+                &info.email,
+                &info.subscription_type,
+                "",
+                "",
+            )
+        }
         Err(e) => publish(
             "failed",
             false,

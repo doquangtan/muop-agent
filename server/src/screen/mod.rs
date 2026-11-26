@@ -7,6 +7,7 @@
 //! Socket.IO chỉ đưa trạng thái: `screen:status` (server → tất cả): `{streaming, starting, error, height, fps, rtspUrl}`.
 
 pub mod capture;
+pub mod mac;
 pub mod portal;
 pub mod rtsp;
 
@@ -48,7 +49,8 @@ struct Running {
     generation: u64,
     child: Child,
     reader: JoinHandle<()>,
-    portal: portal::PortalSession,
+    /// Phiên portal (Linux). macOS không dùng portal nên là `None`.
+    portal: Option<portal::PortalSession>,
 }
 
 pub struct ScreenManager {
@@ -137,8 +139,78 @@ impl ScreenManager {
         crate::infra::tray::refresh();
     }
 
-    /// Mở phiên portal và chạy GStreamer. Có thể chờ người dùng xác nhận vài chục giây.
+    /// Bật quay màn hình theo nền tảng: macOS dùng ffmpeg (`mac.rs`), Linux dùng portal + GStreamer.
     pub async fn start(self: &Arc<Self>) {
+        if crate::infra::platform::IS_MACOS {
+            self.start_mac().await;
+        } else {
+            self.start_portal().await;
+        }
+    }
+
+    /// macOS: ffmpeg chụp màn hình và gửi RTP qua UDP; không cần portal.
+    async fn start_mac(self: &Arc<Self>) {
+        let mut guard = self.running.lock().await;
+        if guard.is_some() {
+            return;
+        }
+        self.update_status(|s| {
+            s.starting = true;
+            s.error.clear();
+        });
+        let out_h = mac::OUTPUT_HEIGHT;
+        let capture = match mac::start(out_h).await {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::warn!("Không bật được quay màn hình trên macOS: {e}");
+                self.update_status(|s| {
+                    s.starting = false;
+                    s.error = e;
+                });
+                return;
+            }
+        };
+        let mac::Capture { mut child, socket } = capture;
+        let generation = self.generation.fetch_add(1, Ordering::Relaxed) + 1;
+        let packets = self.hub.go_live();
+        let manager = self.clone();
+        let hub = self.hub.clone();
+        let reader = tokio::spawn(async move {
+            mac::read_packets(socket, packets, hub).await;
+            manager.capture_ended(generation).await;
+        });
+
+        // ffmpeg chết ngay (thiếu quyền, thiết bị sai...) thì báo lỗi thay vì báo đang quay
+        tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+        if let Ok(Some(_)) = child.try_wait() {
+            reader.abort();
+            self.hub.go_offline();
+            self.update_status(|s| {
+                s.starting = false;
+                s.error = format!("{} (xem log server)", mac::PERMISSION_MSG);
+            });
+            return;
+        }
+
+        let url = rtsp_url();
+        *guard = Some(Running {
+            generation,
+            child,
+            reader,
+            portal: None,
+        });
+        self.update_status(|s| {
+            s.starting = false;
+            s.streaming = true;
+            s.height = out_h;
+            s.fps = capture::MAX_FPS;
+            s.rtsp_url = url.clone();
+        });
+        tracing::info!("📺 Bắt đầu quay màn hình (macOS) {out_h}p — mở bằng: {url}");
+    }
+
+    /// Linux: mở phiên portal và chạy GStreamer. Có thể chờ người dùng xác nhận vài chục giây.
+    async fn start_portal(self: &Arc<Self>) {
         let mut guard = self.running.lock().await;
         if guard.is_some() {
             return;
@@ -211,7 +283,7 @@ impl ScreenManager {
             generation,
             child,
             reader,
-            portal: opened.session,
+            portal: Some(opened.session),
         });
         self.update_status(|s| {
             s.starting = false;
@@ -269,7 +341,9 @@ impl ScreenManager {
         }
         self.hub.go_offline();
         if let Some(r) = guard.take() {
-            r.portal.close().await;
+            if let Some(portal) = r.portal {
+                portal.close().await;
+            }
             // Tiến trình đã kết thúc, chỉ cần thu dọn
             drop(r.child);
         }
@@ -286,7 +360,9 @@ async fn end_running(mut r: Running) {
     let _ = r.child.start_kill();
     let _ = r.child.wait().await;
     r.reader.abort();
-    r.portal.close().await;
+    if let Some(portal) = r.portal {
+        portal.close().await;
+    }
 }
 
 /// Đọc các gói RTP từ GStreamer và đẩy vào hub cho mọi client RTSP

@@ -16,6 +16,17 @@ String formatRetryRemaining(Duration remaining) {
   return h > 0 ? '$h:${two(m)}:${two(s)}' : '${two(m)}:${two(s)}';
 }
 
+/// Dòng mô tả căn cứ chờ: `Chờ reset quota · Phiên 5 giờ · reset 14:30`. Rỗng nếu server không gửi.
+String retryWaitLine(PendingRetry retry) {
+  if (retry.waitDetail.isEmpty) return '';
+  final reset = retry.resetAt;
+  if (reset == null) return retry.waitDetail;
+  final local = reset.toLocal();
+  if (!local.isAfter(DateTime.now())) return retry.waitDetail;
+  String two(int v) => v.toString().padLeft(2, '0');
+  return '${retry.waitDetail} · reset ${two(local.hour)}:${two(local.minute)}';
+}
+
 /// Đếm ngược tới `retryAt`, tự cập nhật mỗi giây. Khi hết giờ hiện "Đang gửi lại…".
 class RetryCountdownText extends StatefulWidget {
   const RetryCountdownText({
@@ -123,6 +134,15 @@ class RetryBanner extends StatelessWidget {
                     ),
                   ],
                 ),
+                if (retryWaitLine(retry).isNotEmpty)
+                  Text(
+                    retryWaitLine(retry),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: textTheme.labelSmall?.copyWith(
+                      color: scheme.onSurfaceVariant,
+                    ),
+                  ),
               ],
             ),
           ),
@@ -201,6 +221,17 @@ class RetryPopup extends StatelessWidget {
                   ),
                 ),
               ),
+              if (retryWaitLine(retry).isNotEmpty) ...[
+                const SizedBox(height: 6),
+                Center(
+                  child: Text(
+                    retryWaitLine(retry),
+                    style: textTheme.labelMedium?.copyWith(
+                      color: scheme.onSurfaceVariant,
+                    ),
+                  ),
+                ),
+              ],
               if (retry.reason.isNotEmpty) ...[
                 const SizedBox(height: 14),
                 Text(

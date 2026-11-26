@@ -270,9 +270,9 @@ class _SetupWizardScreenState extends State<SetupWizardScreenView> {
     );
   }
 
-  /// Gói bắt buộc (apt) còn thiếu; khi còn thì không hiện nút Tiếp tục
+  /// Gói bắt buộc còn thiếu (apt trên Linux, Homebrew trên macOS); khi còn thì không hiện nút Tiếp tục
   List<SetupAptPackage> get _blockingApt => _status.isMacOS
-      ? const []
+      ? _status.brewPackages.where((p) => p.required && !p.installed).toList()
       : _status.aptPackages.where((p) => p.required && !p.installed).toList();
 
   /// Mở terminal của "Máy này" và chạy lệnh cài gói apt do server tạo (`aptInstallCommand`).
@@ -320,7 +320,7 @@ class _SetupWizardScreenState extends State<SetupWizardScreenView> {
           const SizedBox(height: 8),
           Text(
             'Máy chủ đang chạy macOS: git, ssh, curl và python3 đi kèm Xcode Command Line Tools. '
-            'FUSE (mount project của máy khác) cài bằng Homebrew ở mục Gói Homebrew bên dưới.',
+            'FUSE-T (mount project của máy khác) là bắt buộc, cài bằng Homebrew ở mục Gói Homebrew bên dưới.',
             style: textTheme.bodySmall,
           ),
         ],

@@ -69,21 +69,86 @@ pub fn parse_effort_levels(help: &str) -> Vec<String> {
         .collect()
 }
 
+/// Khóa `app_settings` lưu danh sách model Claude (JSON, id đầy đủ `claude-cli:...`) lấy lúc đăng nhập.
+const SAVED_MODELS_KEY: &str = "claude_model_ids";
+
 /// Id model Claude phát cho UI: `claude-cli:<model>-<mức>` cho từng mức CLI hỗ trợ,
-/// hoặc `claude-cli:<model>` nếu không đọc được mức nào. Danh sách model lấy từ API (xem `claude_base_models`).
-pub fn claude_model_ids() -> Vec<String> {
-    let levels = effort_levels();
+/// hoặc `claude-cli:<model>` nếu không đọc được mức nào.
+fn build_model_ids(base: &[String], levels: &[String]) -> Vec<String> {
     let mut ids = Vec::new();
-    for base in claude_base_models() {
+    for model in base {
         if levels.is_empty() {
-            ids.push(format!("claude-cli:{base}"));
+            ids.push(format!("claude-cli:{model}"));
         } else {
-            for level in &levels {
-                ids.push(format!("claude-cli:{base}-{level}"));
+            for level in levels {
+                ids.push(format!("claude-cli:{model}-{level}"));
             }
         }
     }
     ids
+}
+
+/// Danh sách model Claude đã lưu trong DB (rỗng nếu chưa có)
+fn saved_claude_model_ids() -> Vec<String> {
+    crate::infra::store::get_app_setting(SAVED_MODELS_KEY)
+        .and_then(|raw| serde_json::from_str::<Vec<String>>(&raw).ok())
+        .unwrap_or_default()
+}
+
+/// Danh sách model Claude UI dùng: đọc từ DB. Chưa có trong DB (đăng nhập trước khi có tính năng này,
+/// hoặc đăng nhập ngoài app) thì lấy từ API một lần rồi lưu.
+pub fn claude_model_ids() -> Vec<String> {
+    let saved = saved_claude_model_ids();
+    if !saved.is_empty() {
+        return saved;
+    }
+    save_claude_model_ids_from_api()
+}
+
+/// Lấy model từ API rồi lưu vào DB. Gọi khi đăng nhập xong; bỏ cache cũ để không dùng kết quả trước đăng nhập.
+pub fn save_claude_model_ids_from_api() -> Vec<String> {
+    if let Ok(mut guard) = CLAUDE_MODELS_CACHE.lock() {
+        *guard = None;
+    }
+    let ids = build_model_ids(&claude_base_models(), &effort_levels());
+    if !ids.is_empty() {
+        if let Ok(raw) = serde_json::to_string(&ids) {
+            crate::infra::store::set_app_setting(SAVED_MODELS_KEY, &raw);
+        }
+    }
+    ids
+}
+
+/// Xóa danh sách model đã lưu (khi đăng xuất)
+pub fn clear_saved_claude_model_ids() {
+    crate::infra::store::set_app_setting(SAVED_MODELS_KEY, "");
+}
+
+#[cfg(test)]
+mod saved_model_tests {
+    use super::*;
+
+    #[test]
+    fn expands_each_base_model_per_effort_level() {
+        let base = vec!["claude-sonnet-5-5".to_string()];
+        let levels = vec!["low".to_string(), "high".to_string()];
+        assert_eq!(
+            build_model_ids(&base, &levels),
+            vec![
+                "claude-cli:claude-sonnet-5-5-low",
+                "claude-cli:claude-sonnet-5-5-high"
+            ]
+        );
+    }
+
+    #[test]
+    fn without_levels_uses_plain_model_id() {
+        let base = vec!["claude-haiku-5-5".to_string()];
+        assert_eq!(
+            build_model_ids(&base, &[]),
+            vec!["claude-cli:claude-haiku-5-5"]
+        );
+    }
 }
 
 /// Tách hậu tố mức suy nghĩ khỏi id model: `claude-sonnet-5-5-high` → (`claude-sonnet-5-5`, Some(`high`))

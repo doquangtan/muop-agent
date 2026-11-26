@@ -50,6 +50,8 @@ class SshExecResult {
     required this.stdout,
     required this.stderr,
     required this.error,
+    this.needsPassword = false,
+    this.passwordKind = 'ssh',
   });
 
   final bool ok;
@@ -58,6 +60,12 @@ class SshExecResult {
   final String stderr;
   final String error;
 
+  /// `ssh` cần mật khẩu (chưa có hoặc sai): app hỏi người dùng rồi chạy lại. `error` là lý do.
+  final bool needsPassword;
+
+  /// Loại mật khẩu cần: `ssh` hoặc `sudo` (lệnh sudo trên máy này)
+  final String passwordKind;
+
   factory SshExecResult.fromJson(Map<String, dynamic> json) {
     return SshExecResult(
       ok: json['ok'] == true,
@@ -65,6 +73,44 @@ class SshExecResult {
       stdout: '${json['stdout'] ?? ''}',
       stderr: '${json['stderr'] ?? ''}',
       error: '${json['error'] ?? ''}',
+      needsPassword: json['needsPassword'] == true,
+      passwordKind: '${json['passwordKind'] ?? 'ssh'}',
+    );
+  }
+}
+
+/// Mật khẩu người dùng nhập trong hộp thoại: có lưu cho máy này hay không
+class SshPasswordInput {
+  const SshPasswordInput({required this.password, required this.save});
+
+  final String password;
+  final bool save;
+}
+
+/// `ssh` trên server đang hỏi mật khẩu của một phiên terminal
+class SshPasswordRequest {
+  const SshPasswordRequest({
+    required this.sessionId,
+    required this.hostName,
+    required this.wrong,
+    this.kind = 'ssh',
+  });
+
+  final String sessionId;
+  final String hostName;
+
+  /// Lần nhập trước bị từ chối
+  final bool wrong;
+
+  /// `ssh` (mật khẩu đăng nhập máy khác) hoặc `sudo` (mật khẩu sudo trên máy này)
+  final String kind;
+
+  factory SshPasswordRequest.fromJson(Map<String, dynamic> json) {
+    return SshPasswordRequest(
+      sessionId: '${json['sessionId'] ?? ''}',
+      hostName: '${json['hostName'] ?? ''}',
+      wrong: json['wrong'] == true,
+      kind: '${json['kind'] ?? 'ssh'}',
     );
   }
 }
@@ -130,6 +176,9 @@ class SshTerminalAttachResult {
     required this.hostName,
     required this.buffer,
     required this.error,
+    this.awaitingPassword = false,
+    this.passwordWrong = false,
+    this.passwordKind = 'ssh',
   });
 
   final bool ok;
@@ -137,4 +186,13 @@ class SshTerminalAttachResult {
   final String hostName;
   final List<int> buffer;
   final String error;
+
+  /// Phiên đang chờ mật khẩu: hiện hộp thoại nhập
+  final bool awaitingPassword;
+
+  /// Lần nhập trước bị từ chối
+  final bool passwordWrong;
+
+  /// Loại mật khẩu đang chờ: `ssh` hoặc `sudo`
+  final String passwordKind;
 }

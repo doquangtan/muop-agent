@@ -290,12 +290,12 @@ pub const BREW_PACKAGES: &[BrewPackage] = &[BrewPackage {
     cask: "fuse-t",
     label: "FUSE-T",
     note: "mount project của máy khác để agent làm việc trên đó (không cần kext)",
-    required: false,
+    required: true,
     installed: fuse_t_installed,
 }];
 
 /// FUSE-T cài `libfuse-t` vào thư mục lib của hệ thống (hoặc Homebrew)
-fn fuse_t_installed() -> bool {
+pub(crate) fn fuse_t_installed() -> bool {
     [
         "/usr/local/lib/libfuse-t.dylib",
         "/opt/homebrew/lib/libfuse-t.dylib",

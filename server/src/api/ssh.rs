@@ -114,9 +114,18 @@ pub async fn handle_ssh_exec(Json(req): Json<SshExecRequest>) -> impl IntoRespon
                 stdout: String::new(),
                 stderr: String::new(),
                 error: "Không tìm thấy máy SSH".into(),
+                needs_password: false,
+                password_kind: String::new(),
             }),
         );
     };
-    let res = crate::ssh::hosts::exec(&row, &req.command, req.timeout_secs).await;
+    let res = crate::ssh::hosts::exec(
+        &row,
+        &req.command,
+        req.timeout_secs,
+        &req.password,
+        req.save_password,
+    )
+    .await;
     (StatusCode::OK, Json(res))
 }

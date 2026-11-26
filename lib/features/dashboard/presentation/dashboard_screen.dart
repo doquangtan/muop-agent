@@ -32,6 +32,7 @@ import 'package:muop_agent/features/projects/domain/projects_repository.dart';
 import 'package:muop_agent/features/quota/domain/quota_entities.dart';
 import 'package:muop_agent/features/projects/presentation/project_git_history_sheet.dart';
 import 'package:muop_agent/features/projects/presentation/project_tree_explorer.dart';
+import 'package:muop_agent/features/sftp/presentation/download_progress.dart';
 import 'package:muop_agent/features/server_files/domain/server_files_repository.dart';
 import 'package:muop_agent/features/server_files/presentation/server_file_browser_sheet.dart';
 import 'package:muop_agent/features/sessions/domain/session_entities.dart';
@@ -1561,18 +1562,17 @@ class _DashboardScreenState extends ConsumerState<DashboardScreenView> {
     );
   }
 
+  /// Tải file từ khung chat qua luồng SFTP chung, có thanh % tiến trình
   Future<void> _downloadFileDirectly(String remotePath) async {
     final filename = remotePath.split('/').last;
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text('Đang tải file "$filename" từ Rust Server...'),
-        duration: const Duration(seconds: 2),
+    final res = await runWithDownloadProgress(
+      context,
+      name: filename,
+      run: (onProgress) => _serverFilesRepo.downloadFileFromServer(
+        address: _serverAddress,
+        remotePath: remotePath,
+        onProgress: onProgress,
       ),
-    );
-
-    final res = await _serverFilesRepo.downloadFileFromServer(
-      address: _serverAddress,
-      remotePath: remotePath,
     );
 
     if (!mounted) return;
@@ -2909,6 +2909,12 @@ class _DashboardScreenState extends ConsumerState<DashboardScreenView> {
                 onCancelRetry: _selectedSessionId == null
                     ? null
                     : () => _cancelRetry(_selectedSessionId!),
+                onFetchRetryConfig: (cid) => _interactionsRepo
+                    .fetchRetryConfig(address: _serverAddress, conversationId: cid),
+                onSaveRetryConfig: (cfg) => _interactionsRepo.saveRetryConfig(
+                  address: _serverAddress,
+                  config: cfg,
+                ),
                 onOpenFileBrowser: () =>
                     _openServerFileBrowser(initialTab: 0),
                 onOpenChangesTab: () =>

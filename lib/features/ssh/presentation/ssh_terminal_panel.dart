@@ -6,6 +6,7 @@ import 'package:xterm/xterm.dart';
 import 'package:muop_agent/core/di/app_dependencies.dart';
 import 'package:muop_agent/core/theme/app_theme.dart';
 import 'package:muop_agent/features/ssh/domain/ssh_entities.dart';
+import 'package:muop_agent/features/ssh/presentation/ssh_password_dialog.dart';
 
 /// Terminal SSH tương tác dùng chung: đầu ra từ server được render bằng xterm, phím gõ gửi về PTY trên server.
 /// Dùng làm màn hình đầy đủ (`SshTerminalScreen`) hoặc khung nhỏ nhúng trong màn khác (wizard đồng ý điều khoản).
@@ -66,8 +67,16 @@ class _SshTerminalPanelState extends State<SshTerminalPanel> {
 
   StreamSubscription<SshTerminalData>? _dataSub;
   StreamSubscription<SshTerminalClosed>? _closedSub;
+  StreamSubscription<SshPasswordRequest>? _passwordSub;
 
   String? _sessionId;
+
+  /// `ssh` đang chờ mật khẩu (banner hiện để nhập lại nếu hộp thoại bị đóng)
+  bool _passwordPending = false;
+  bool _passwordDialogOpen = false;
+  String? _passwordHint;
+  /// Loại mật khẩu đang hỏi: `ssh` hoặc `sudo`
+  String _passwordKind = 'ssh';
 
   /// Phiên sẽ gắn vào ở lần mở tiếp theo (null = mở phiên mới)
   String? _attachId;
@@ -86,6 +95,8 @@ class _SshTerminalPanelState extends State<SshTerminalPanel> {
     _attachId = widget.sessionId;
     _dataSub = AppDependencies.ssh.sshDataStream.listen(_onData);
     _closedSub = AppDependencies.ssh.sshClosedStream.listen(_onClosed);
+    _passwordSub = AppDependencies.ssh.sshPasswordRequestStream
+        .listen(_onPasswordRequest);
     _terminal.onOutput = (text) {
       final sid = _sessionId;
       if (sid != null && !_closed) {
@@ -107,7 +118,60 @@ class _SshTerminalPanelState extends State<SshTerminalPanel> {
   void dispose() {
     _dataSub?.cancel();
     _closedSub?.cancel();
+    _passwordSub?.cancel();
     super.dispose();
+  }
+
+  void _onPasswordRequest(SshPasswordRequest req) {
+    if (!mounted) return;
+    final sid = _sessionId;
+    if (sid == null) {
+      _early.add(req);
+      return;
+    }
+    if (req.sessionId == sid) {
+      _requestPassword(wrong: req.wrong, kind: req.kind);
+    }
+  }
+
+  /// `ssh` đang hỏi mật khẩu: hiện hộp thoại (nếu chưa mở) và banner chờ
+  void _requestPassword({required bool wrong, String kind = 'ssh'}) {
+    if (!mounted || _closed) return;
+    setState(() {
+      _passwordPending = true;
+      _passwordKind = kind;
+      _passwordHint = wrong ? 'Mật khẩu không đúng, vui lòng nhập lại.' : null;
+    });
+    _showPasswordDialog();
+  }
+
+  Future<void> _showPasswordDialog() async {
+    final sid = _sessionId;
+    if (sid == null || _passwordDialogOpen || !mounted) return;
+    _passwordDialogOpen = true;
+    final input = await showSshPasswordDialog(
+      context,
+      hostName: widget.hostName,
+      address: widget.hostAddress,
+      hint: _passwordHint,
+      kind: _passwordKind,
+    );
+    _passwordDialogOpen = false;
+    if (!mounted || input == null) return;
+    final err = await AppDependencies.ssh.sendSshPassword(
+      sid,
+      password: input.password,
+      save: input.save,
+    );
+    if (!mounted) return;
+    setState(() {
+      if (err == null) {
+        _passwordPending = false;
+        _passwordHint = null;
+      } else {
+        _passwordHint = err;
+      }
+    });
   }
 
   Future<void> _endSession() async {
@@ -149,11 +213,16 @@ class _SshTerminalPanelState extends State<SshTerminalPanel> {
       _closed = false;
       _error = null;
       _sessionId = null;
+      _passwordPending = false;
+      _passwordHint = null;
       _early.clear();
       _utf8Pending.clear();
     });
     final attachId = _attachId;
     final String sid;
+    var attachAwaiting = false;
+    var attachWrong = false;
+    var attachKind = 'ssh';
     if (attachId != null) {
       final att = await AppDependencies.ssh.attachSshTerminal(attachId);
       if (!mounted) return;
@@ -168,6 +237,9 @@ class _SshTerminalPanelState extends State<SshTerminalPanel> {
       // Vẽ lại màn hình từ đầu ra đã đệm trên server
       _writeBytes(att.buffer);
       sid = att.sessionId;
+      attachAwaiting = att.awaitingPassword;
+      attachWrong = att.passwordWrong;
+      attachKind = att.passwordKind;
     } else {
       final res = await AppDependencies.ssh.openSshTerminal(
         widget.hostId,
@@ -201,9 +273,13 @@ class _SshTerminalPanelState extends State<SshTerminalPanel> {
         _writeBytes(ev.bytes);
       } else if (ev is SshTerminalClosed && ev.sessionId == sid) {
         _onClosed(ev);
+      } else if (ev is SshPasswordRequest && ev.sessionId == sid) {
+        _requestPassword(wrong: ev.wrong, kind: ev.kind);
       }
     }
     _early.clear();
+    // Phiên đã đang chờ mật khẩu từ trước (app thoát rồi mở lại)
+    if (attachAwaiting) _requestPassword(wrong: attachWrong, kind: attachKind);
   }
 
   void _onData(SshTerminalData data) {
@@ -224,7 +300,10 @@ class _SshTerminalPanelState extends State<SshTerminalPanel> {
       return;
     }
     if (ev.sessionId != sid || _closed) return;
-    setState(() => _closed = true);
+    setState(() {
+      _closed = true;
+      _passwordPending = false;
+    });
     final code = ev.exitCode;
     _terminal.write(
       '\r\n\x1b[2m[phiên SSH đã kết thúc${code != null ? ', mã thoát $code' : ''}]\x1b[0m\r\n',
@@ -307,6 +386,7 @@ class _SshTerminalPanelState extends State<SshTerminalPanel> {
             ],
           ),
         ),
+        if (_passwordPending && !_closed) _passwordBanner(scheme, textTheme),
         if (hint != null)
           Container(
             width: double.infinity,
@@ -339,6 +419,32 @@ class _SshTerminalPanelState extends State<SshTerminalPanel> {
     return ClipRRect(
       borderRadius: BorderRadius.circular(widget.height == null ? 0 : 10),
       child: ColoredBox(color: TerminalThemes.defaultTheme.background, child: framed),
+    );
+  }
+
+  /// Banner khi `ssh` đang chờ mật khẩu: bấm để mở lại hộp thoại đã đóng
+  Widget _passwordBanner(ColorScheme scheme, TextTheme textTheme) {
+    final hint = _passwordHint;
+    return Container(
+      width: double.infinity,
+      color: scheme.tertiaryContainer,
+      padding: const EdgeInsets.fromLTRB(12, 4, 4, 4),
+      child: Row(
+        children: [
+          Expanded(
+            child: Text(
+              hint ?? (_passwordKind == 'sudo'
+                  ? 'Lệnh sudo đang chờ mật khẩu'
+                  : 'Máy đang chờ mật khẩu SSH'),
+              style: textTheme.bodySmall?.copyWith(color: scheme.onTertiaryContainer),
+            ),
+          ),
+          TextButton(
+            onPressed: _showPasswordDialog,
+            child: const Text('Nhập mật khẩu'),
+          ),
+        ],
+      ),
     );
   }
 

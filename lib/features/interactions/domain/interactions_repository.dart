@@ -11,6 +11,18 @@ abstract class InteractionsRepository {
     required String conversationId,
   });
 
+  /// Cấu hình tự gửi lại của conversation; null nếu không đọc được
+  Future<ConversationRetryConfig?> fetchRetryConfig({
+    required String address,
+    required String conversationId,
+  });
+
+  /// Lưu cấu hình tự gửi lại. `message` là lỗi từ server khi `ok` là false.
+  Future<({bool ok, String message})> saveRetryConfig({
+    required String address,
+    required ConversationRetryConfig config,
+  });
+
   Future<List<PlanArtifactInfo>> fetchPendingPlans({
     required String address,
     required String conversationId,

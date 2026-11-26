@@ -20,6 +20,7 @@ import 'package:muop_agent/features/interactions/domain/interaction_entities.dar
 import 'package:muop_agent/features/interactions/presentation/interaction_dialogs.dart';
 import 'package:muop_agent/features/interactions/presentation/interaction_widgets.dart';
 import 'package:muop_agent/features/interactions/presentation/rate_retry_widgets.dart';
+import 'package:muop_agent/features/interactions/presentation/retry_config_sheet.dart';
 import 'package:muop_agent/features/quota/domain/quota_entities.dart';
 import 'package:muop_agent/features/projects/domain/project_entities.dart';
 import 'package:muop_agent/features/server_files/presentation/server_file_browser_sheet.dart';
@@ -67,6 +68,8 @@ class ChatCanvasView extends StatefulWidget {
     this.lastDownloadedFilePath,
     this.pendingRetry,
     this.onCancelRetry,
+    this.onFetchRetryConfig,
+    this.onSaveRetryConfig,
     this.pendingClaudeInteraction,
     required this.onSelectProject,
     required this.onSelectAgent,
@@ -156,6 +159,14 @@ class ChatCanvasView extends StatefulWidget {
   /// Lịch tự gửi lại sau rate limit của conversation đang mở (null nếu không có)
   final PendingRetry? pendingRetry;
   final Future<void> Function()? onCancelRetry;
+
+  /// Đọc và lưu cấu hình tự gửi lại của conversation đang mở (nút trên thanh model)
+  final Future<ConversationRetryConfig?> Function(String conversationId)?
+  onFetchRetryConfig;
+  final Future<({bool ok, String message})> Function(
+    ConversationRetryConfig config,
+  )?
+  onSaveRetryConfig;
   final VoidCallback onOpenFileBrowser;
   final VoidCallback onOpenChangesTab;
   final void Function(String filePath, GroupedFileChange? change)
