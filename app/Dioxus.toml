@@ -1,0 +1,10 @@
+[application]
+name = "muop-agent"
+default_platform = "desktop"
+
+[web.app]
+title = "Mướp Agent"
+
+[bundle]
+identifier = "vn.muop.agents"
+publisher = "muop"

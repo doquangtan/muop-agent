@@ -7,8 +7,9 @@
 
 ## 0. PHẠM VI THAY ĐỔI (QUAN TRỌNG)
 
-> **Không sửa code App Slint (`app/`) khi người dùng không yêu cầu rõ ràng.**
-> Mặc định chỉ thay đổi `server/` (Rust) và Flutter (`lib/`, `test/`). Nếu một thay đổi ở server hoặc Flutter làm ảnh hưởng `app/`, chỉ báo lại trong báo cáo, không tự sửa.
+> **Client Dioxus nằm trong `app/` (Rust, Dioxus 0.7). Slint đã bị xóa hoàn toàn (2026-11-27).**
+> Client Flutter vẫn ở root (`lib/`, `test/`, `android/`, `ios/`, `linux/`, `macos/`) và được giữ.
+> Mặc định chỉ thay đổi `server/` (Rust), `app/` (Dioxus) và Flutter (`lib/`, `test/`) theo yêu cầu. `app/` không dùng chung crate hay DTO với `server/`: app giữ DTO riêng (`app/src/data/models.rs`). Thay đổi API ở server phải được cập nhật thủ công ở cả hai client.
 
 ---
 
@@ -68,6 +69,7 @@ muop-agent/
 │       ├── chat.rs                 # Quản trị tiến trình `agy cli` (-p prompt, --conversation id, stop turn)
 │       └── models.rs               # Định nghĩa các struct DTO JSON (ConversationSession, AgentStep...)
 │
+├── app/                            # Client Dioxus (Rust), Linux trước, đa nền tảng (xem app/README.md)
 ├── lib/                            # Giao diện Pure Flutter Client
 │   ├── main.dart                   # Entrypoint MaterialApp, chuyển đổi Dark/Light mode
 │   │
@@ -612,3 +614,10 @@ lsof -i :8787
 - **Hiệu năng mount trên Mac (`fuse_mac.rs`, 2026-11-26)**: handle ghi giữ danh sách đoạn đã ghi (`pending`) và đẩy phần đã đổi bằng `PUT /api/fs/patch` (`fsops::op_patch`, `remote::patch`), không còn đẩy cả file mỗi lần đóng; handle chỉ đọc của file ≤64MB giữ nội dung lúc mở (`cache`); `O_TRUNC` cắt về 0 ngay. Đo trước/sau (cùng máy, LAN): nối 20×1KB 32s→1,9s; đọc 5MB 3,85s→0,46s; đọc 1MB 0,6s→0,13s; ghi lại file nhỏ 1,6s→0,12s. Kiểm tra toàn vẹn (đọc lại, nối, ghi giữa file, cắt, đổi tên) pass. Linux (`fuse.rs`, fuser) chưa đổi, vẫn dùng đường đẩy cả file.
 - **Lỗi "máy A không trả lời chat:send trong 30 giây" (2026-11-26)**: nguyên nhân là `git status --porcelain` trên thư mục mount mất ~66 giây (mỗi lượt Claude trên máy phụ quét thay đổi Bash bằng git trong project, chạy đồng bộ trên luồng socket trước khi ack). Sửa: (1) `claude/code/transcript.rs` bỏ qua `detect_bash_file_changes`/`detect_bash_deletions` khi cwd là mount (`fsmount::is_mount_path`); (2) `socket/mod.rs` `chat:send` gửi ack trước, rồi mới quét session để phát trên `spawn_blocking`. Đo lại: gửi vào conversation Claude đã có trên máy phụ 4 giây (trước: timeout 30 giây). Hệ quả: lượt trên máy phụ không còn ghi nhận file đổi do lệnh Bash (chỉ có Edit/Write).
 - **Nhóm conversation sai project (2026-11-26)**: có 3 nguyên nhân. (1) Agy không lưu thư mục làm việc nên conversation rơi vào "(không rõ project)" hoặc tên sai. Sửa: bảng `conversation_projects(conversation_id, project_name, project_path)` ghi lúc bắt đầu lượt (`TurnCtx::register`, `store::set_conversation_project`); scanner agy và Claude ưu tiên bản ghi này. Lượt từ máy khác lấy tên project gốc (`TurnCtx.origin_project`, trước khi `remote_project` bị `take()`), không lấy tên thư mục mount; lượt gửi lại trên mount không ghi đè. (2) DB agy `conversation_summaries.db` ở WAL: khi agy đã đóng, `-shm`/`-wal` bị xóa và kết nối chỉ-đọc báo `unable to open database file` (40/40 lần trên Mac), nên mọi conversation agy mất project. Sửa: `scanner/meta_db.rs` sao chép DB + WAL sang `~/.local/share/muop-agent/cache/` (chỉ khi nguồn đổi) rồi đọc bản sao, và giữ lần đọc thành công gần nhất khi lỗi. (3) Conversation tạo trước khi có bảng mới vẫn cần một lượt mới để được gắn đúng project.
+
+### 8.10. Client Dioxus (`app/`, 2026-11-27)
+- Slint đã xóa; `app/` là client Dioxus 0.7.2 (`dx` 0.7.10 trùng bản thư viện). Chi tiết và danh sách việc còn lại: `app/README.md`.
+- Lệnh: `make app-run`, `make app-build`, `make app-check` (fmt + clippy `-D warnings` + test). Test với máy chủ thật: `cargo test live -- --ignored` trong `app/`.
+- Quyết định của người dùng: Linux trước, đa nền tảng bằng feature `desktop | web | mobile` và lớp `data/` không phụ thuộc Dioxus; **không** dùng chung crate DTO với server (DTO riêng trong `app/src/data/models.rs`).
+- Đã có: kết nối REST, danh sách conversation (poll 3 giây), xem bước. Chưa có: Socket.IO realtime, gửi chat, các màn còn lại của Flutter (xem danh sách trong `app/README.md`).
+- Flutter vẫn giữ nguyên ở root; chưa xóa. Chỉ xóa sau khi `app/` đạt parity và có quyết định riêng.

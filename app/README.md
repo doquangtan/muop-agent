@@ -1,85 +1,63 @@
-# Mướp Agent — giao diện Slint (`app/`)
+# Mướp Agent — client Dioxus (`app/`)
 
-Giao diện desktop được viết lại bằng [Slint](https://slint.dev). Đây là client thuần UI:
-không đọc file hay chạy tiến trình cục bộ, mọi dữ liệu lấy qua REST của `muop-agent-server`.
+Client Rust dùng [Dioxus](https://dioxuslabs.com) 0.7. Đây là client thuần giao diện:
+không đọc file hệ thống, không chạy tiến trình cục bộ. Mọi dữ liệu lấy qua REST và
+(sắp tới) Socket.IO của `muop-agent-server` (AGENTS.md mục 4.1).
+
+Ưu tiên Linux Desktop trước. Cấu trúc đã tách để đổi sang Android, macOS, iOS hoặc web
+mà không sửa tầng dữ liệu (`src/data/`).
+
+## Lệnh
+
+```bash
+make app-run     # chạy thử trên Linux Desktop, tự tải lại khi sửa mã
+make app-build   # build Linux Desktop Release → target/dx/muop-agent-app/release/linux/app/
+make app-check   # cargo fmt --check + clippy -D warnings + test
+```
+
+Test trực tiếp với máy chủ đang chạy (không chạy mặc định):
+
+```bash
+cargo test live -- --ignored --nocapture
+# MUOP_SERVER=http://192.168.1.10:8787 để trỏ máy khác
+```
 
 ## Cấu trúc
 
 ```
 app/
-├── Cargo.toml          # slint =1.16.0 (ghim, xem bên dưới), ureq, serde
-├── build.rs            # biên dịch ui/app.slint
-├── ui/
-│   ├── theme.slint     # bảng màu dark/light (port app_theme.dart)
-│   ├── types.slint     # SideRow, MessageItem, PlanItem
-│   ├── widgets.slint   # SideRowView (sidebar), MessageView (chat), Chip
-│   └── app.slint       # AppWindow: sidebar, header, chat, banner plan/câu hỏi, composer, dialog
+├── Cargo.toml          # dioxus 0.7.2; feature desktop | web | mobile
+├── Dioxus.toml         # tên app, bundle id vn.muop.agents
+├── assets/main.css     # token màu (dark mặc định, light theo hệ thống)
 └── src/
-    ├── main.rs         # state, render, callback
-    ├── live.rs         # Socket.IO: sessions:list, session:update, meta:update, streams:update, retry:update
-    ├── api.rs          # DTO của server + các lệnh REST (chat, stop, plan, câu hỏi AI)
-    ├── model_groups.rs # port model_grouping.dart: nhóm model + mức suy luận
-    └── turns.rs        # gom steps thành lượt (user / AI / thao tác / tệp thay đổi)
+    ├── main.rs         # điểm vào: App → Shell
+    ├── data/           # KHÔNG phụ thuộc Dioxus: test được trên máy
+    │   ├── api.rs      # REST client (ping, sessions, session)
+    │   ├── config.rs   # chuẩn hóa địa chỉ máy chủ, cổng 8787
+    │   ├── models.rs   # DTO camelCase, null-tolerant (không dùng chung với server)
+    │   └── time.rs     # timer: tokio (native) | gloo-timers (web)
+    └── ui/
+        ├── shell.rs      # trạng thái kết nối, poll 3 giây, ghép layout
+        ├── sidebar.rs    # ô địa chỉ máy chủ, danh sách conversation theo project
+        ├── conversation.rs # tiêu đề, số liệu, danh sách bước (chỉ đọc)
+        └── format.rs     # định dạng token, giờ, nhãn trạng thái (thuần, có test)
 ```
 
-## Chạy
+## Đã làm
 
-Server phải đang chạy ở `:8787` (`make server`), sau đó:
+- Kết nối máy chủ theo địa chỉ người dùng nhập (mặc định `127.0.0.1:8787`), hiện tên máy.
+- Danh sách conversation nhóm theo project, làm mới mỗi 3 giây.
+- Mở conversation: bước người dùng và trả lời của agent, dòng hoạt động cho các bước khác.
+- DTO null-tolerant: server trả `null` ở trường nào cũng không làm vỡ app.
+- Test: 12 test đơn vị + 1 test live với máy chủ thật (114 session, 100 bước).
 
-```bash
-cd app
-cargo run
-```
+## Chưa làm (theo thứ tự ưu tiên)
 
-Đổi địa chỉ server bằng biến môi trường `MUOP_SERVER_URL` (mặc định `http://127.0.0.1:8787`).
-
-## Xem giao diện mà không cần màn hình
-
-Khi không có display (ví dụ máy chủ, SSH), app có thể chụp ảnh giao diện bằng renderer phần mềm của Slint.
-Dữ liệu là snapshot thật từ server đang chạy:
-
-```bash
-cd app
-MUOP_SCREENSHOT=$PWD/target/screenshots/dark.png cargo run
-# theme sáng:       MUOP_SCREENSHOT_LIGHT=1
-# màn hẹp kiểu điện thoại: MUOP_SCREENSHOT_WIDTH=390 MUOP_SCREENSHOT_HEIGHT=800
-# ẩn sidebar (như sau khi chọn chat trên màn hẹp): MUOP_SCREENSHOT_HIDE_SIDEBAR=1
-# nội dung nháp trong composer: MUOP_SCREENSHOT_DRAFT="..."
-```
-
-Trên máy có màn hình thì chỉ cần `cargo run --release` để mở cửa sổ thật.
-
-## Ảo hóa danh sách
-
-Khung chat và sidebar chỉ đưa vào giao diện các mục trong vùng nhìn (cộng đệm), phần còn lại là spacer:
-- Dữ liệu đầy đủ giữ trong bộ nhớ Rust (`window.rs`: `VirtualList` cộng dồn chiều cao từng mục).
-- Vị trí cuộn được Rust đọc định kỳ (100 ms) từ giao diện; chỉ khi vùng nhìn đổi mới tính lại khoảng mục.
-- Chiều cao mục chat là **ước lượng** theo độ dài nội dung. Slint 1.16 không cho đo chiều cao mục rồi đẩy về Rust (gây lỗi đệ quy), nên spacer có sai số nhỏ; các mục đang hiển thị vẫn được layout theo chiều cao thật.
-- Khi đang bám đáy, tin mới được giữ ở cuối; khi đang đọc lịch sử, vị trí cuộn được giữ nguyên.
-
-Nên chạy bản release để đo CPU: bản debug parse JSON snapshot rất chậm.
-
-## Đã port từ Flutter
-
-- Sidebar: tìm kiếm, nhóm theo project (thu gọn/mở rộng), nút `+` tạo chat trong project, đánh dấu phiên đang chạy, chuyển dark/light.
-- Khung chat: lượt user / AI gom theo turn, chip "N thao tác" và "N tệp thay đổi" (bấm để xem chi tiết), thinking, lỗi.
-- Header: tên, project · nguồn · model, chip context (cảnh báo ≥70%, nguy hiểm ≥90%).
-- Composer: chọn nhóm model và mức suy luận (cùng logic `model_grouping.dart`), nháp lưu theo conversation, gửi, dừng.
-- Banner kế hoạch chờ duyệt: duyệt & chạy, góp ý chỉnh sửa, hủy.
-- Banner câu hỏi AI đang chờ: trả lời câu đầu tiên.
-- Màn hẹp (<760px): sidebar phủ toàn màn, bấm conversation để quay lại chat.
-- Banner retry sau rate limit (từ socket `retry:update`), có nút hủy lịch gửi lại.
-- Realtime qua Socket.IO bằng event nhỏ: khi kết nối gửi `request-sessions`, `request-meta`, `request-streams`; sau đó nhận các event cập nhật từng phần. Render được gộp trong 60 ms.
-
-## Chưa port (còn trong Flutter `lib/`)
-
-- SSH (danh sách máy, terminal tương tác), Docker, LSP settings.
-- Parallel agent flow, subagent lanes.
-- File explorer, file viewer, git history / push, duyệt file trên server.
-- Dialog quyền / câu hỏi của Claude (`/api/claude/pending`), tạo project, custom agents.
-- Markdown đầy đủ (hiện hiển thị văn bản thuần), chọn màu seed.
-
-## Ghi chú
-
-- **Ghim Slint 1.16.0**: máy hiện có rustc 1.92; Slint 1.19 cần rustc 1.95. Khi nâng rustc có thể nâng Slint (sửa `Cargo.toml`, xóa `Cargo.lock`).
-- Bố cục đã kiểm chứng bằng ảnh chụp (theme tối, sáng, màn hẹp). Tương tác chuột/bàn phím trong cửa sổ thật chưa kiểm chứng vì môi trường không có display.
+1. Socket.IO realtime (`snapshot:update`, `chat:stream`) thay cho poll REST.
+   Dùng client tự viết kiểu `server/src/bridge/client.rs`, không dùng `rust_socketio`.
+2. Gửi tin nhắn, dừng lượt, ảnh đính kèm.
+3. Phân trang lịch sử (`/api/session/steps`) và Markdown trong phản hồi agent.
+4. Lưu địa chỉ máy chủ giữa các lần mở app (hiện chỉ nhớ trong bộ nhớ).
+5. Các màn còn lại của Flutter: Agent map, Tài khoản agy/Claude, wizard Khởi tạo,
+   SSH, Docker, SFTP, LSP, Cầu nối, quota, cấu hình retry.
+6. Đa nền tảng: `make` mới chỉ có Linux Desktop. Web/Android sẽ kiểm tra khi có nhu cầu.

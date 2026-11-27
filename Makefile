@@ -2,8 +2,9 @@
 # Flutter 3.50.1 (~/flutter, checkout tag 3.50.1); không có thì dùng flutter trong PATH
 FLUTTER ?= $(shell if [ -x $(HOME)/flutter/bin/flutter ]; then echo $(HOME)/flutter/bin/flutter; elif command -v flutter >/dev/null 2>&1; then command -v flutter; else echo flutter; fi)
 CARGO ?= $(HOME)/.cargo/bin/cargo
+DX ?= $(HOME)/.cargo/bin/dx
 
-.PHONY: install-desktop-entry run server build-server build-server-mac build build-linux build-apk build-all analyze restart-linux clean start-daemon stop-daemon restart-daemon status-daemon deb deb-server
+.PHONY: install-desktop-entry run server build-server build-server-mac build build-linux build-apk build-all analyze restart-linux clean start-daemon stop-daemon restart-daemon status-daemon deb deb-server app-run app-build app-check
 
 ## Chạy ứng dụng giao diện Flutter trên Linux Desktop
 run:
@@ -145,6 +146,18 @@ build-apk:
 ## Build trọn gói cả Android và Linux (tự restart Linux nếu đang mở)
 build-all: build-apk build-linux
 	@echo "🎉 Hoàn tất build Dual-Platform: APK & Linux Desktop Release!"
+
+## Client Dioxus (app/): chạy thử trên Linux Desktop, tự tải lại khi sửa mã
+app-run:
+	cd app && $(DX) serve --desktop
+
+## Build client Dioxus Linux Desktop Release
+app-build:
+	cd app && $(DX) build --desktop --release
+
+## Kiểm tra client Dioxus: định dạng, clippy (lỗi = cảnh báo), test
+app-check:
+	cd app && $(CARGO) fmt --check && $(CARGO) clippy --all-targets -- -D warnings && $(CARGO) test
 
 ## Kiểm tra tĩnh mã nguồn Flutter & Rust
 analyze:
