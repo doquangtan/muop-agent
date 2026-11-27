@@ -80,38 +80,60 @@ class _ScreenStreamScreenState extends State<ScreenStreamScreen> {
     }
     final url = AppDependencies.screen.playbackUrl(_status.rtspUrl);
     if (_player != null && _playingUrl == url) return;
-    _openStream(url);
+    unawaited(_openStream(url));
   }
 
-  void _openStream(String url) {
+  /// Số thứ tự lần mở luồng gần nhất: lần mở cũ (đang chờ thuộc tính) bị bỏ khi đã có lần mới
+  int _openGen = 0;
+
+  Future<void> _openStream(String url) async {
     _disposePlayer();
+    final gen = ++_openGen;
     final player = Player(
       configuration: const PlayerConfiguration(logLevel: MPVLogLevel.info),
     );
-    final video = VideoController(player);
     _player = player;
-    _video = video;
     _playingUrl = url;
     _buffering = true;
     _playError = '';
     _recentLogs.clear();
 
-    // libmpv: RTSP qua TCP (server chỉ hỗ trợ TCP) và giảm độ trễ
+    // RÀNG BUỘC (đừng sửa thứ tự này):
+    // 1. Thuộc tính libmpv phải đặt XONG (await) trước khi tạo VideoController. VideoController tạo render
+    //    context của mpv trên luồng nền; đổi cấu hình (ví dụ `profile`) trong lúc đó làm mpv assert
+    //    (m_config_cache_from_shadow).
+    // 2. KHÔNG đưa VideoController lên trước các setProperty ở trên.
+    // 3. Trên Android, hwdec chỉ đặt được qua VideoControllerConfiguration (xem chú thích bên dưới), KHÔNG
+    //    đặt bằng setProperty: VideoController tự ghi đè `hwdec` khi khởi tạo.
+    // 4. Lần mở cũ (gen) đang chờ thuộc tính phải bị bỏ, không được gắn video vào player cũ.
     final native = player.platform;
     if (native is NativePlayer) {
-      unawaited(native.setProperty('rtsp-transport', 'tcp'));
-      unawaited(native.setProperty('profile', 'low-latency'));
-      unawaited(native.setProperty('cache', 'no'));
-      unawaited(native.setProperty('network-timeout', '10'));
+      // RTSP qua TCP (server chỉ hỗ trợ TCP) và giảm độ trễ
+      await native.setProperty('rtsp-transport', 'tcp');
+      await native.setProperty('profile', 'low-latency');
+      await native.setProperty('cache', 'no');
+      await native.setProperty('network-timeout', '10');
       // Luồng live không seek được: cho phép seek thử để mpv không báo lỗi "Cannot seek" làm luồng bị đóng
-      unawaited(native.setProperty('force-seekable', 'yes'));
-      // Android: giải mã phần cứng (MediaCodec) mở trước khi biết kích thước khung, vì SDP không có
-      // width/height nên cấu hình với 0x0 và bị từ chối ("Could not open codec", lặp lại mỗi vài giây).
-      // Luồng RTSP trên Android giải mã bằng phần mềm; các nền tảng khác giữ nguyên.
-      if (defaultTargetPlatform == TargetPlatform.android) {
-        unawaited(native.setProperty('hwdec', 'no'));
-      }
+      await native.setProperty('force-seekable', 'yes');
     }
+    if (gen != _openGen || !mounted) {
+      // Đã có lần mở mới (đã tự hủy player này) hoặc rời màn hình trong lúc chờ: chỉ hủy nếu còn là player hiện tại
+      if (identical(_player, player)) _disposePlayer();
+      return;
+    }
+    // Android: giải mã phần cứng (MediaCodec) mở trước khi biết kích thước khung, vì SDP không có
+    // width/height nên cấu hình với 0x0 và bị từ chối ("Could not open codec", lặp lại mỗi vài giây).
+    // Đã kiểm chứng: `hwdec=no` đặt bằng setProperty bị media_kit_video 2.0.1 ghi đè
+    // (android_video_controller/real.dart, setProperties 'hwdec'). Phải truyền qua
+    // VideoControllerConfiguration. Luồng RTSP trên Android giải mã bằng phần mềm; các nền tảng khác
+    // giữ mặc định của media_kit.
+    final video = VideoController(
+      player,
+      configuration: defaultTargetPlatform == TargetPlatform.android
+          ? const VideoControllerConfiguration(hwdec: 'no')
+          : const VideoControllerConfiguration(),
+    );
+    _video = video;
 
     _playerSubs.add(
       player.stream.log.listen((log) {
@@ -156,7 +178,7 @@ class _ScreenStreamScreenState extends State<ScreenStreamScreen> {
     _retryTimer = Timer(_retryDelay, () {
       if (!mounted || !_live) return;
       _retries++;
-      _openStream(AppDependencies.screen.playbackUrl(_status.rtspUrl));
+      unawaited(_openStream(AppDependencies.screen.playbackUrl(_status.rtspUrl)));
     });
   }
 
