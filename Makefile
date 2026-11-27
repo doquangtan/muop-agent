@@ -1,6 +1,6 @@
 # Đường dẫn công cụ theo HOME của user (không cố định theo máy). Ghi đè bằng biến môi trường nếu cần.
-# Ưu tiên Flutter 3.47.7; không có thì dùng Flutter hiện hành (flutter trong PATH, rồi ~/flutter)
-FLUTTER ?= $(shell if [ -x $(HOME)/flutter-3.47.7/bin/flutter ]; then echo $(HOME)/flutter-3.47.7/bin/flutter; elif command -v flutter >/dev/null 2>&1; then command -v flutter; else echo $(HOME)/flutter/bin/flutter; fi)
+# Flutter 3.50.1 (~/flutter, checkout tag 3.50.1); không có thì dùng flutter trong PATH
+FLUTTER ?= $(shell if [ -x $(HOME)/flutter/bin/flutter ]; then echo $(HOME)/flutter/bin/flutter; elif command -v flutter >/dev/null 2>&1; then command -v flutter; else echo flutter; fi)
 CARGO ?= $(HOME)/.cargo/bin/cargo
 
 .PHONY: install-desktop-entry run server build-server build-server-mac build build-linux build-apk build-all analyze restart-linux clean start-daemon stop-daemon restart-daemon status-daemon deb deb-server
@@ -60,13 +60,23 @@ build-server-mac:
 	$(MAC_SSH) $(MAC_HOST) 'export PATH="/opt/homebrew/bin:$$PATH"; $(if $(findstring mac-fuse,$(MAC_FEATURES)),mkdir -p $(MAC_PKG_CONFIG_PATH) && printf "Name: fuse\nDescription: alias của FUSE-T\nVersion: 2.9.9\nLibs: -L$(MAC_FUSE_LIBDIR) -lfuse-t\nCflags: -D_FILE_OFFSET_BITS=64\n" > $(MAC_PKG_CONFIG_PATH)/fuse.pc && ,)cd $(MAC_BUILD_DIR)/server && . "$$HOME/.cargo/env" && $(if $(MAC_PKG_CONFIG_PATH),PKG_CONFIG_PATH=$(MAC_PKG_CONFIG_PATH) ,)$(if $(findstring mac-fuse,$(MAC_FEATURES)),RUSTFLAGS="-C link-arg=-L$(MAC_FUSE_LIBDIR) -C link-arg=-Wl$(comma)-rpath$(comma)$(MAC_FUSE_LIBDIR) -C link-arg=-Wl$(comma)-weak-lfuse-t" ,)cargo build --release $(if $(MAC_FEATURES),--features $(MAC_FEATURES),)'
 	@echo "✅ Binary macOS: $(MAC_HOST):$(MAC_BUILD_DIR)/server/target/release/muop-agent-server"
 
-# App macOS một file: client Flutter + server đi kèm (Contents/Helpers), ký ad-hoc. Build trên Mac, kết quả copy vào ~/Applications.
-# Ví dụ: make build-macos-app MAC_HOST=user@ip MAC_SSH_KEY=... MAC_FEATURES=mac-fuse 'MAC_PKG_CONFIG_PATH=$$HOME/muop-install/pkgconfig'
+# Gói cài đặt macOS (.pkg): app Flutter + máy chủ + tray menu bar, ký ad-hoc. Build trên Mac, kết quả kéo về thư mục gốc.
+# Ví dụ: make build-macos-app MAC_HOST=user@ip MAC_SSH_KEY=... MAC_FEATURES=mac-fuse 'MAC_PKG_CONFIG_PATH=/Users/<user>/muop-install/pkgconfig'
+# Lưu ý: MAC_PKG_CONFIG_PATH phải là đường dẫn tuyệt đối (make không mở rộng $HOME đúng trong biến này).
 MAC_APP_DIR ?= /Volumes/Untitled/muop-agent
+MAC_SCP = scp -o BatchMode=yes -o ConnectTimeout=8 $(if $(MAC_SSH_KEY),-i $(MAC_SSH_KEY) -o IdentitiesOnly=yes)
+APP_VERSION := $(shell sed -n 's/^version: *//p' pubspec.yaml | tr '+' '-')
 build-macos-app: build-server-mac
-	rsync -az --exclude='.git/' --exclude='build/' --exclude='.dart_tool/' --exclude='server/target/' --exclude='macos/Pods/' --exclude='*.ipa' -e "$(MAC_SSH)" ./ $(MAC_HOST):$(MAC_APP_DIR)/
-	$(MAC_SSH) $(MAC_HOST) 'export PATH="/opt/homebrew/bin:$$HOME/flutter/bin:$$PATH"; cd $(MAC_APP_DIR) && flutter pub get && flutter build macos --release && APP=build/macos/Build/Products/Release/muop_agent.app && mkdir -p "$$APP/Contents/Helpers" && cp "$$HOME/$(MAC_BUILD_DIR)/server/target/release/muop-agent-server" "$$APP/Contents/Helpers/" && SIGN="-"; if [ -f "$$HOME/muop-install/signing/pw" ] && security unlock-keychain -p "$$(cat $$HOME/muop-install/signing/pw)" "$$HOME/Library/Keychains/muop-signing.keychain-db" 2>/dev/null; then security list-keychains -d user -s "$$HOME/Library/Keychains/muop-signing.keychain-db" "$$HOME/Library/Keychains/login.keychain-db"; SIGN="Muop Agents Local Signing"; fi && codesign --force --deep --sign "$$SIGN" --entitlements macos/Runner/Release.entitlements "$$APP" && echo "signed: $$SIGN" && mkdir -p "$$HOME/Applications" && rm -rf "$$HOME/Applications/muop_agent.app" && cp -R "$$APP" "$$HOME/Applications/" && echo "APP_READY=$$HOME/Applications/muop_agent.app"'
-	@echo "✅ App macOS: $(MAC_HOST) → ~/Applications/muop_agent.app (bản gốc: $(MAC_APP_DIR)/build/macos/Build/Products/Release/muop_agent.app)"
+	rsync -az --exclude='.git/' --exclude='build/' --exclude='.dart_tool/' --exclude='server/target/' --exclude='macos/Pods/' --exclude='*.ipa' --exclude='*.pkg' -e "$(MAC_SSH)" ./ $(MAC_HOST):$(MAC_APP_DIR)/
+	$(MAC_SSH) $(MAC_HOST) 'export PATH="/opt/homebrew/bin:$$HOME/flutter/bin:$$PATH"; cd $(MAC_APP_DIR) && flutter pub get && flutter build macos --release && APP=build/macos/Build/Products/Release/muop_agent.app && SIGN="-"; if [ -f "$$HOME/muop-install/signing/pw" ] && security unlock-keychain -p "$$(cat $$HOME/muop-install/signing/pw)" "$$HOME/Library/Keychains/muop-signing.keychain-db" 2>/dev/null; then security list-keychains -d user -s "$$HOME/Library/Keychains/muop-signing.keychain-db" "$$HOME/Library/Keychains/login.keychain-db"; SIGN="Muop Agents Local Signing"; fi && codesign --force --deep --sign "$$SIGN" --entitlements macos/Runner/Release.entitlements "$$APP" && echo "signed: $$SIGN" && (cd macos/menubar && swiftc -O -framework AppKit -o "$$HOME/$(MAC_BUILD_DIR)/muop-agent-tray" main.swift) && sh packaging/macos/build-pkg.sh "$$APP" "$$HOME/$(MAC_BUILD_DIR)/server/target/release/muop-agent-server" "$$HOME/$(MAC_BUILD_DIR)/muop-agent-tray" "$(APP_VERSION)" "$(MAC_APP_DIR)/build/macos-pkg/muop-agent-macos-$(APP_VERSION).pkg" && echo "PKG_BUILT_OK"'
+	$(MAC_SCP) $(MAC_HOST):$(MAC_APP_DIR)/build/macos-pkg/muop-agent-macos-$(APP_VERSION).pkg ./
+	@echo "✅ Gói cài đặt: ./muop-agent-macos-$(APP_VERSION).pkg (cài bằng: make install-macos-pkg MAC_HOST=...)"
+
+# Đưa gói sang Mac và mở trình cài đặt. Trình cài tự tắt app/máy chủ đang chạy rồi cài bản mới (nâng cấp).
+# Cần mật khẩu admin của Mac: nhập trong cửa sổ Installer.
+install-macos-pkg:
+	@test -n "$(MAC_HOST)" || (echo "Thiếu MAC_HOST, ví dụ: make install-macos-pkg MAC_HOST=user@192.168.1.10" && exit 1)
+	PKG=$$(ls -t muop-agent-macos-*.pkg | head -1) && $(MAC_SCP) "$$PKG" $(MAC_HOST):/tmp/muop-agent-macos.pkg && $(MAC_SSH) $(MAC_HOST) 'open /tmp/muop-agent-macos.pkg' && echo "✅ Đã mở trình cài đặt trên Mac: $$PKG"
 
 # Tự mở app khi đăng nhập/khởi động lại máy Mac: LaunchAgent gọi `open -g` tới ~/Applications/muop_agent.app.
 # Tắt: make macos-autostart-off MAC_HOST=user@ip. Template: macos/autostart/vn.muop.agents.autostart.plist.in

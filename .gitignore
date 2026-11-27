@@ -47,3 +47,6 @@ android/build/
 
 # Website installers (large binaries; host them outside git)
 /website/assets/downloads/
+
+# Gói cài đặt macOS
+*.pkg

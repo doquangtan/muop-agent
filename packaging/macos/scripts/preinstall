@@ -1,0 +1,56 @@
+#!/bin/sh
+# Chạy trước khi cài hoặc nâng cấp (quyền root). Tắt app, máy chủ và biểu tượng menu bar đang chạy
+# để bản mới được cài trên bản cũ đã dừng. Không để lỗi nào làm hỏng quá trình cài.
+
+CONSOLE_USER=$(stat -f %Su /dev/console 2>/dev/null)
+CONSOLE_UID=""
+HOME_DIR=""
+if [ -n "$CONSOLE_USER" ] && [ "$CONSOLE_USER" != "root" ]; then
+  CONSOLE_UID=$(id -u "$CONSOLE_USER" 2>/dev/null)
+  HOME_DIR=$(dscl . -read "/Users/$CONSOLE_USER" NFSHomeDirectory 2>/dev/null | awk '{print $2}')
+fi
+
+if [ -n "$CONSOLE_UID" ]; then
+  # App thoát nhẹ nhàng (nếu đang mở)
+  launchctl asuser "$CONSOLE_UID" /usr/bin/osascript \
+    -e 'tell application id "vn.muop.agents" to quit' >/dev/null 2>&1
+  # Dừng máy chủ qua launchd: bootout không để launchd khởi động lại
+  launchctl bootout "gui/$CONSOLE_UID/vn.muop.agent-server" >/dev/null 2>&1
+  launchctl bootout "gui/$CONSOLE_UID/vn.muop.agents.autostart" >/dev/null 2>&1
+fi
+
+# Chờ app thoát, rồi dừng các tiến trình còn sót
+i=0
+while pgrep -x muop_agent >/dev/null 2>&1 && [ "$i" -lt 20 ]; do
+  sleep 0.5
+  i=$((i + 1))
+done
+pkill -x muop_agent >/dev/null 2>&1
+pkill -x muop-agent-tray >/dev/null 2>&1
+pkill -x muop-agent-server >/dev/null 2>&1
+sleep 1
+
+# Bản cài trước đặt app ở /Applications/muop_agent.app: gỡ (cùng bundle id, tránh hai app trùng).
+# Chỉ gỡ khi đúng là app Mướp Agents (bundle id vn.muop.agents), không đụng app khác.
+if [ -f /Applications/muop_agent.app/Contents/Info.plist ] && \
+   [ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' /Applications/muop_agent.app/Contents/Info.plist 2>/dev/null)" = "vn.muop.agents" ]; then
+  rm -rf /Applications/muop_agent.app
+fi
+
+# Quyền Ghi màn hình gắn với chữ ký (cdhash) của bản cũ: xóa để bản mới yêu cầu lại, không còn mục cũ
+tccutil reset ScreenCapture vn.muop.agent-server >/dev/null 2>&1
+
+# Bản cài trước đặt máy chủ ở /usr/local/bin (ngoài bundle): gỡ để không chạy nhầm bản cũ
+rm -f /usr/local/bin/muop-agent-server /usr/local/bin/muop-agent-tray 2>/dev/null
+
+# Dọn bản cài cũ của người dùng: LaunchAgent máy chủ đặt trong thư mục người dùng, autostart trỏ vào app cũ,
+# và bản app cũ có máy chủ đóng gói (Contents/Helpers) — tránh hai bản cùng tồn tại
+if [ -n "$HOME_DIR" ] && [ -d "$HOME_DIR" ]; then
+  rm -f "$HOME_DIR/Library/LaunchAgents/vn.muop.agent-server.plist" \
+        "$HOME_DIR/Library/LaunchAgents/vn.muop.agents.autostart.plist" 2>/dev/null
+  if [ -x "$HOME_DIR/Applications/muop_agent.app/Contents/Helpers/muop-agent-server" ]; then
+    rm -rf "$HOME_DIR/Applications/muop_agent.app"
+  fi
+fi
+
+exit 0

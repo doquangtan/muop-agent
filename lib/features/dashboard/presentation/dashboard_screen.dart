@@ -2862,10 +2862,11 @@ class _DashboardScreenState extends ConsumerState<DashboardScreenView> {
                 availableModels: _availableModels,
                 modelLabels: _modelLabels,
                 blockedReason: peerBlockReason(
-                  model: _sendModel,
-                  connected: _peerConnected,
-                  host: _peerHost,
-                ),
+                      model: _sendModel,
+                      connected: _peerConnected,
+                      host: _peerHost,
+                    ) ??
+                    mountBlockReason(_activeChatProject),
                 peerHost: _peerHost,
                 isPeerSession: _peerSessionIds.contains(activeSession?.id ?? ''),
                 effortLevels: _effortLevels,
@@ -3485,7 +3486,7 @@ class _DashboardScreenState extends ConsumerState<DashboardScreenView> {
         childrenPadding: const EdgeInsets.only(left: 10, right: 4, bottom: 4),
         visualDensity: VisualDensity.compact,
         leading: Icon(
-          Icons.folder_outlined,
+          project.isMount ? Icons.cloud_outlined : Icons.folder_outlined,
           size: 16,
           color: hasSelected
               ? colorScheme.primary

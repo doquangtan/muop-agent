@@ -46,6 +46,27 @@ void main() {
       expect(groups.last.options.single.effort, 'xhigh');
     });
 
+    test('keeps variant names in parentheses so Orchestrator models stay distinct', () {
+      final groups = groupModels(
+        const [
+          'agy:gemini-pro-orchestrator-neon',
+          'agy:gemini-pro-orchestrator',
+          'agy:gemini-pro-orchestrator-argon',
+        ],
+        const {
+          'agy:gemini-pro-orchestrator-neon': 'Orchestrator (Neon)',
+          'agy:gemini-pro-orchestrator': 'Orchestrator (Carbon)',
+          'agy:gemini-pro-orchestrator-argon': 'Orchestrator (Argon)',
+        },
+      );
+
+      expect(groups.map((g) => g.label).toList(), [
+        'Orchestrator (Neon)',
+        'Orchestrator (Carbon)',
+        'Orchestrator (Argon)',
+      ]);
+    });
+
     test('falls back to a title-cased name when no label is known', () {
       final groups = groupModels(const ['agy:gpt-oss-120b-medium'], const {});
       expect(groups.single.label, 'Gpt Oss 120b');

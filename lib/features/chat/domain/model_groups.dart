@@ -97,8 +97,14 @@ class ModelGroup {
 }
 
 /// Bỏ phần nhãn trong ngoặc ở cuối, ví dụ `Gemini 4 Argon (Medium)` → `Gemini 4 Argon`
-String _stripEffortSuffixFromLabel(String label) {
-  return label.replaceFirst(RegExp(r'\s*\([^()]*\)\s*$'), '').trim();
+/// Chỉ bỏ ngoặc khi nội dung trong ngoặc là một mức suy luận. Ngoặc chứa tên biến thể
+/// (ví dụ `Orchestrator (Carbon)`) được giữ lại, nếu không các biến thể sẽ trùng tên trong menu.
+String _stripEffortSuffixFromLabel(String label, List<String> levels) {
+  final match = RegExp(r'\s*\(([^()]*)\)\s*$').firstMatch(label);
+  if (match == null) return label.trim();
+  final inside = match.group(1)!.trim().toLowerCase();
+  final isEffort = levels.any((level) => level.toLowerCase() == inside);
+  return (isEffort ? label.substring(0, match.start) : label).trim();
 }
 
 /// Tên nhóm khi không có nhãn từ server: bỏ tiền tố provider, viết hoa từng từ
@@ -145,7 +151,7 @@ List<ModelGroup> groupModels(
           orElse: () => options.first,
         );
         final label = sample.label.isNotEmpty
-            ? _stripEffortSuffixFromLabel(sample.label)
+            ? _stripEffortSuffixFromLabel(sample.label, effortLevels)
             : _fallbackGroupLabel(groupId);
         return ModelGroup(id: groupId, label: label, options: options);
       }(),

@@ -3,6 +3,7 @@ import 'package:flutter/foundation.dart';
 import 'package:material_ui/material_ui.dart';
 
 import 'package:muop_agent/core/theme/app_theme.dart';
+import 'package:muop_agent/core/widgets/spinning_icon.dart';
 import 'package:muop_agent/features/interactions/domain/interaction_entities.dart';
 
 /// Định dạng thời gian còn lại: `mm:ss` hoặc `h:mm:ss`
@@ -101,7 +102,11 @@ class RetryBanner extends StatelessWidget {
       ),
       child: Row(
         children: [
-          Icon(Icons.hourglass_top_rounded, size: 18, color: warning),
+          SpinningIcon(
+            icon: Icons.hourglass_top_rounded,
+            size: 18,
+            color: warning,
+          ),
           const SizedBox(width: 10),
           Expanded(
             child: Column(
@@ -191,7 +196,11 @@ class RetryPopup extends StatelessWidget {
         final warning = context.status.warning;
 
         return AlertDialog(
-          icon: Icon(Icons.hourglass_top_rounded, color: warning, size: 32),
+          icon: SpinningIcon(
+            icon: Icons.hourglass_top_rounded,
+            color: warning,
+            size: 32,
+          ),
           title: const Text('Đã chạm giới hạn'),
           content: Column(
             mainAxisSize: MainAxisSize.min,

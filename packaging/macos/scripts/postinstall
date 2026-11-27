@@ -1,0 +1,32 @@
+#!/bin/sh
+# Chạy sau khi cài hoặc nâng cấp (quyền root): nạp LaunchAgent máy chủ cho người dùng đang đăng nhập,
+# mở app, và nếu còn thiếu gói (Homebrew, ffmpeg, FUSE-T) thì mở Terminal chạy install-deps.command.
+# Không có người dùng đăng nhập thì launchd sẽ nạp khi đăng nhập lần sau.
+
+mkdir -p /Library/Logs/muop-agent
+chmod 1777 /Library/Logs/muop-agent 2>/dev/null
+
+CONSOLE_USER=$(stat -f %Su /dev/console 2>/dev/null)
+if [ -z "$CONSOLE_USER" ] || [ "$CONSOLE_USER" = "root" ]; then
+  exit 0
+fi
+CONSOLE_UID=$(id -u "$CONSOLE_USER" 2>/dev/null)
+if [ -z "$CONSOLE_UID" ]; then
+  exit 0
+fi
+
+launchctl bootout "gui/$CONSOLE_UID/vn.muop.agent-server" >/dev/null 2>&1
+launchctl bootstrap "gui/$CONSOLE_UID" /Library/LaunchAgents/vn.muop.agent-server.plist >/dev/null 2>&1
+launchctl asuser "$CONSOLE_UID" /usr/bin/open -g -a "/Applications/Mướp Agents.app" >/dev/null 2>&1
+
+# Gói cần cho máy chủ: Homebrew, ffmpeg (quay màn hình), FUSE-T (mount project máy khác)
+missing=0
+if [ ! -x /opt/homebrew/bin/brew ] && [ ! -x /usr/local/bin/brew ]; then missing=1; fi
+if [ ! -x /opt/homebrew/bin/ffmpeg ] && [ ! -x /usr/local/bin/ffmpeg ]; then missing=1; fi
+if [ ! -e /usr/local/lib/libfuse-t.dylib ] && [ ! -e /opt/homebrew/lib/libfuse-t.dylib ]; then missing=1; fi
+DEPS_SCRIPT="/Library/Application Support/MuopAgent/install-deps.command"
+if [ "$missing" = 1 ] && [ -f "$DEPS_SCRIPT" ]; then
+  launchctl asuser "$CONSOLE_UID" /usr/bin/open -a Terminal "$DEPS_SCRIPT" >/dev/null 2>&1
+fi
+
+exit 0
