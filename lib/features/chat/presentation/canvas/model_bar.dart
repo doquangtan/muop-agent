@@ -465,12 +465,13 @@ extension _CanvasExtModelBar on _ChatCanvasViewState {
                 save,
               )
             : null,
-        icon: Icon(
-          hasPending
-              ? Icons.hourglass_top_rounded
-              : Icons.autorenew_rounded,
-          color: color,
-        ),
+        icon: hasPending
+            ? SpinningIcon(
+                icon: Icons.hourglass_top_rounded,
+                size: 16,
+                color: color,
+              )
+            : Icon(Icons.autorenew_rounded, color: color),
       ),
     );
   }

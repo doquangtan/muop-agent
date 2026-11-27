@@ -83,6 +83,8 @@ class ProjectWorkspace {
     this.gitSyncStatus,
     this.customAgents = const [],
     this.availableAgents = const ['Coordinator'],
+    this.isMount = false,
+    this.mountLive = false,
   });
 
   final String id;
@@ -94,6 +96,12 @@ class ProjectWorkspace {
   final GitSyncStatus? gitSyncStatus;
   final List<CustomAgentSpec> customAgents;
   final List<String> availableAgents;
+
+  /// Project là thư mục mount từ máy khác (hiện icon đám mây)
+  final bool isMount;
+
+  /// Điểm mount còn là FUSE đang hoạt động (chỉ có nghĩa khi [isMount]). false = đã gỡ: khóa khung chat
+  final bool mountLive;
 
   Map<String, dynamic> toJson() => {
         'id': id,
@@ -128,6 +136,8 @@ class ProjectWorkspace {
       id: '${json['id'] ?? ''}',
       name: '${json['name'] ?? ''}',
       path: '${json['path'] ?? ''}',
+      isMount: json['isMount'] == true,
+      mountLive: json['mountLive'] == true,
       sessionCount: (json['sessionCount'] as num?)?.toInt() ?? 0,
       runningCount: (json['runningCount'] as num?)?.toInt() ?? 0,
       lastActiveAt: json['lastActiveAt'] != null
@@ -438,4 +448,11 @@ class GitCommitDetailResponse {
       error: json['error']?.toString(),
     );
   }
+}
+
+/// Lý do khóa khung chat vì project mount đã gỡ (FUSE không còn gắn), null nếu được phép gửi.
+/// Chỉ máy chính gọi lượt chat qua cầu nối mới mount lại; khung chat mở lại khi mount hoạt động.
+String? mountBlockReason(ProjectWorkspace? project) {
+  if (project == null || !project.isMount || project.mountLive) return null;
+  return 'Project đang mount từ máy khác đã ngắt. Khung chat bị khóa cho đến khi máy chính gửi lệnh để mount lại.';
 }
