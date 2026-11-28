@@ -18,6 +18,10 @@ abstract class DockerRepository {
     String sessionId,
   );
 
+  /// Trạng thái phiên Docker do server đẩy khi đang xem (`docker:session:update`), thay cho quét định kỳ.
+  /// Nghe luồng này thì server bắt đầu quét; hủy đăng ký thì server ngừng quét khi không còn người xem.
+  Stream<DockerSessionResult> watchDockerSession(String sessionId);
+
   Future<DockerSessionResult> dockerContainerAction(
     String address, {
     required String sessionId,

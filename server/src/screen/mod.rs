@@ -1,15 +1,17 @@
-//! Quay màn hình và phát luồng RTSP.
+//! Quay màn hình và phát khung hình JPEG cho web, desktop và mobile.
 //!
-//! - Bật/tắt bằng checkbox trên system tray (xem `infra/tray.rs`).
-//! - Chụp qua portal ScreenCast + GStreamer, hạ xuống 720p, mã hoá H.264 (`capture.rs`).
-//! - Phát qua RTSP tại `rtsp://<ip-lan>:8554/screen` (`rtsp.rs`). Mở bằng bất kỳ player nào (VLC, mpv, ffplay).
+//! - Bật/tắt bằng checkbox trên system tray (xem `infra/tray.rs`) hoặc menu bar trên macOS.
+//! - Chụp qua portal ScreenCast + GStreamer (Linux) hoặc ffmpeg (macOS), hạ xuống 720p, mã hoá JPEG (`capture.rs`).
+//! - Khung mới nhất ở `FrameHub` (`frames.rs`), client lấy bằng HTTP long-poll: `GET /api/screen/frame?after=<seq>`.
+//!   Không dùng RTSP: trình duyệt không phát được RTSP.
 //!
-//! Socket.IO chỉ đưa trạng thái: `screen:status` (server → tất cả): `{streaming, starting, error, height, fps, rtspUrl}`.
+//! Socket.IO chỉ đưa trạng thái: `screen:status` (server → tất cả): `{streaming, starting, error, height, fps, viewerUrl}`.
 
 pub mod capture;
+pub mod frames;
+pub mod jpeg;
 pub mod mac;
 pub mod portal;
-pub mod rtsp;
 
 use serde::Serialize;
 use socketioxide::SocketIo;
@@ -19,7 +21,6 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::process::Child;
 use tokio::runtime::Handle;
-use tokio::sync::broadcast;
 use tokio::sync::Mutex as AsyncMutex;
 use tokio::task::JoinHandle;
 
@@ -40,8 +41,8 @@ pub struct ScreenStatus {
     pub error: String,
     pub height: u32,
     pub fps: u32,
-    /// Địa chỉ để mở bằng player, rỗng khi chưa bật
-    pub rtsp_url: String,
+    /// Địa chỉ trang xem màn hình (web app), rỗng khi chưa bật
+    pub viewer_url: String,
 }
 
 /// Một phiên đang chạy: tiến trình GStreamer, task đọc gói RTP và phiên portal
@@ -61,8 +62,8 @@ pub struct ScreenManager {
     status: Mutex<ScreenStatus>,
     running: AsyncMutex<Option<Running>>,
     generation: AtomicU64,
-    /// Các client RTSP đang xem luồng hiện tại
-    hub: Arc<rtsp::RtspHub>,
+    /// Khung JPEG mới nhất, cho client đang xem
+    frames: Arc<frames::FrameHub>,
 }
 
 impl ScreenManager {
@@ -77,23 +78,20 @@ impl ScreenManager {
             }),
             running: AsyncMutex::new(None),
             generation: AtomicU64::new(0),
-            hub: rtsp::RtspHub::new(),
+            frames: frames::FrameHub::new(),
         })
     }
 
-    /// Mở cổng RTSP (8554) trên mọi giao diện LAN. Gọi một lần khi server khởi động.
-    pub fn start_rtsp_server(self: &Arc<Self>) {
-        let hub = self.hub.clone();
-        tokio::spawn(async move {
-            let addr = format!("0.0.0.0:{}", rtsp::RTSP_PORT);
-            match tokio::net::TcpListener::bind(&addr).await {
-                Ok(listener) => {
-                    tracing::info!("📺 RTSP server lắng nghe tại {addr}{}", rtsp::MOUNT_PATH);
-                    rtsp::serve(listener, hub).await;
-                }
-                Err(e) => tracing::error!("Không mở được cổng RTSP {addr}: {e}"),
-            }
-        });
+    /// Khung hình để client lấy (long-poll), dùng cho route `/api/screen/frame`
+    pub fn frames(&self) -> Arc<frames::FrameHub> {
+        self.frames.clone()
+    }
+
+    /// Gọi một lần khi server khởi động: trên macOS yêu cầu quyền Ghi màn hình ngay (máy chủ chạy nền)
+    pub fn init(&self) {
+        if crate::infra::platform::IS_MACOS {
+            mac::prompt_screen_access_at_startup();
+        }
     }
 
     pub fn status(&self) -> ScreenStatus {
@@ -159,7 +157,7 @@ impl ScreenManager {
             s.error.clear();
         });
         let out_h = mac::OUTPUT_HEIGHT;
-        let capture = match mac::start(out_h).await {
+        let (mut child, stdout) = match mac::start().await {
             Ok(c) => c,
             Err(e) => {
                 tracing::warn!("Không bật được quay màn hình trên macOS: {e}");
@@ -170,13 +168,11 @@ impl ScreenManager {
                 return;
             }
         };
-        let mac::Capture { mut child, socket } = capture;
         let generation = self.generation.fetch_add(1, Ordering::Relaxed) + 1;
-        let packets = self.hub.go_live();
         let manager = self.clone();
-        let hub = self.hub.clone();
+        let frames = self.frames.clone();
         let reader = tokio::spawn(async move {
-            mac::read_packets(socket, packets, hub).await;
+            capture::read_frames(stdout, frames).await;
             manager.capture_ended(generation).await;
         });
 
@@ -184,7 +180,7 @@ impl ScreenManager {
         tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
         if let Ok(Some(_)) = child.try_wait() {
             reader.abort();
-            self.hub.go_offline();
+            self.frames.clear();
             self.update_status(|s| {
                 s.starting = false;
                 s.error = format!("{} (xem log server)", mac::PERMISSION_MSG);
@@ -192,7 +188,7 @@ impl ScreenManager {
             return;
         }
 
-        let url = rtsp_url();
+        let url = viewer_url();
         *guard = Some(Running {
             generation,
             child,
@@ -204,9 +200,9 @@ impl ScreenManager {
             s.streaming = true;
             s.height = out_h;
             s.fps = capture::MAX_FPS;
-            s.rtsp_url = url.clone();
+            s.viewer_url = url.clone();
         });
-        tracing::info!("📺 Bắt đầu quay màn hình (macOS) {out_h}p — mở bằng: {url}");
+        tracing::info!("📺 Bắt đầu quay màn hình (macOS) {out_h}p — xem tại: {url}");
     }
 
     /// Linux: mở phiên portal và chạy GStreamer. Có thể chờ người dùng xác nhận vài chục giây.
@@ -257,11 +253,10 @@ impl ScreenManager {
         };
 
         let generation = self.generation.fetch_add(1, Ordering::Relaxed) + 1;
-        let packets = self.hub.go_live();
         let manager = self.clone();
-        let hub = self.hub.clone();
+        let frames = self.frames.clone();
         let reader = tokio::spawn(async move {
-            read_packets(stdout, packets, hub).await;
+            capture::read_frames(stdout, frames).await;
             manager.capture_ended(generation).await;
         });
 
@@ -269,7 +264,7 @@ impl ScreenManager {
         tokio::time::sleep(std::time::Duration::from_millis(300)).await;
         if let Ok(Some(_)) = child.try_wait() {
             reader.abort();
-            self.hub.go_offline();
+            self.frames.clear();
             opened.session.close().await;
             self.update_status(|s| {
                 s.starting = false;
@@ -278,7 +273,7 @@ impl ScreenManager {
             return;
         }
 
-        let url = rtsp_url();
+        let url = viewer_url();
         *guard = Some(Running {
             generation,
             child,
@@ -289,9 +284,9 @@ impl ScreenManager {
             s.starting = false;
             s.streaming = true;
             s.height = out_h;
-            s.rtsp_url = url.clone();
+            s.viewer_url = url.clone();
         });
-        tracing::info!("📺 Bắt đầu quay màn hình {out_w}x{out_h} — mở bằng: {url}");
+        tracing::info!("📺 Bắt đầu quay màn hình {out_w}x{out_h} — xem tại: {url}");
     }
 
     /// Luôn tự bật stream sau khi tray đăng ký. Chỉ cần portal đã được cấp quyền
@@ -320,7 +315,7 @@ impl ScreenManager {
     /// Dừng pipeline và đóng phiên portal
     pub async fn stop(&self) {
         let running = self.running.lock().await.take();
-        self.hub.go_offline();
+        self.frames.clear();
         if let Some(r) = running {
             end_running(r).await;
             tracing::info!("📺 Đã dừng quay màn hình");
@@ -328,7 +323,7 @@ impl ScreenManager {
         self.update_status(|s| {
             s.streaming = false;
             s.starting = false;
-            s.rtsp_url.clear();
+            s.viewer_url.clear();
         });
     }
 
@@ -339,7 +334,7 @@ impl ScreenManager {
         if !matches {
             return;
         }
-        self.hub.go_offline();
+        self.frames.clear();
         if let Some(r) = guard.take() {
             if let Some(portal) = r.portal {
                 portal.close().await;
@@ -350,7 +345,7 @@ impl ScreenManager {
         drop(guard);
         self.update_status(|s| {
             s.streaming = false;
-            s.rtsp_url.clear();
+            s.viewer_url.clear();
             s.error = "Luồng quay màn hình đã dừng bất ngờ".into();
         });
     }
@@ -365,32 +360,9 @@ async fn end_running(mut r: Running) {
     }
 }
 
-/// Đọc các gói RTP từ GStreamer và đẩy vào hub cho mọi client RTSP
-async fn read_packets(
-    stdout: tokio::process::ChildStdout,
-    out: broadcast::Sender<rtsp::Packet>,
-    hub: Arc<rtsp::RtspHub>,
-) {
-    use tokio::io::AsyncReadExt;
-    let mut stdout = stdout;
-    let mut splitter = capture::RtpSplitter::default();
-    let mut chunk = vec![0u8; 64 * 1024];
-    loop {
-        match stdout.read(&mut chunk).await {
-            Ok(0) | Err(_) => break,
-            Ok(n) => {
-                for packet in splitter.push(&chunk[..n]) {
-                    hub.observe(&packet);
-                    // Không có client nào thì send trả lỗi: bỏ qua, luồng vẫn chạy
-                    let _ = out.send(Arc::new(packet));
-                }
-            }
-        }
-    }
-}
-
-/// Địa chỉ RTSP cho client trong LAN: ưu tiên IP 192.168.x.x, rồi 10.x, rồi IP đầu tiên
-fn rtsp_url() -> String {
+/// Địa chỉ trang xem màn hình cho client trong LAN: web app ở cổng web (mặc định 8788).
+/// Ưu tiên IP 192.168.x.x, rồi 10.x, rồi IP đầu tiên.
+fn viewer_url() -> String {
     let ips = crate::scanner::detect_lan_ips();
     let host = ips
         .iter()
@@ -399,7 +371,7 @@ fn rtsp_url() -> String {
         .or_else(|| ips.first())
         .cloned()
         .unwrap_or_else(|| "127.0.0.1".to_string());
-    format!("rtsp://{host}:{}{}", rtsp::RTSP_PORT, rtsp::MOUNT_PATH)
+    format!("http://{host}:{}/", crate::web::web_port())
 }
 
 /// File lưu restore token của portal (quyền 0600), để không hỏi lại mỗi lần bật

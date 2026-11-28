@@ -23,6 +23,8 @@ pub(super) struct TurnCtx {
     pub(super) attempt: u32,
     /// Provider của lượt (`agy` hoặc `claude-cli`), ghi vào bảng `running_turns`
     pub(super) provider: Provider,
+    /// Project gốc của máy gửi (khi lượt chạy qua mount); rỗng nếu là project của máy này
+    pub(super) origin_project: String,
 }
 
 impl TurnCtx {
@@ -75,6 +77,24 @@ impl TurnCtx {
         let requested = self.request.model.trim();
         if !requested.is_empty() && requested != "default" {
             crate::infra::store::set_conversation_model(cid, requested);
+        }
+        // Ghi project của lượt: lượt từ máy khác lấy tên project gốc, không lấy tên thư mục mount.
+        // Lượt gửi lại (không còn project gốc) chạy trên mount thì giữ nguyên bản ghi cũ.
+        let shown = if self.origin_project.is_empty() {
+            if crate::fsmount::is_mount_path(&self.cwd) {
+                String::new()
+            } else {
+                self.cwd.clone()
+            }
+        } else {
+            self.origin_project.clone()
+        };
+        if let Some(name) = std::path::Path::new(&shown)
+            .file_name()
+            .and_then(|n| n.to_str())
+            .filter(|n| !n.is_empty())
+        {
+            crate::infra::store::set_conversation_project(cid, name, &self.cwd);
         }
         if self.pid > 0 {
             if let Ok(mut pids) = self.state.running_pids.lock() {

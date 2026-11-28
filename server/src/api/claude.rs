@@ -10,7 +10,29 @@ use chrono::Utc;
 use serde_json::json;
 use std::collections::HashMap;
 
-/// Tương tác đang chờ (câu hỏi hoặc kế hoạch) của một phiên Claude Code; `pending` = null nếu không có
+/// Tương tác đang chờ (câu hỏi hoặc kế hoạch) của một phiên Claude Code; `pending` = null nếu không có.
+/// Dùng chung cho REST và socket `request-claude-pending`.
+pub async fn claude_pending_body(state: &AppState, cid: String) -> serde_json::Value {
+    if cid.is_empty() {
+        return json!({ "ok": false, "error": "Thiếu id phiên hội thoại (id / conversationId)" });
+    }
+    let running = state
+        .active_streams
+        .lock()
+        .map(|s| s.get(&cid).map(|x| x.is_running).unwrap_or(false))
+        .unwrap_or(false);
+    let lookup = cid.clone();
+    let pending = if running {
+        None
+    } else {
+        tokio::task::spawn_blocking(move || crate::claude::questions::pending_for_session(&lookup))
+            .await
+            .ok()
+            .flatten()
+    };
+    json!({ "ok": true, "conversationId": cid, "pending": pending })
+}
+
 pub async fn handle_claude_pending(
     State(state): State<AppState>,
     Query(params): Query<HashMap<String, String>>,
@@ -27,25 +49,7 @@ pub async fn handle_claude_pending(
         )
             .into_response();
     }
-    let running = state
-        .active_streams
-        .lock()
-        .map(|s| s.get(&cid).map(|x| x.is_running).unwrap_or(false))
-        .unwrap_or(false);
-    let lookup = cid.clone();
-    let pending = if running {
-        None
-    } else {
-        tokio::task::spawn_blocking(move || crate::claude::questions::pending_for_session(&lookup))
-            .await
-            .ok()
-            .flatten()
-    };
-    (
-        StatusCode::OK,
-        Json(json!({ "ok": true, "conversationId": cid, "pending": pending })),
-    )
-        .into_response()
+    (StatusCode::OK, Json(claude_pending_body(&state, cid).await)).into_response()
 }
 
 /// Phản hồi tương tác đang chờ (trả lời câu hỏi / duyệt hoặc góp ý kế hoạch) bằng một lượt chat mới (`--resume`)
@@ -121,40 +125,36 @@ pub async fn handle_claude_respond(
     (status, Json(result)).into_response()
 }
 
-pub async fn handle_ai_questions(
-    Query(params): Query<HashMap<String, String>>,
-    State(state): State<AppState>,
-) -> impl IntoResponse {
-    let conversation_id = match params
-        .get("conversationId")
-        .map(|s| s.trim())
-        .filter(|s| !s.is_empty())
-    {
-        Some(id) => id.to_string(),
-        None => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(json!({ "ok": false, "error": "Thiếu conversationId" })),
-            )
-                .into_response();
-        }
-    };
-
+/// Câu hỏi AI của một conversation (`{ok, conversationId, questions}`). Dùng chung cho REST và socket `request-ai-questions`.
+pub fn ai_questions_body(state: &AppState, conversation_id: String) -> serde_json::Value {
     let questions = state
         .ai_questions
         .lock()
         .map(|g| g.get(&conversation_id).cloned().unwrap_or_default())
         .unwrap_or_default();
+    json!({ "ok": true, "conversationId": conversation_id, "questions": questions })
+}
 
-    (
-        StatusCode::OK,
-        Json(json!({
-            "ok": true,
-            "conversationId": conversation_id,
-            "questions": questions
-        })),
-    )
-        .into_response()
+pub async fn handle_ai_questions(
+    Query(params): Query<HashMap<String, String>>,
+    State(state): State<AppState>,
+) -> impl IntoResponse {
+    match params
+        .get("conversationId")
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+    {
+        Some(id) => (
+            StatusCode::OK,
+            Json(ai_questions_body(&state, id.to_string())),
+        )
+            .into_response(),
+        None => (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "ok": false, "error": "Thiếu conversationId" })),
+        )
+            .into_response(),
+    }
 }
 
 pub async fn handle_ai_question_answer(

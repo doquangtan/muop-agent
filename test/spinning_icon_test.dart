@@ -1,3 +1,5 @@
+import 'dart:math' as math;
+
 import 'package:flutter_test/flutter_test.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:muop_agent/core/widgets/spinning_icon.dart';
@@ -11,14 +13,16 @@ Widget _host({required bool reduceMotion, required Widget child}) {
   );
 }
 
+/// Góc quay hiện tại (radian) đọc từ ma trận của Transform.rotate bên trong icon
 double _turns(WidgetTester tester) {
-  final transition = tester.widget<RotationTransition>(
+  final transform = tester.widget<Transform>(
     find.descendant(
       of: find.byType(SpinningIcon),
-      matching: find.byType(RotationTransition),
+      matching: find.byType(Transform),
     ),
   );
-  return transition.turns.value;
+  final m = transform.transform.storage;
+  return math.atan2(m[1], m[0]);
 }
 
 void main() {
@@ -61,12 +65,12 @@ void main() {
 
   testWidgets('dừng quay khi spinning chuyển sang false', (tester) async {
     Widget build(bool spinning) => _host(
-          reduceMotion: false,
-          child: SpinningIcon(
-            icon: Icons.hourglass_top_rounded,
-            spinning: spinning,
-          ),
-        );
+      reduceMotion: false,
+      child: SpinningIcon(
+        icon: Icons.hourglass_top_rounded,
+        spinning: spinning,
+      ),
+    );
     await tester.pumpWidget(build(true));
     await tester.pump(const Duration(milliseconds: 200));
     await tester.pumpWidget(build(false));

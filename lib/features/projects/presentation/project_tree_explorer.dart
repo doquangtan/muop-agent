@@ -1,6 +1,8 @@
 import 'dart:async';
 import 'package:material_ui/material_ui.dart';
 
+import 'package:muop_agent/core/widgets/throttled_spinner.dart';
+
 import 'package:muop_agent/core/di/app_dependencies.dart';
 import 'package:muop_agent/core/theme/app_theme.dart';
 import 'package:muop_agent/features/server_files/domain/server_file_entities.dart';
@@ -427,7 +429,7 @@ class _ProjectTreeExplorerState extends State<ProjectTreeExplorer> {
     final textTheme = Theme.of(context).textTheme;
 
     if (_loadingRoot && _roots.isEmpty) {
-      return const Center(child: CircularProgressIndicator(strokeWidth: 2));
+      return const Center(child: ThrottledSpinner(size: 36, strokeWidth: 2));
     }
     if (_rootError != null) {
       return Padding(

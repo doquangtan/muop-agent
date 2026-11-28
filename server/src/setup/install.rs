@@ -42,9 +42,17 @@ fn dev_fuse_present() -> bool {
 /// Công cụ chỉ có ý nghĩa trên Linux (systemd, FUSE, bản Linux Desktop). Trên macOS không hiện trong Khởi tạo.
 const LINUX_ONLY_TOOL_IDS: [&str; 3] = ["fuse", "systemd-run", "muop-agent"];
 
+/// Công cụ chỉ có ý nghĩa trên macOS (Homebrew, ffmpeg cho quay màn hình). Linux không hiện.
+const MAC_ONLY_TOOL_IDS: [&str; 2] = ["brew", "ffmpeg"];
+
 /// Công cụ `id` có áp dụng trên máy này không
 pub fn tool_applies(id: &str) -> bool {
-    crate::infra::platform::IS_LINUX || !LINUX_ONLY_TOOL_IDS.contains(&id)
+    if crate::infra::platform::IS_MACOS {
+        !LINUX_ONLY_TOOL_IDS.contains(&id)
+    } else {
+        !MAC_ONLY_TOOL_IDS.contains(&id)
+            && (crate::infra::platform::IS_LINUX || !LINUX_ONLY_TOOL_IDS.contains(&id))
+    }
 }
 
 /// Lệnh gợi ý cài theo nền tảng. macOS không dùng apt: git/ssh/curl/python3 đi kèm Xcode Command Line Tools.
@@ -57,6 +65,7 @@ fn hint_for(t: &ToolSpec) -> &'static str {
             "Cài Xcode Command Line Tools: xcode-select --install"
         }
         "docker" => "Cài Docker Desktop (cung cấp lệnh docker), để quản lý container qua SSH",
+        "brew" => "Cài Homebrew theo hướng dẫn tại https://brew.sh (cần để cài ffmpeg và FUSE-T)",
         _ => t.hint,
     }
 }
@@ -114,6 +123,24 @@ const TOOLS: &[ToolSpec] = &[
         bin: "docker",
         install_script: None,
         hint: "sudo apt install docker.io, để quản lý container qua SSH",
+        extra_check: None,
+    },
+    ToolSpec {
+        id: "brew",
+        label: "Homebrew (macOS, cài ffmpeg và FUSE-T)",
+        group: "optional",
+        bin: "brew",
+        install_script: None,
+        hint: "Cài Homebrew theo https://brew.sh",
+        extra_check: None,
+    },
+    ToolSpec {
+        id: "ffmpeg",
+        label: "ffmpeg (macOS, cần cho quay màn hình)",
+        group: "optional",
+        bin: "ffmpeg",
+        install_script: None,
+        hint: "brew install ffmpeg",
         extra_check: None,
     },
     ToolSpec {

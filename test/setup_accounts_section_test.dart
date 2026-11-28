@@ -6,7 +6,6 @@ import 'package:muop_agent/core/theme/app_theme.dart';
 import 'package:muop_agent/features/agy_auth/domain/agy_auth_entities.dart';
 import 'package:muop_agent/features/agy_auth/domain/agy_auth_repository.dart';
 import 'package:muop_agent/features/setup/presentation/setup_accounts_section.dart';
-import 'package:muop_agent/features/agy_auth/presentation/agy_login_panel.dart';
 import 'package:muop_agent/features/claude_auth/domain/claude_auth_entities.dart';
 import 'package:muop_agent/features/claude_auth/domain/claude_auth_repository.dart';
 import 'package:muop_agent/features/ssh/presentation/ssh_terminal_panel.dart';
@@ -234,15 +233,16 @@ void main() {
     expect(find.text('Mở terminal (chỉ khi cần)'), findsOneWidget);
   });
 
-  testWidgets('đang đăng nhập: kiểm tra agy định kỳ bằng agy:auth:check, vào màn chat thì chuyển đã đăng nhập', (tester) async {
-    final repo = _FakeAgyAuthRepository(status: _terminal())
-      ..checkResult = _in();
+  testWidgets('đang đăng nhập: không hỏi agy định kỳ; server đẩy agy:auth:update khi vào màn chat thì chuyển đã đăng nhập', (tester) async {
+    final repo = _FakeAgyAuthRepository(status: _terminal());
     await _pump(tester, repo);
+    final checksBefore = repo.calls.where((c) => c == 'check').length;
 
-    await tester.pump(AgyLoginPanel.checkEvery);
+    await tester.pump(const Duration(seconds: 10));
+    expect(repo.calls.where((c) => c == 'check').length, checksBefore, reason: 'không còn polling agy:auth:check');
+
+    repo.emit(_in());
     await tester.pumpAndSettle();
-
-    expect(repo.calls.contains('check'), isTrue);
     expect(find.text('Đã đăng nhập'), findsOneWidget);
   });
 

@@ -1,5 +1,7 @@
 import 'package:material_ui/material_ui.dart';
 
+import 'package:muop_agent/core/widgets/throttled_spinner.dart';
+
 import 'package:muop_agent/core/widgets/complete_markdown_doc_view.dart';
 import 'package:muop_agent/features/interactions/domain/interaction_entities.dart';
 import 'package:muop_agent/features/interactions/presentation/interaction_widgets.dart';
@@ -215,11 +217,7 @@ class _Spinner extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return const SizedBox(
-      width: 18,
-      height: 18,
-      child: CircularProgressIndicator(strokeWidth: 2),
-    );
+    return const ThrottledSpinner(size: 18, strokeWidth: 2);
   }
 }
 
@@ -360,11 +358,7 @@ class _QuestionFormState extends State<_QuestionForm> {
                 child: FilledButton(
                   onPressed: canSubmit ? _submit : null,
                   child: _submitting
-                      ? const SizedBox(
-                          width: 18,
-                          height: 18,
-                          child: CircularProgressIndicator(strokeWidth: 2),
-                        )
+                      ? const ThrottledSpinner(size: 18, strokeWidth: 2)
                       : const Text('Gửi trả lời'),
                 ),
               ),

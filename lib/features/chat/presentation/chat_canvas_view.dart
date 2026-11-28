@@ -4,13 +4,14 @@ import 'dart:math' as math;
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/rendering.dart' show RenderProxyBox, ScrollCacheExtent;
 import 'package:flutter/services.dart';
-import 'package:liquid_glass_easy/liquid_glass_easy.dart';
 import 'package:material_ui/material_ui.dart';
 
 import 'package:muop_agent/core/theme/app_theme.dart';
 import 'package:muop_agent/core/theme/chat_theme_painter.dart';
 import 'package:muop_agent/core/widgets/liquid_glass.dart';
 import 'package:muop_agent/core/widgets/spinning_icon.dart';
+import 'package:muop_agent/core/widgets/throttled_spinner.dart';
+import 'package:muop_agent/core/widgets/throttled_ticker.dart';
 import 'package:muop_agent/features/chat/domain/chat_entities.dart';
 import 'package:muop_agent/features/chat/domain/model_groups.dart';
 import 'package:muop_agent/features/bridge/domain/peer_models.dart';
@@ -97,6 +98,7 @@ class ChatCanvasView extends StatefulWidget {
     this.onOpenCreateProject,
     this.onGitPush,
     this.onOpenGitHistory,
+    this.onShareFromStep,
     this.floatingTopHeader,
     this.desktopLeftInset = 0.0,
   });
@@ -188,6 +190,9 @@ class ChatCanvasView extends StatefulWidget {
   onGitPush;
   final VoidCallback? onOpenGitHistory;
 
+  /// Chia sẻ lịch sử conversation đang mở, bắt đầu từ bước có `stepIndex` này
+  final ValueChanged<int>? onShareFromStep;
+
   /// Thanh header Liquid Glass nổi trên luồng chat (tùy chọn, dùng trong DashboardScreen).
   final Widget? floatingTopHeader;
 
@@ -214,8 +219,6 @@ class _ChatCanvasViewState extends State<ChatCanvasView> {
   final Map<String, List<ChatImageAttachment>> _draftImages = {};
   final ScrollController _scrollController = ScrollController();
   final FocusNode _inputFocusNode = FocusNode();
-  final LiquidGlassViewController _glassViewController =
-      LiquidGlassViewController();
 
   int _loadedTurnCount = _pageSize;
   bool _isLoadingMoreTurns = false;
@@ -291,11 +294,6 @@ class _ChatCanvasViewState extends State<ChatCanvasView> {
     final newId = widget.session?.id;
     if (_isTurnRunning(oldWidget) && !_isTurnRunning(widget)) {
       _composerRevealed = false;
-    }
-    if (oldWidget.desktopLeftInset != widget.desktopLeftInset) {
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (mounted) _glassViewController.captureOnce();
-      });
     }
     if (oldId != newId ||
         oldWidget.isNewConversationMode != widget.isNewConversationMode) {
@@ -498,9 +496,6 @@ class _ChatCanvasViewState extends State<ChatCanvasView> {
         remainingOlderTurns: remainingOlderTurns,
         totalTurnsCount: _cachedAllTurns.length,
       );
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (mounted) _glassViewController.captureOnce();
-      });
     }
 
     final flatBlocks = _cachedFlatBlocks;
@@ -517,11 +512,7 @@ class _ChatCanvasViewState extends State<ChatCanvasView> {
             : SelectionArea(
                 child: NotificationListener<ScrollNotification>(
                   onNotification: (notification) {
-                    if (notification is ScrollStartNotification) {
-                      _glassViewController.startRealtimeCapture();
-                    } else if (notification is ScrollEndNotification) {
-                      _glassViewController.stopRealtimeCapture();
-                    } else if (notification is OverscrollNotification &&
+                    if (notification is OverscrollNotification &&
                         notification.overscroll > 0) {
                       _maybeLoadOlderTurns();
                     }
@@ -588,14 +579,11 @@ class _ChatCanvasViewState extends State<ChatCanvasView> {
       ),
     );
 
-    return LiquidGlassView(
-      controller: _glassViewController,
-      pixelRatio: 0.75,
-      realTimeCapture: false,
-      useSync: true,
-      refreshRate: LiquidGlassRefreshRate.high,
-      backgroundWidget: backdropLayer,
-      child: Stack(
+    return Stack(
+      fit: StackFit.expand,
+      children: [
+        backdropLayer,
+        Stack(
         fit: StackFit.expand,
         children: [
           topOverlay,
@@ -613,7 +601,6 @@ class _ChatCanvasViewState extends State<ChatCanvasView> {
                       message: 'Cuộn xuống đoạn chat mới nhất',
                       child: LiquidGlassPill(
                         cornerRadius: 21,
-                        refractionWidth: 10,
                         shadowBlur: 10,
                         child: InkWell(
                           borderRadius: BorderRadius.circular(21),
@@ -651,7 +638,8 @@ class _ChatCanvasViewState extends State<ChatCanvasView> {
             ),
           ),
         ],
-      ),
+        ),
+      ],
     );
   }
 

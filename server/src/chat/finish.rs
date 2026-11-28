@@ -92,6 +92,54 @@ pub(super) fn finish_turn(
     });
 }
 
+/// Thời gian chờ sau SIGTERM trước khi SIGKILL. agy bắt SIGTERM (có handler) nên không thoát khi chỉ nhận TERM.
+const STOP_GRACE: std::time::Duration = std::time::Duration::from_secs(4);
+
+fn process_alive(pid: u32) -> bool {
+    std::process::Command::new("kill")
+        .arg("-0")
+        .arg(pid.to_string())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|st| st.success())
+        .unwrap_or(false)
+}
+
+/// Dừng tiến trình lượt chat và các tiến trình con: SIGTERM cho cả nhóm (pgid = pid khi khởi chạy
+/// bằng `process_group(0)`) và cho chính PID (tiến trình cũ trước khi có nhóm riêng). Sau STOP_GRACE
+/// nếu vẫn còn sống thì SIGKILL. Chạy trên luồng riêng để không chặn socket/REST.
+fn terminate_turn_process(pid: u32) {
+    let group = format!("-{pid}");
+    let send = |sig: &str, target: &str| {
+        let _ = std::process::Command::new("kill")
+            .args(["-s", sig, "--", target])
+            .stderr(std::process::Stdio::null())
+            .status();
+    };
+    send("TERM", &group);
+    send("TERM", &pid.to_string());
+    std::thread::spawn(move || {
+        let deadline = std::time::Instant::now() + STOP_GRACE;
+        while std::time::Instant::now() < deadline {
+            if !process_alive(pid) {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(200));
+        }
+        if process_alive(pid) {
+            tracing::warn!("Tiến trình lượt chat {pid} không thoát sau SIGTERM, gửi SIGKILL");
+            let send = |sig: &str, target: &str| {
+                let _ = std::process::Command::new("kill")
+                    .args(["-s", sig, "--", target])
+                    .stderr(std::process::Stdio::null())
+                    .status();
+            };
+            send("KILL", &format!("-{pid}"));
+            send("KILL", &pid.to_string());
+        }
+    });
+}
+
 pub fn stop_chat_turn(state: &AppState, conversation_id: &str) -> bool {
     let cid = conversation_id.trim();
     if cid.is_empty() {
@@ -109,10 +157,7 @@ pub fn stop_chat_turn(state: &AppState, conversation_id: &str) -> bool {
     crate::infra::store::delete_running_turn(cid);
 
     if let Some(pid) = pid_opt {
-        let _ = std::process::Command::new("kill")
-            .arg("-TERM")
-            .arg(pid.to_string())
-            .status();
+        terminate_turn_process(pid);
 
         let mut updated_stream: Option<ChatTurnStreamState> = None;
         if let Ok(mut streams) = state.active_streams.lock() {
@@ -249,5 +294,40 @@ mod compact_tests {
                 .contains("sai định dạng")
         );
         assert_eq!(friendly_error("boom"), "boom");
+    }
+}
+
+#[cfg(all(test, unix))]
+mod stop_tests {
+    use super::*;
+    use std::os::unix::process::CommandExt;
+
+    /// Tiến trình bỏ qua SIGTERM và có tiến trình con (như agy): phải bị SIGKILL sau STOP_GRACE, cả con
+    #[test]
+    fn stop_kills_term_ignoring_process_and_children() {
+        let mut child = std::process::Command::new("sh")
+            .args(["-c", "trap '' TERM; sleep 600 & wait"])
+            .process_group(0)
+            .spawn()
+            .expect("spawn sh");
+        let pid = child.id();
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        terminate_turn_process(pid);
+        // Chờ đúng tiến trình thoát (có SIGKILL sau STOP_GRACE); status phải là bị kill bởi tín hiệu
+        let status = child.wait().expect("wait child");
+        assert!(!status.success(), "tiến trình không được thoát bình thường");
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        let left = std::process::Command::new("sh")
+            .args([
+                "-c",
+                &format!("pgrep -g {pid} >/dev/null && echo alive || echo dead"),
+            ])
+            .output()
+            .expect("pgrep");
+        assert_eq!(
+            String::from_utf8_lossy(&left.stdout).trim(),
+            "dead",
+            "còn tiến trình con trong nhóm"
+        );
     }
 }

@@ -5,6 +5,7 @@ import 'package:material_ui/material_ui.dart';
 
 import 'package:muop_agent/core/theme/app_theme.dart';
 import 'package:muop_agent/core/widgets/glass_scaffold.dart';
+import 'package:muop_agent/core/widgets/throttled_ticker.dart';
 import 'package:muop_agent/features/bridge/domain/peer_models.dart';
 import 'package:muop_agent/features/sessions/domain/session_entities.dart';
 
@@ -458,16 +459,28 @@ class _AgentCard extends StatefulWidget {
   State<_AgentCard> createState() => _AgentCardState();
 }
 
-class _AgentCardState extends State<_AgentCard>
-    with SingleTickerProviderStateMixin {
-  late final AnimationController _pulse = AnimationController(
-    vsync: this,
-    duration: const Duration(milliseconds: 1400),
-  );
+class _AgentCardState extends State<_AgentCard> {
+  /// Một chu kỳ sáng/tối của viền và vòng chấm (1,4 giây)
+  static const Duration _cycle = Duration(milliseconds: 1400);
+
+  /// Nhịp 20 khung/giây thay vì vsync 60: mỗi khung đều blur lại kính phía trên
+  static const Duration _tick = Duration(milliseconds: 50);
+
+  final ThrottledTicker _ticker = ThrottledTicker();
+  bool _reduceMotion = false;
+  bool _tickerOn = true;
 
   @override
   void initState() {
     super.initState();
+    _ticker.period = _cycle;
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _reduceMotion = reduceMotionOf(context);
+    _tickerOn = tickerEnabledOf(context);
     _syncPulse();
   }
 
@@ -478,17 +491,20 @@ class _AgentCardState extends State<_AgentCard>
   }
 
   void _syncPulse() {
-    if (widget.node.isRunning) {
-      if (!_pulse.isAnimating) _pulse.repeat();
+    if (widget.node.isRunning && !_reduceMotion) {
+      if (_tickerOn) {
+        _ticker.start(interval: _tick);
+      } else {
+        _ticker.stop(); // màn hình bị che: giữ pha, tiếp tục khi hiện lại
+      }
     } else {
-      _pulse.stop();
-      _pulse.value = 0;
+      _ticker.reset(); // dừng hẳn: viền và chấm về trạng thái nghỉ
     }
   }
 
   @override
   void dispose() {
-    _pulse.dispose();
+    _ticker.dispose();
     super.dispose();
   }
 
@@ -506,104 +522,96 @@ class _AgentCardState extends State<_AgentCard>
     return GestureDetector(
       behavior: HitTestBehavior.opaque,
       onTap: widget.onTap,
-      child: AnimatedBuilder(
-        animation: _pulse,
-        builder: (context, _) {
-          final t = _pulse.value;
-          final wave = math.sin(t * math.pi); // 0 → 1 → 0 mỗi chu kỳ
-          final border = running
-              ? (Color.lerp(baseBorder, runColor, 0.3 + 0.5 * wave) ??
-                    baseBorder)
-              : baseBorder;
-          final dots = '.' * (1 + (t * 3).floor().clamp(0, 2));
-          return Container(
-            width: _cardWidth,
-            height: _cardHeight,
-            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
-            decoration: BoxDecoration(
-              color: context.glassCardColor,
-              borderRadius: BorderRadius.circular(14),
-              border: Border.all(
-                color: border,
-                width: running ? 1.6 : (node.isRoot ? 1.2 : 0.9),
+      child: RepaintBoundary(
+        child: AnimatedBuilder(
+          animation: _ticker.phase,
+          builder: (context, _) {
+            final t = _ticker.phase.value;
+            final wave = math.sin(t * math.pi); // 0 → 1 → 0 mỗi chu kỳ
+            final border = running
+                ? (Color.lerp(baseBorder, runColor, 0.3 + 0.5 * wave) ??
+                      baseBorder)
+                : baseBorder;
+            final dots = '.' * (1 + (t * 3).floor().clamp(0, 2));
+            return Container(
+              width: _cardWidth,
+              height: _cardHeight,
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
+              decoration: BoxDecoration(
+                color: context.glassCardColor,
+                borderRadius: BorderRadius.circular(14),
+                border: Border.all(
+                  color: border,
+                  width: running ? 1.6 : (node.isRoot ? 1.2 : 0.9),
+                ),
+                // Không BoxShadow có blur (tính lại mỗi nhịp): trạng thái chạy thể hiện bằng viền đang animate
               ),
-              boxShadow: running
-                  ? [
-                      BoxShadow(
-                        color: runColor.withAlpha(
-                          (30 + 50 * wave).round().clamp(0, 255),
-                        ),
-                        blurRadius: 12,
-                        spreadRadius: 1,
-                      ),
-                    ]
-                  : null,
-            ),
-            child: Column(
-              mainAxisAlignment: MainAxisAlignment.center,
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Row(
-                  children: [
-                    _StatusDot(color: dotColor, running: running, progress: t),
-                    const SizedBox(width: 8),
-                    Expanded(
-                      child: Text(
-                        node.title,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: TextStyle(
-                          fontSize: 14,
-                          fontWeight: FontWeight.w700,
-                          color: scheme.onSurface,
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      _StatusDot(color: dotColor, running: running, progress: t),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Text(
+                          node.title,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            fontSize: 14,
+                            fontWeight: FontWeight.w700,
+                            color: scheme.onSurface,
+                          ),
                         ),
                       ),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 2),
-                Text(
-                  _currentStepLine(node, running ? dots : ''),
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: TextStyle(
-                    fontSize: 12,
-                    fontWeight: FontWeight.w600,
-                    color: running ? runColor : scheme.onSurfaceVariant,
+                    ],
                   ),
-                ),
-                const SizedBox(height: 1),
-                Text(
-                  node.subtitle,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: TextStyle(
-                    fontSize: 11.5,
-                    color: scheme.onSurfaceVariant,
+                  const SizedBox(height: 2),
+                  Text(
+                    _currentStepLine(node, running ? dots : ''),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      fontSize: 12,
+                      fontWeight: FontWeight.w600,
+                      color: running ? runColor : scheme.onSurfaceVariant,
+                    ),
                   ),
-                ),
-                const SizedBox(height: 5),
-                Row(
-                  children: [
-                    Flexible(
-                      child: _InfoChip(
-                        icon: Icons.build_outlined,
-                        label: '${node.toolCount} công cụ',
-                      ),
+                  const SizedBox(height: 1),
+                  Text(
+                    node.subtitle,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      fontSize: 11.5,
+                      color: scheme.onSurfaceVariant,
                     ),
-                    const SizedBox(width: 6),
-                    Flexible(
-                      child: _InfoChip(
-                        icon: Icons.description_outlined,
-                        label: '${node.files.length} tệp thay đổi',
+                  ),
+                  const SizedBox(height: 5),
+                  Row(
+                    children: [
+                      Flexible(
+                        child: _InfoChip(
+                          icon: Icons.build_outlined,
+                          label: '${node.toolCount} công cụ',
+                        ),
                       ),
-                    ),
-                  ],
-                ),
-              ],
-            ),
-          );
-        },
+                      const SizedBox(width: 6),
+                      Flexible(
+                        child: _InfoChip(
+                          icon: Icons.description_outlined,
+                          label: '${node.files.length} tệp thay đổi',
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            );
+          },
+        ),
       ),
     );
   }

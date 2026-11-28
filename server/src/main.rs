@@ -19,8 +19,10 @@ mod setup;
 mod sftp;
 mod socket;
 mod ssh;
+mod web;
 
 use crate::chat::AppState;
+use axum::http::header;
 use serde_json::json;
 use socketioxide::SocketIo;
 use std::net::SocketAddr;
@@ -51,7 +53,7 @@ async fn main() {
         .build_layer();
     let app_state = AppState::new(io.clone());
     let screen_manager = app_state.screen.clone();
-    app_state.screen.start_rtsp_server();
+    app_state.screen.init();
 
     socket::setup_socket_handlers(&io, app_state.clone());
 
@@ -194,7 +196,11 @@ async fn main() {
 
     let app = api::router()
         .layer(io_layer)
-        .layer(CorsLayer::permissive())
+        .layer(
+            // Trình duyệt chỉ đọc được header tuỳ chỉnh khi được liệt kê: `X-Frame-Seq` của luồng màn hình
+            CorsLayer::permissive()
+                .expose_headers([header::HeaderName::from_static("x-frame-seq")]),
+        )
         // Ảnh đính kèm gửi dạng base64 trong JSON: mặc định của axum chỉ 2MB
         .layer(axum::extract::DefaultBodyLimit::max(MAX_REQUEST_BODY_BYTES))
         .with_state(app_state);
@@ -212,16 +218,24 @@ async fn main() {
     }
     println!("⚡ Socket.IO Realtime Events: session:update, sessions:list, meta:update, streams:update, chat:stream");
     println!("📂 File Server API: /api/files/list & /api/files/download");
+    println!("🌐 Bản web: cổng {}", web::web_port());
     println!("🔔 System Tray: Biểu tượng khay hệ thống hiển thị logo Mướp Agent");
     println!("==============================================================");
 
     // Khởi chạy biểu tượng System Tray nền (StatusNotifierItem)
     crate::infra::tray::spawn_system_tray(screen_manager);
+    // Biểu tượng menu bar trên macOS: do máy chủ khởi chạy (helper cạnh binary)
+    crate::infra::mac_tray::spawn_menu_bar();
 
     // Phiên Docker của lần chạy trước (ControlMaster còn sót) đã mất theo tiến trình cũ: dọn đi
     crate::docker::sessions::cleanup_stale();
     crate::sftp::cleanup_stale();
+    // Phiên SSH không giữ qua lần restart: dọn thư mục tạm (key, askpass) của lần chạy trước
+    let _ = crate::ssh::terminal::cleanup_stale();
     crate::setup::ssh::ensure_local_host();
+
+    // Bản web (Flutter) ở cổng riêng, chạy nền: lỗi của nó không làm dừng máy chủ chính
+    tokio::spawn(web::serve(web::web_port(), web::web_root()));
 
     let listener = tokio::net::TcpListener::bind(addr)
         .await

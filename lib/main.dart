@@ -1,20 +1,17 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:liquid_glass_easy/liquid_glass_easy.dart';
 import 'package:material_ui/material_ui.dart';
-import 'package:media_kit/media_kit.dart';
 
 import 'package:muop_agent/core/di/app_dependencies.dart';
 import 'package:muop_agent/core/state/chat_theme_provider.dart';
 import 'package:muop_agent/core/state/server_address_provider.dart';
 import 'package:muop_agent/core/theme/app_theme.dart';
+import 'package:muop_agent/core/widgets/throttled_ticker.dart';
 import 'package:muop_agent/features/dashboard/presentation/dashboard_screen.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  MediaKit.ensureInitialized();
-  try {
-    await LiquidGlassShaders.ensureLoaded();
-  } catch (_) {}
+  // Dừng các Timer animation khi app ra nền (không có khung nào được vẽ)
+  WidgetsBinding.instance.addObserver(AppActivityObserver());
   // Địa chỉ server và cấu hình theme đã lưu được nạp trước khi dựng màn hình đầu tiên
   final container = ProviderContainer();
   container

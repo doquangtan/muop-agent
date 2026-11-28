@@ -166,14 +166,10 @@ extension _CanvasExtDock on _ChatCanvasViewState {
       ),
       child: SizedBox(
         width: double.infinity,
-        child: LiquidGlassLens(
+        child: LiquidGlassPill(
           key: const Key('chat-dock-island'),
-          style: buildChatLiquidGlassStyle(
-            context,
-            cornerRadius: cornerRadius,
-            refractionWidth: 18.0,
-            shadowBlur: 14.0,
-          ),
+          cornerRadius: cornerRadius,
+          shadowBlur: 14.0,
           child: islandBody,
         ),
       ),
@@ -244,10 +240,7 @@ extension _CanvasExtDock on _ChatCanvasViewState {
           SizedBox(
             width: 14,
             height: 14,
-            child: CircularProgressIndicator(
-              strokeWidth: 2,
-              color: colorScheme.primary,
-            ),
+            child: ThrottledSpinner(strokeWidth: 2, color: colorScheme.primary),
           ),
           const SizedBox(width: 10),
           Expanded(
@@ -537,12 +530,7 @@ extension _CanvasExtDock on _ChatCanvasViewState {
                     ? SizedBox(
                         width: 13,
                         height: 13,
-                        child: CircularProgressIndicator(
-                          strokeWidth: 2,
-                          valueColor: AlwaysStoppedAnimation<Color>(
-                            context.scheme.onPrimary,
-                          ),
-                        ),
+                        child: ThrottledSpinner(strokeWidth: 2, color: context.scheme.onPrimary),
                       )
                     : const Icon(Icons.cloud_upload_rounded, size: 14),
                 label: Text(

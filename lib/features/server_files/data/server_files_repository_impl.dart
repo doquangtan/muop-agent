@@ -1,8 +1,10 @@
 import 'dart:convert';
 import 'dart:io';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 
 import 'package:muop_agent/core/config/server_config.dart';
+import 'package:muop_agent/core/network/rest_client.dart';
 import 'package:muop_agent/features/server_files/domain/server_file_entities.dart';
 import 'package:muop_agent/features/server_files/domain/server_files_repository.dart';
 import 'package:muop_agent/features/sftp/data/download_saver.dart';
@@ -71,16 +73,12 @@ class ServerFilesRepositoryImpl implements ServerFilesRepository {
     required String path,
   }) async {
     final baseUrl = normalizeBaseUrl(address);
-    final client = HttpClient()
-      ..connectionTimeout = const Duration(seconds: 5);
     try {
       final uri = Uri.parse('$baseUrl/api/files/read').replace(
         queryParameters: {'path': path},
       );
-      final req = await client.getUrl(uri);
-      final resp = await req.close().timeout(const Duration(seconds: 8));
-      final body = await resp.transform(utf8.decoder).join();
-      final map = jsonDecode(body) as Map<String, dynamic>;
+      final reply = await httpRequest('GET', uri, timeout: const Duration(seconds: 8));
+      final map = jsonDecode(reply.text) as Map<String, dynamic>;
       return ServerFileReadResponse.fromJson(map);
     } catch (e) {
       return ServerFileReadResponse(
@@ -93,8 +91,6 @@ class ServerFilesRepositoryImpl implements ServerFilesRepository {
         gitDiff: '',
         error: '$e',
       );
-    } finally {
-      client.close(force: true);
     }
   }
 
@@ -107,8 +103,6 @@ class ServerFilesRepositoryImpl implements ServerFilesRepository {
     int limit = 200,
   }) async {
     final baseUrl = normalizeBaseUrl(address);
-    final client = HttpClient()
-      ..connectionTimeout = const Duration(seconds: 5);
     try {
       final uri = Uri.parse('$baseUrl/api/files/lines').replace(
         queryParameters: {
@@ -117,15 +111,11 @@ class ServerFilesRepositoryImpl implements ServerFilesRepository {
           'limit': '$limit',
         },
       );
-      final req = await client.getUrl(uri);
-      final resp = await req.close().timeout(const Duration(seconds: 15));
-      final body = await resp.transform(utf8.decoder).join();
-      final map = jsonDecode(body) as Map<String, dynamic>;
+      final reply = await httpRequest('GET', uri, timeout: const Duration(seconds: 15));
+      final map = jsonDecode(reply.text) as Map<String, dynamic>;
       return ServerFileLinesResponse.fromJson(map);
     } catch (e) {
       return ServerFileLinesResponse.failure(path, '$e');
-    } finally {
-      client.close(force: true);
     }
   }
 
@@ -136,15 +126,12 @@ class ServerFilesRepositoryImpl implements ServerFilesRepository {
     required String projectPath,
   }) async {
     final baseUrl = normalizeBaseUrl(address);
-    final client = HttpClient()..connectionTimeout = const Duration(seconds: 5);
     try {
       final uri = Uri.parse('$baseUrl/api/git/status').replace(
         queryParameters: {'projectPath': projectPath},
       );
-      final req = await client.getUrl(uri);
-      final resp = await req.close().timeout(const Duration(seconds: 20));
-      final body = await resp.transform(utf8.decoder).join();
-      final map = jsonDecode(body) as Map<String, dynamic>;
+      final reply = await httpRequest('GET', uri, timeout: const Duration(seconds: 20));
+      final map = jsonDecode(reply.text) as Map<String, dynamic>;
       final raw = map['kinds'];
       final kinds = <String, String>{};
       if (raw is Map) {
@@ -158,8 +145,6 @@ class ServerFilesRepositoryImpl implements ServerFilesRepository {
       );
     } catch (e) {
       return ServerGitStatus(ok: false, isRepo: false, kinds: const {}, error: '$e');
-    } finally {
-      client.close(force: true);
     }
   }
 
@@ -230,6 +215,10 @@ class ServerFilesRepositoryImpl implements ServerFilesRepository {
     final cleanPath = savedPath.trim();
     if (cleanPath.isEmpty) {
       return (ok: false, error: 'Đường dẫn tệp trống');
+    }
+    // Trình duyệt không mở được tệp trên máy người dùng bằng đường dẫn
+    if (kIsWeb) {
+      return (ok: false, error: 'Mở tệp trực tiếp chưa hỗ trợ trên web');
     }
     try {
       // Android: đường dẫn content:// (Downloads qua MediaStore) được native xử lý trực tiếp.

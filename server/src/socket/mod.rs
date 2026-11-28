@@ -7,12 +7,21 @@ use socketioxide::{
     SocketIo,
 };
 
+/// Đối số của các event `request-*` theo phiên hội thoại
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ConversationRef {
+    #[serde(default)]
+    conversation_id: String,
+}
+
 pub fn setup_socket_handlers(io: &SocketIo, state: AppState) {
     let connect_state = state.clone();
     crate::agy_auth::init(io.clone());
     crate::claude_auth::init(io.clone());
     crate::setup::init(io.clone());
     crate::explore::init(io.clone());
+    crate::docker::watch::init(io.clone());
     io.ns("/", move |socket: SocketRef| {
         tracing::info!("⚡ Socket.IO Client connected: {}", socket.id);
         // Đăng nhập agy / claude: đẩy trạng thái hiện tại và nhận lệnh `*:auth:*`
@@ -51,9 +60,50 @@ pub fn setup_socket_handlers(io: &SocketIo, state: AppState) {
                 });
             },
         );
-        socket.on_disconnect(move |s: SocketRef| {
+        socket.on_disconnect(move |s: SocketRef, reason: socketioxide::socket::DisconnectReason| {
+            tracing::info!("⚡ Socket.IO Client disconnected: {} ({:?})", s.id, reason);
             crate::explore::release_socket(&s.id.to_string());
+            crate::docker::watch::release_socket(&s.id.to_string());
         });
+
+        // Màn Docker: đẩy `docker:session:update` cho socket đang xem phiên (thay cho quét định kỳ phía app)
+        socket.on(
+            "docker:session:watch",
+            move |s: SocketRef, Data::<crate::docker::watch::WatchRequest>(req), ack: AckSender| async move {
+                crate::docker::watch::watch(&s, &req.session_id);
+                let _ = ack.send(&json!({ "ok": true, "error": "" }));
+            },
+        );
+        socket.on(
+            "docker:session:unwatch",
+            move |s: SocketRef, Data::<crate::docker::watch::WatchRequest>(req)| async move {
+                crate::docker::watch::unwatch(&s, &req.session_id);
+            },
+        );
+
+        // Tương tác Claude đang chờ và câu hỏi AI của một phiên: app gọi khi phiên đổi (thay cho polling 3 giây)
+        let interaction_state = connect_state.clone();
+        socket.on(
+            "request-claude-pending",
+            move |Data::<ConversationRef>(req), ack: AckSender| {
+                let st = interaction_state.clone();
+                async move {
+                    let body = crate::api::claude::claude_pending_body(&st, req.conversation_id.trim().to_string()).await;
+                    let _ = ack.send(&body);
+                }
+            },
+        );
+        let questions_state = connect_state.clone();
+        socket.on(
+            "request-ai-questions",
+            move |Data::<ConversationRef>(req), ack: AckSender| {
+                let st = questions_state.clone();
+                async move {
+                    let body = crate::api::claude::ai_questions_body(&st, req.conversation_id.trim().to_string());
+                    let _ = ack.send(&body);
+                }
+            },
+        );
 
         // Không gửi snapshot đầy đủ khi kết nối: client tự yêu cầu các event nhỏ
         // (`request-sessions`, `request-meta`, `request-streams`) hoặc `request-snapshot` (client cũ)
@@ -61,8 +111,13 @@ pub fn setup_socket_handlers(io: &SocketIo, state: AppState) {
             let _ = socket.emit("retry:update", &val);
         }
 
-        // Trạng thái quay màn hình (có URL RTSP khi đang bật) cho client vừa kết nối
+        // Trạng thái quay màn hình (có địa chỉ trang xem khi đang bật) cho client vừa kết nối
         let _ = socket.emit("screen:status", &connect_state.screen.status());
+
+        // Trạng thái cầu nối cho client vừa kết nối (`bridge:status` chỉ phát khi trạng thái đổi)
+        if let Ok(val) = serde_json::to_value(crate::bridge::status()) {
+            let _ = socket.emit("bridge:status", &val);
+        }
 
         // Quota hiện tại cho client vừa kết nối: server chỉ phát `quotas:update` khi số liệu thay đổi,
         // nên nếu không gửi ngay, client mới (hoặc app mở lại) sẽ không thấy quota cho tới lần đổi kế tiếp.
@@ -141,9 +196,14 @@ pub fn setup_socket_handlers(io: &SocketIo, state: AppState) {
                 let st = send_state.clone();
                 async move {
                     let res = chat::start_chat_turn(st.clone(), req).await;
-                    st.broadcast_session_update(&res.conversation_id);
-                    st.emit_session_files_to_room(&res.conversation_id);
+                    // Ack trước, rồi mới quét session để phát: quét có thể chậm (đường dẫn trên mount),
+                    // không được làm máy gọi (máy chính qua cầu nối) hết thời gian chờ ack
                     let _ = ack.send(&res);
+                    let cid = res.conversation_id.clone();
+                    tokio::task::spawn_blocking(move || {
+                        st.broadcast_session_update(&cid);
+                        st.emit_session_files_to_room(&cid);
+                    });
                 }
             },
         );
@@ -155,6 +215,8 @@ pub fn setup_socket_handlers(io: &SocketIo, state: AppState) {
             move |s: SocketRef, Data::<SshTerminalOpenRequest>(req), ack: AckSender| {
                 let st = term_open_state.clone();
                 async move {
+                    let t0 = std::time::Instant::now();
+                tracing::info!("[SSH] nhận ssh:open");
                     let sid = crate::ssh::terminal::new_session_id();
                     let room = crate::ssh::terminal::room_for(&sid);
                     let _ = s.join(room.clone());
@@ -180,6 +242,7 @@ pub fn setup_socket_handlers(io: &SocketIo, state: AppState) {
                         }
                     };
                     let _ = ack.send(&res);
+                    log_slow_ssh("ssh:open", t0);
                 }
             },
         );
@@ -191,6 +254,8 @@ pub fn setup_socket_handlers(io: &SocketIo, state: AppState) {
         socket.on(
             "ssh:attach",
             move |s: SocketRef, Data::<SshTerminalSessionRequest>(req), ack: AckSender| async move {
+                let t0 = std::time::Instant::now();
+                tracing::info!("[SSH] nhận ssh:attach");
                 let room = crate::ssh::terminal::room_for(&req.session_id);
                 let _ = s.join(room.clone());
                 let res = match crate::ssh::terminal::attach(&req.session_id) {
@@ -222,6 +287,7 @@ pub fn setup_socket_handlers(io: &SocketIo, state: AppState) {
                     }
                 };
                 let _ = ack.send(&res);
+                log_slow_ssh("ssh:attach", t0);
             },
         );
         socket.on(
@@ -356,4 +422,12 @@ pub fn setup_socket_handlers(io: &SocketIo, state: AppState) {
             },
         );
     });
+}
+
+/// Ghi log khi một lệnh socket SSH mất quá 300ms (chẩn đoán treo ack)
+fn log_slow_ssh(event: &str, t0: std::time::Instant) {
+    let ms = t0.elapsed().as_millis();
+    if ms > 300 {
+        eprintln!("[SSH_SLOW] {event} mất {ms}ms");
+    }
 }

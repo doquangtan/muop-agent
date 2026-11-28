@@ -2,7 +2,10 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:flutter/foundation.dart';
+
 import 'package:muop_agent/core/config/server_config.dart';
+import 'package:muop_agent/core/network/rest_client.dart';
 import 'package:muop_agent/core/network/socket_gateway.dart';
 import 'package:muop_agent/core/storage/local_config_store.dart';
 import 'package:muop_agent/features/connection/domain/connection_entities.dart';
@@ -126,6 +129,8 @@ class ConnectionRepositoryImpl implements ConnectionRepository {
   Future<List<LanServer>> scanLanServers({
     void Function(int done, int total)? onProgress,
   }) async {
+    // Trình duyệt không liệt kê được giao diện mạng: web không quét LAN
+    if (kIsWeb) return const [];
     final locals = <String>[];
     try {
       final interfaces = await NetworkInterface.list(
@@ -166,14 +171,11 @@ class ConnectionRepositoryImpl implements ConnectionRepository {
 
   /// Thăm `http://<ip>:8787/api/ping`; trả về server nếu đúng là muop-agent
   Future<LanServer?> _probeLanServer(String ip) async {
-    final client = HttpClient()..connectionTimeout = _scanTimeout;
     try {
       final uri = Uri.parse('http://$ip:$defaultBridgePort/api/ping');
-      final req = await client.getUrl(uri).timeout(_scanTimeout);
-      final resp = await req.close().timeout(_scanTimeout);
-      if (resp.statusCode != 200) return null;
-      final body = await resp.transform(utf8.decoder).join().timeout(_scanTimeout);
-      final decoded = jsonDecode(body);
+      final reply = await httpRequest('GET', uri, timeout: _scanTimeout);
+      if (reply.status != 200) return null;
+      final decoded = jsonDecode(reply.text);
       if (decoded is! Map || !isMuopServerPing(decoded)) return null;
       return LanServer(
         ip: ip,
@@ -182,8 +184,6 @@ class ConnectionRepositoryImpl implements ConnectionRepository {
       );
     } catch (_) {
       return null;
-    } finally {
-      client.close(force: true);
     }
   }
 
@@ -192,16 +192,12 @@ class ConnectionRepositoryImpl implements ConnectionRepository {
   Future<RemotePingResult> pingRemoteServer(String address) async {
     final baseUrl = normalizeBaseUrl(address);
     final sw = Stopwatch()..start();
-    final client = HttpClient()
-      ..connectionTimeout = const Duration(seconds: 3);
     try {
       final uri = Uri.parse('$baseUrl/api/ping');
-      final req = await client.getUrl(uri);
-      final resp = await req.close().timeout(const Duration(seconds: 4));
+      final reply = await httpRequest('GET', uri, timeout: const Duration(seconds: 4));
       sw.stop();
-      if (resp.statusCode == 200) {
-        final body = await resp.transform(utf8.decoder).join();
-        final map = jsonDecode(body) as Map<String, dynamic>;
+      if (reply.status == 200) {
+        final map = jsonDecode(reply.text) as Map<String, dynamic>;
         final ips = <String>[];
         if (map['ips'] is List) {
           for (final item in map['ips'] as List) {
@@ -219,7 +215,7 @@ class ConnectionRepositoryImpl implements ConnectionRepository {
       return RemotePingResult(
         isOnline: false,
         latencyMs: sw.elapsedMilliseconds,
-        errorMessage: 'HTTP ${resp.statusCode}',
+        errorMessage: 'HTTP ${reply.status}',
       );
     } catch (e) {
       sw.stop();
@@ -228,8 +224,6 @@ class ConnectionRepositoryImpl implements ConnectionRepository {
         latencyMs: sw.elapsedMilliseconds,
         errorMessage: '$e',
       );
-    } finally {
-      client.close(force: true);
     }
   }
 

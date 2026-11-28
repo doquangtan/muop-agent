@@ -70,7 +70,6 @@ extension _CanvasExtTaskPanel on _ChatCanvasViewState {
     if (activeTaskCount == 0) {
       return LiquidGlassPill(
         cornerRadius: 16,
-        refractionWidth: 12,
         shadowBlur: 8,
         child: Padding(
           padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
@@ -361,7 +360,6 @@ extension _CanvasExtTaskPanel on _ChatCanvasViewState {
 
     return LiquidGlassPill(
       cornerRadius: 16,
-      refractionWidth: 12,
       shadowBlur: 8,
       child: Column(
         mainAxisSize: MainAxisSize.min,
@@ -526,12 +524,7 @@ extension _CanvasExtTaskPanel on _ChatCanvasViewState {
                       SizedBox(
                         width: 15,
                         height: 15,
-                        child: CircularProgressIndicator(
-                          strokeWidth: 2,
-                          valueColor: AlwaysStoppedAnimation<Color>(
-                            coordinatorBadgeColor,
-                          ),
-                        ),
+                        child: ThrottledSpinner(strokeWidth: 2, color: coordinatorBadgeColor),
                       ),
                     const SizedBox(width: 10),
                     Expanded(
@@ -724,12 +717,7 @@ extension _CanvasExtTaskPanel on _ChatCanvasViewState {
                     SizedBox(
                       width: 14,
                       height: 14,
-                      child: CircularProgressIndicator(
-                        strokeWidth: 1.8,
-                        valueColor: AlwaysStoppedAnimation<Color>(
-                          context.status.warning,
-                        ),
-                      ),
+                      child: ThrottledSpinner(strokeWidth: 1.8, color: context.status.warning),
                     ),
                     const SizedBox(width: 10),
                     Expanded(

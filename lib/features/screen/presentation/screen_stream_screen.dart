@@ -3,19 +3,15 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:material_ui/material_ui.dart';
-import 'package:media_kit/media_kit.dart';
-import 'package:media_kit_video/media_kit_video.dart';
+
+import 'package:muop_agent/core/widgets/throttled_spinner.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import 'package:muop_agent/core/di/app_dependencies.dart';
 import 'package:muop_agent/core/widgets/glass_scaffold.dart';
 import 'package:muop_agent/features/screen/domain/screen_entities.dart';
 
-/// Thử lại khi luồng RTSP lỗi (server vừa khởi động lại, mạng chập chờn...)
-const _retryDelay = Duration(seconds: 3);
-const _maxRetries = 20;
-
-/// Màn hình máy chủ đang được quay. Phát luồng RTSP ngay trong app.
+/// Màn hình máy chủ đang được quay. Khung JPEG lấy theo long-poll (chạy được trên web, desktop và mobile).
 class ScreenStreamScreen extends StatefulWidget {
   const ScreenStreamScreen({super.key});
 
@@ -26,19 +22,12 @@ class ScreenStreamScreen extends StatefulWidget {
 class _ScreenStreamScreenState extends State<ScreenStreamScreen> {
   late ScreenStatus _status;
   StreamSubscription<ScreenStatus>? _statusSub;
+  StreamSubscription<ScreenFrame>? _frameSub;
 
-  Player? _player;
-  VideoController? _video;
-  final List<StreamSubscription<dynamic>> _playerSubs = [];
-  String _playingUrl = '';
-  bool _buffering = true;
-  String _playError = '';
-  /// Vài dòng log cảnh báo/lỗi gần nhất của libmpv, hiện dưới thông báo để chẩn đoán
-  final List<String> _recentLogs = [];
-  int _retries = 0;
-  Timer? _retryTimer;
+  /// Khung đang hiển thị (JPEG). Khung mới thay khung cũ, không giữ lịch sử.
+  Uint8List? _frame;
 
-  /// Đang xem toàn màn hình (video chiếm cả màn hình, có zoom)
+  /// Đang xem toàn màn hình (khung chiếm cả màn hình, có zoom)
   bool _zoomed = false;
 
   @override
@@ -60,141 +49,36 @@ class _ScreenStreamScreenState extends State<ScreenStreamScreen> {
     // Rời màn hình luôn trả về chiều dọc, kể cả khi đang không phóng to
     _applyOrientation(false);
     _statusSub?.cancel();
-    _retryTimer?.cancel();
-    _disposePlayer();
+    _frameSub?.cancel();
     super.dispose();
   }
 
-  bool get _live => _status.streaming && _status.rtspUrl.isNotEmpty;
+  bool get _live => _status.streaming;
 
-  /// Mở luồng khi server đang phát; dừng khi server tắt hoặc đổi địa chỉ
+  /// Nhận khung khi server đang quay; dừng khi server tắt
   void _syncPlayback() {
     if (!_live) {
-      _retryTimer?.cancel();
-      _retries = 0;
       if (_zoomed) _applyOrientation(false);
       _zoomed = false;
-      _disposePlayer();
+      _stopFrames();
       if (mounted) setState(() {});
       return;
     }
-    final url = AppDependencies.screen.playbackUrl(_status.rtspUrl);
-    if (_player != null && _playingUrl == url) return;
-    unawaited(_openStream(url));
-  }
-
-  /// Số thứ tự lần mở luồng gần nhất: lần mở cũ (đang chờ thuộc tính) bị bỏ khi đã có lần mới
-  int _openGen = 0;
-
-  Future<void> _openStream(String url) async {
-    _disposePlayer();
-    final gen = ++_openGen;
-    final player = Player(
-      configuration: const PlayerConfiguration(logLevel: MPVLogLevel.info),
-    );
-    _player = player;
-    _playingUrl = url;
-    _buffering = true;
-    _playError = '';
-    _recentLogs.clear();
-
-    // RÀNG BUỘC (đừng sửa thứ tự này):
-    // 1. Thuộc tính libmpv phải đặt XONG (await) trước khi tạo VideoController. VideoController tạo render
-    //    context của mpv trên luồng nền; đổi cấu hình (ví dụ `profile`) trong lúc đó làm mpv assert
-    //    (m_config_cache_from_shadow).
-    // 2. KHÔNG đưa VideoController lên trước các setProperty ở trên.
-    // 3. Trên Android, hwdec chỉ đặt được qua VideoControllerConfiguration (xem chú thích bên dưới), KHÔNG
-    //    đặt bằng setProperty: VideoController tự ghi đè `hwdec` khi khởi tạo.
-    // 4. Lần mở cũ (gen) đang chờ thuộc tính phải bị bỏ, không được gắn video vào player cũ.
-    final native = player.platform;
-    if (native is NativePlayer) {
-      // RTSP qua TCP (server chỉ hỗ trợ TCP) và giảm độ trễ
-      await native.setProperty('rtsp-transport', 'tcp');
-      await native.setProperty('profile', 'low-latency');
-      await native.setProperty('cache', 'no');
-      await native.setProperty('network-timeout', '10');
-      // Luồng live không seek được: cho phép seek thử để mpv không báo lỗi "Cannot seek" làm luồng bị đóng
-      await native.setProperty('force-seekable', 'yes');
-    }
-    if (gen != _openGen || !mounted) {
-      // Đã có lần mở mới (đã tự hủy player này) hoặc rời màn hình trong lúc chờ: chỉ hủy nếu còn là player hiện tại
-      if (identical(_player, player)) _disposePlayer();
-      return;
-    }
-    // Android: giải mã phần cứng (MediaCodec) mở trước khi biết kích thước khung, vì SDP không có
-    // width/height nên cấu hình với 0x0 và bị từ chối ("Could not open codec", lặp lại mỗi vài giây).
-    // Đã kiểm chứng: `hwdec=no` đặt bằng setProperty bị media_kit_video 2.0.1 ghi đè
-    // (android_video_controller/real.dart, setProperties 'hwdec'). Phải truyền qua
-    // VideoControllerConfiguration. Luồng RTSP trên Android giải mã bằng phần mềm; các nền tảng khác
-    // giữ mặc định của media_kit.
-    final video = VideoController(
-      player,
-      configuration: defaultTargetPlatform == TargetPlatform.android
-          ? const VideoControllerConfiguration(hwdec: 'no')
-          : const VideoControllerConfiguration(),
-    );
-    _video = video;
-
-    _playerSubs.add(
-      player.stream.log.listen((log) {
-        final text = log.text.trim();
-        debugPrint('[screen/mpv] ${log.level}: $text');
-        if (!mounted || text.isEmpty) return;
-        if (log.level != 'warn' && log.level != 'error' && log.level != 'fatal') {
-          return;
-        }
-        setState(() {
-          _recentLogs.add('${log.level}: $text');
-          if (_recentLogs.length > 3) _recentLogs.removeAt(0);
-        });
-      }),
-    );
-    _playerSubs.add(
-      player.stream.buffering.listen((b) {
-        if (mounted) setState(() => _buffering = b);
-      }),
-    );
-    _playerSubs.add(
-      player.stream.playing.listen((playing) {
-        if (playing) _retries = 0;
-      }),
-    );
-    _playerSubs.add(
-      player.stream.error.listen((err) {
-        debugPrint('[screen/mpv] error: $err');
-        if (err.isEmpty || !mounted) return;
-        setState(() => _playError = err);
-        _scheduleRetry();
-      }),
-    );
-
-    unawaited(player.open(Media(url), play: true));
+    if (_frameSub != null) return;
+    _frameSub = AppDependencies.screen.watchFrames().listen((frame) {
+      if (!mounted) return;
+      setState(() => _frame = frame.jpeg);
+    });
     if (mounted) setState(() {});
   }
 
-  void _scheduleRetry() {
-    if (!_live || _retries >= _maxRetries) return;
-    _retryTimer?.cancel();
-    _retryTimer = Timer(_retryDelay, () {
-      if (!mounted || !_live) return;
-      _retries++;
-      unawaited(_openStream(AppDependencies.screen.playbackUrl(_status.rtspUrl)));
-    });
+  void _stopFrames() {
+    _frameSub?.cancel();
+    _frameSub = null;
+    _frame = null;
   }
 
-  void _disposePlayer() {
-    for (final s in _playerSubs) {
-      s.cancel();
-    }
-    _playerSubs.clear();
-    final player = _player;
-    _player = null;
-    _video = null;
-    _playingUrl = '';
-    player?.dispose();
-  }
-
-  Future<void> _openInPlayer(String url) async {
+  Future<void> _openViewer(String url) async {
     final messenger = ScaffoldMessenger.of(context);
     final ok = await launchUrl(
       Uri.parse(url),
@@ -202,11 +86,7 @@ class _ScreenStreamScreenState extends State<ScreenStreamScreen> {
     );
     if (!ok) {
       messenger.showSnackBar(
-        const SnackBar(
-          content: Text(
-            'Không tìm thấy ứng dụng mở RTSP. Hãy cài VLC hoặc mpv rồi thử lại.',
-          ),
-        ),
+        const SnackBar(content: Text('Không mở được trình duyệt.')),
       );
     }
   }
@@ -216,51 +96,7 @@ class _ScreenStreamScreenState extends State<ScreenStreamScreen> {
     if (!mounted) return;
     ScaffoldMessenger.of(
       context,
-    ).showSnackBar(const SnackBar(content: Text('Đã sao chép địa chỉ RTSP')));
-  }
-
-  Widget _buildVideo(ColorScheme colorScheme, TextTheme textTheme) {
-    final video = _video!;
-    return Stack(
-      alignment: Alignment.center,
-      children: [
-        AspectRatio(
-          aspectRatio: 16 / 9,
-          child: ColoredBox(
-            color: colorScheme.scrim,
-            child: Video(controller: video, controls: NoVideoControls),
-          ),
-        ),
-        if (_buffering) const CircularProgressIndicator(strokeWidth: 2),
-        if (_playError.isNotEmpty)
-          Positioned(
-            left: 12,
-            right: 12,
-            bottom: 12,
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Text(
-                  _retries < _maxRetries
-                      ? 'Mất kết nối, đang thử lại…'
-                      : 'Không phát được luồng',
-                  textAlign: TextAlign.center,
-                  style: textTheme.bodySmall?.copyWith(color: colorScheme.error),
-                ),
-                // Lỗi gốc và log gần nhất của libmpv, để biết nguyên nhân khi báo lại
-                for (final line in [_playError, ..._recentLogs])
-                  Text(
-                    line,
-                    textAlign: TextAlign.center,
-                    style: textTheme.labelSmall?.copyWith(
-                      color: colorScheme.error.withValues(alpha: 0.8),
-                    ),
-                  ),
-              ],
-            ),
-          ),
-      ],
-    );
+    ).showSnackBar(const SnackBar(content: Text('Đã sao chép địa chỉ xem màn hình')));
   }
 
   /// Bật/tắt chế độ phóng to, kèm xoay màn hình
@@ -270,8 +106,9 @@ class _ScreenStreamScreenState extends State<ScreenStreamScreen> {
   }
 
   /// Phóng to: xoay ngang và ẩn thanh hệ thống. Thu nhỏ/rời màn hình: khoá về chiều dọc và hiện lại thanh hệ thống.
-  /// Chỉ áp dụng trên điện thoại; Linux desktop không có xoay màn hình.
+  /// Chỉ áp dụng trên điện thoại; desktop và web không có xoay màn hình.
   void _applyOrientation(bool landscape) {
+    if (kIsWeb) return;
     if (defaultTargetPlatform != TargetPlatform.android &&
         defaultTargetPlatform != TargetPlatform.iOS) {
       return;
@@ -288,18 +125,47 @@ class _ScreenStreamScreenState extends State<ScreenStreamScreen> {
     }
   }
 
-  /// Video toàn màn hình: kéo hai ngón để phóng to/thu nhỏ, nút góc trên để thoát
-  Widget _buildZoomed(ColorScheme colorScheme) {
+  /// Khung hình: giữ khung cũ khi khung mới chưa giải mã xong (gaplessPlayback) để không nháy
+  Widget _buildFrame(ColorScheme colorScheme, TextTheme textTheme, {required bool fill}) {
+    final frame = _frame;
+    final child = frame == null
+        ? Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const ThrottledSpinner(size: 36, strokeWidth: 2),
+              const SizedBox(height: 12),
+              Text(
+                'Đang nhận khung hình đầu tiên…',
+                style: textTheme.bodySmall?.copyWith(color: colorScheme.onSurfaceVariant),
+              ),
+            ],
+          )
+        : Image.memory(
+            frame,
+            gaplessPlayback: true,
+            fit: BoxFit.contain,
+            filterQuality: FilterQuality.medium,
+          );
+    final framed = ColoredBox(
+      color: colorScheme.scrim,
+      child: Center(child: child),
+    );
+    if (fill) return framed;
+    return AspectRatio(aspectRatio: 16 / 9, child: framed);
+  }
+
+  /// Khung toàn màn hình: kéo hai ngón để phóng to/thu nhỏ, nút góc trên để thoát
+  Widget _buildZoomed(ColorScheme colorScheme, TextTheme textTheme) {
     return ColoredBox(
       color: colorScheme.scrim,
       child: SafeArea(
         child: Stack(
           children: [
-            Center(
+            Positioned.fill(
               child: InteractiveViewer(
                 minScale: 1,
                 maxScale: 5,
-                child: Video(controller: _video!, controls: NoVideoControls),
+                child: _buildFrame(colorScheme, textTheme, fill: true),
               ),
             ),
             Positioned(
@@ -321,7 +187,7 @@ class _ScreenStreamScreenState extends State<ScreenStreamScreen> {
   Widget build(BuildContext context) {
     final colorScheme = Theme.of(context).colorScheme;
     final textTheme = Theme.of(context).textTheme;
-    final url = AppDependencies.screen.playbackUrl(_status.rtspUrl);
+    final url = AppDependencies.screen.viewerUrl(_status.viewerUrl);
 
     final String message;
     final IconData icon;
@@ -339,14 +205,14 @@ class _ScreenStreamScreenState extends State<ScreenStreamScreen> {
       message = 'Chưa bật quay màn hình. Bật bằng checkbox "Stream màn hình" trên khay hệ thống của máy chủ.';
     }
 
-    final showZoomed = _zoomed && _live && _video != null;
+    final showZoomed = _zoomed && _live;
     return PopScope(
       canPop: !showZoomed,
       onPopInvokedWithResult: (didPop, _) {
         if (!didPop && showZoomed) _setZoomed(false);
       },
       child: showZoomed
-          ? Scaffold(body: _buildZoomed(colorScheme))
+          ? Scaffold(body: _buildZoomed(colorScheme, textTheme))
           : GlassScreenScaffold(
               title: 'Màn hình máy chủ',
               body: _buildPanel(colorScheme, textTheme, url, icon, message),
@@ -364,8 +230,8 @@ class _ScreenStreamScreenState extends State<ScreenStreamScreen> {
     return ListView(
       padding: const EdgeInsets.all(16),
       children: [
-        if (_live && _video != null) ...[
-          _buildVideo(colorScheme, textTheme),
+        if (_live) ...[
+          _buildFrame(colorScheme, textTheme, fill: false),
           const SizedBox(height: 12),
           FilledButton.icon(
             onPressed: () => _setZoomed(true),
@@ -383,7 +249,7 @@ class _ScreenStreamScreenState extends State<ScreenStreamScreen> {
             color: colorScheme.onSurfaceVariant,
           ),
         ),
-        if (_live) ...[
+        if (_live && url.isNotEmpty) ...[
           const SizedBox(height: 16),
           SelectableText(
             url,
@@ -395,15 +261,15 @@ class _ScreenStreamScreenState extends State<ScreenStreamScreen> {
           ),
           const SizedBox(height: 12),
           OutlinedButton.icon(
-            onPressed: () => _openInPlayer(url),
+            onPressed: () => _openViewer(url),
             icon: const Icon(Icons.open_in_new_rounded),
-            label: const Text('Mở bằng ứng dụng khác'),
+            label: const Text('Mở trang xem trong trình duyệt'),
           ),
           const SizedBox(height: 8),
           OutlinedButton.icon(
             onPressed: () => _copyUrl(url),
             icon: const Icon(Icons.copy_rounded),
-            label: const Text('Sao chép địa chỉ RTSP'),
+            label: const Text('Sao chép địa chỉ xem'),
           ),
         ],
       ],

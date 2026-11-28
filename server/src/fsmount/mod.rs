@@ -262,8 +262,26 @@ fn mount_remote(origin: &str, project: &str, mount_point: &Path) -> Result<Mount
     })
 }
 
-/// Điểm mount còn đọc được (không bị ENOTCONN hay treo)
-fn is_alive(mount_point: &Path) -> bool {
+/// Điểm mount còn là mount FUSE đang hoạt động. Thư mục mount vẫn tồn tại sau khi FUSE bị gỡ,
+/// nên chỉ kiểm tra tồn tại là không đủ: một filesystem được gắn lên điểm mount có `st_dev`
+/// khác thư mục cha. Không đọc được (ENOTCONN, treo) hoặc cùng thiết bị với cha thì coi là chết.
+#[cfg(unix)]
+pub fn is_alive(mount_point: &Path) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    let Ok(meta) = std::fs::metadata(mount_point) else {
+        return false;
+    };
+    let Some(parent) = mount_point.parent() else {
+        return false;
+    };
+    match std::fs::metadata(parent) {
+        Ok(parent_meta) => meta.dev() != parent_meta.dev(),
+        Err(_) => false,
+    }
+}
+
+#[cfg(not(unix))]
+pub fn is_alive(mount_point: &Path) -> bool {
     std::fs::metadata(mount_point).is_ok()
 }
 

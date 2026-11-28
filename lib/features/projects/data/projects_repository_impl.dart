@@ -1,8 +1,8 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:io';
 
 import 'package:muop_agent/core/config/server_config.dart';
+import 'package:muop_agent/core/network/rest_client.dart';
 import 'package:muop_agent/core/network/socket_gateway.dart';
 import 'package:muop_agent/features/projects/domain/project_entities.dart';
 import 'package:muop_agent/features/projects/domain/projects_repository.dart';
@@ -47,22 +47,18 @@ class ProjectsRepositoryImpl implements ProjectsRepository {
     String description = '',
   }) async {
     final baseUrl = normalizeBaseUrl(address);
-    final client = HttpClient()
-      ..connectionTimeout = const Duration(seconds: 6);
     try {
-      final uri = Uri.parse('$baseUrl/api/project/create');
-      final req = await client.postUrl(uri);
-      req.headers.contentType = ContentType.json;
-      req.write(
-        jsonEncode({
+      final reply = await httpRequest(
+        'POST',
+        Uri.parse('$baseUrl/api/project/create'),
+        json: {
           'name': name.trim(),
           'template': template,
           'description': description.trim(),
-        }),
+        },
+        timeout: const Duration(seconds: 10),
       );
-      final resp = await req.close().timeout(const Duration(seconds: 10));
-      final body = await resp.transform(utf8.decoder).join();
-      final map = jsonDecode(body) as Map<String, dynamic>;
+      final map = jsonDecode(reply.text) as Map<String, dynamic>;
       return CreateProjectResult.fromJson(map);
     } catch (e) {
       return CreateProjectResult(
@@ -70,8 +66,6 @@ class ProjectsRepositoryImpl implements ProjectsRepository {
         message: 'Lỗi kết nối tới Rust Server: $e',
         error: '$e',
       );
-    } finally {
-      client.close(force: true);
     }
   }
 
@@ -83,8 +77,6 @@ class ProjectsRepositoryImpl implements ProjectsRepository {
     String? projectName,
   }) async {
     final baseUrl = normalizeBaseUrl(address);
-    final client = HttpClient()
-      ..connectionTimeout = const Duration(seconds: 4);
     try {
       final queryParams = <String, String>{};
       if (projectPath != null && projectPath.trim().isNotEmpty) {
@@ -96,18 +88,14 @@ class ProjectsRepositoryImpl implements ProjectsRepository {
       final uri = Uri.parse('$baseUrl/api/project/agents').replace(
         queryParameters: queryParams.isNotEmpty ? queryParams : null,
       );
-      final req = await client.getUrl(uri);
-      final resp = await req.close().timeout(const Duration(seconds: 6));
-      if (resp.statusCode == HttpStatus.ok) {
-        final body = await resp.transform(utf8.decoder).join();
-        final map = jsonDecode(body) as Map<String, dynamic>;
+      final reply = await httpRequest('GET', uri, timeout: const Duration(seconds: 6));
+      if (reply.status == 200) {
+        final map = jsonDecode(reply.text) as Map<String, dynamic>;
         return ProjectAgentsResponse.fromJson(map);
       }
       return null;
     } catch (_) {
       return null;
-    } finally {
-      client.close(force: true);
     }
   }
 
@@ -118,8 +106,6 @@ class ProjectsRepositoryImpl implements ProjectsRepository {
     String? projectPath,
   }) async {
     final baseUrl = normalizeBaseUrl(address);
-    final client = HttpClient()
-      ..connectionTimeout = const Duration(seconds: 4);
     try {
       final queryParams = <String, String>{};
       if (projectPath != null && projectPath.trim().isNotEmpty) {
@@ -128,11 +114,9 @@ class ProjectsRepositoryImpl implements ProjectsRepository {
       final uri = Uri.parse('$baseUrl/api/claude/extensions').replace(
         queryParameters: queryParams.isNotEmpty ? queryParams : null,
       );
-      final req = await client.getUrl(uri);
-      final resp = await req.close().timeout(const Duration(seconds: 6));
-      if (resp.statusCode == HttpStatus.ok) {
-        final body = await resp.transform(utf8.decoder).join();
-        final map = jsonDecode(body) as Map<String, dynamic>;
+      final reply = await httpRequest('GET', uri, timeout: const Duration(seconds: 6));
+      if (reply.status == 200) {
+        final map = jsonDecode(reply.text) as Map<String, dynamic>;
         final raw = map['items'];
         if (raw is! List) return const [];
         return raw
@@ -143,8 +127,6 @@ class ProjectsRepositoryImpl implements ProjectsRepository {
       return null;
     } catch (_) {
       return null;
-    } finally {
-      client.close(force: true);
     }
   }
 
@@ -156,21 +138,17 @@ class ProjectsRepositoryImpl implements ProjectsRepository {
     String branch = '',
   }) async {
     final baseUrl = normalizeBaseUrl(address);
-    final client = HttpClient()
-      ..connectionTimeout = const Duration(seconds: 10);
     try {
-      final uri = Uri.parse('$baseUrl/api/git/push');
-      final req = await client.postUrl(uri);
-      req.headers.contentType = ContentType.json;
-      req.write(
-        jsonEncode({
+      final reply = await httpRequest(
+        'POST',
+        Uri.parse('$baseUrl/api/git/push'),
+        json: {
           'projectPath': projectPath.trim(),
           'branch': branch.trim(),
-        }),
+        },
+        timeout: const Duration(seconds: 35),
       );
-      final resp = await req.close().timeout(const Duration(seconds: 35));
-      final body = await resp.transform(utf8.decoder).join();
-      final map = jsonDecode(body) as Map<String, dynamic>;
+      final map = jsonDecode(reply.text) as Map<String, dynamic>;
       return GitPushResponse.fromJson(map);
     } catch (e) {
       return GitPushResponse(
@@ -178,8 +156,6 @@ class ProjectsRepositoryImpl implements ProjectsRepository {
         message: 'Lỗi kết nối khi git push: $e',
         error: '$e',
       );
-    } finally {
-      client.close(force: true);
     }
   }
 
@@ -192,8 +168,6 @@ class ProjectsRepositoryImpl implements ProjectsRepository {
     int limit = 100,
   }) async {
     final baseUrl = normalizeBaseUrl(address);
-    final client = HttpClient()
-      ..connectionTimeout = const Duration(seconds: 8);
     try {
       final uri = Uri.parse('$baseUrl/api/git/history').replace(
         queryParameters: {
@@ -203,10 +177,8 @@ class ProjectsRepositoryImpl implements ProjectsRepository {
           'limit': limit.toString(),
         },
       );
-      final req = await client.getUrl(uri);
-      final resp = await req.close().timeout(const Duration(seconds: 12));
-      final body = await resp.transform(utf8.decoder).join();
-      final map = jsonDecode(body) as Map<String, dynamic>;
+      final reply = await httpRequest('GET', uri, timeout: const Duration(seconds: 12));
+      final map = jsonDecode(reply.text) as Map<String, dynamic>;
       return GitHistoryResponse.fromJson(map);
     } catch (e) {
       return GitHistoryResponse(
@@ -219,8 +191,6 @@ class ProjectsRepositoryImpl implements ProjectsRepository {
         commits: const [],
         error: '$e',
       );
-    } finally {
-      client.close(force: true);
     }
   }
 
@@ -232,8 +202,6 @@ class ProjectsRepositoryImpl implements ProjectsRepository {
     required String hash,
   }) async {
     final baseUrl = normalizeBaseUrl(address);
-    final client = HttpClient()
-      ..connectionTimeout = const Duration(seconds: 10);
     try {
       final uri = Uri.parse('$baseUrl/api/git/commit').replace(
         queryParameters: {
@@ -241,10 +209,8 @@ class ProjectsRepositoryImpl implements ProjectsRepository {
           'hash': hash.trim(),
         },
       );
-      final req = await client.getUrl(uri);
-      final resp = await req.close().timeout(const Duration(seconds: 15));
-      final body = await resp.transform(utf8.decoder).join();
-      final map = jsonDecode(body) as Map<String, dynamic>;
+      final reply = await httpRequest('GET', uri, timeout: const Duration(seconds: 15));
+      final map = jsonDecode(reply.text) as Map<String, dynamic>;
       return GitCommitDetailResponse.fromJson(map);
     } catch (e) {
       return GitCommitDetailResponse(
@@ -264,8 +230,6 @@ class ProjectsRepositoryImpl implements ProjectsRepository {
         diff: '',
         error: '$e',
       );
-    } finally {
-      client.close(force: true);
     }
   }
 }

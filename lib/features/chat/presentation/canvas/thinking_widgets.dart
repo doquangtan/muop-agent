@@ -95,34 +95,50 @@ class _AnimatedThinkingRobotIcon extends StatefulWidget {
       _AnimatedThinkingRobotIconState();
 }
 
-class _AnimatedThinkingRobotIconState extends State<_AnimatedThinkingRobotIcon>
-    with SingleTickerProviderStateMixin {
-  late final AnimationController _controller;
-  late final Animation<double> _scaleAnimation;
-  late final Animation<double> _glowAnimation;
+class _AnimatedThinkingRobotIconState extends State<_AnimatedThinkingRobotIcon> {
+  /// Một chu kỳ phóng to/thu nhỏ (đi rồi về)
+  static const Duration _cycle = Duration(milliseconds: 1400);
+
+  /// Nhịp cập nhật: 20 khung/giây thay vì 60 (vsync). Đủ mượt cho nhịp đập chậm, và mỗi khung
+  /// Flutter phải blur lại mọi kính phía trên nên giảm số khung là giảm GPU trực tiếp.
+  static const Duration _tick = Duration(milliseconds: 50);
+
+  // Ghi chú: giảm chuyển động (reduce motion) thì icon đứng ở tư thế nghỉ; chat bị ẩn thì tạm dừng.
+
+  /// Pha 0 → 1 → 0 trong một chu kỳ đi rồi về (2 × [_cycle])
+  final ThrottledTicker _ticker = ThrottledTicker();
+  bool _reduceMotion = false;
+  bool _tickerOn = true;
 
   @override
   void initState() {
     super.initState();
-    _controller = AnimationController(
-      vsync: this,
-      duration: const Duration(milliseconds: 1400),
-    )..repeat(reverse: true);
+    _ticker.period = _cycle * 2;
+  }
 
-    _scaleAnimation = Tween<double>(
-      begin: 0.88,
-      end: 1.12,
-    ).animate(CurvedAnimation(parent: _controller, curve: Curves.easeInOut));
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _reduceMotion = reduceMotionOf(context);
+    _tickerOn = tickerEnabledOf(context);
+    if (_reduceMotion) {
+      _ticker.reset(); // tư thế nghỉ, không đập
+    } else if (_tickerOn) {
+      _ticker.start(interval: _tick);
+    } else {
+      _ticker.stop(); // chat nằm dưới panel: tạm dừng
+    }
+  }
 
-    _glowAnimation = Tween<double>(
-      begin: 0.25,
-      end: 0.85,
-    ).animate(CurvedAnimation(parent: _controller, curve: Curves.easeInOut));
+  /// Độ cong 0 → 1 → 0 của pha (đi nửa đầu, về nửa sau) có easing
+  static double _easedOf(double phase) {
+    final tri = phase <= 0.5 ? phase * 2 : (1 - phase) * 2;
+    return Curves.easeInOut.transform(tri);
   }
 
   @override
   void dispose() {
-    _controller.dispose();
+    _ticker.dispose();
     super.dispose();
   }
 
@@ -131,39 +147,41 @@ class _AnimatedThinkingRobotIconState extends State<_AnimatedThinkingRobotIcon>
     final effectiveColor =
         widget.color ?? Theme.of(context).colorScheme.primary;
 
-    return AnimatedBuilder(
-      animation: _controller,
-      builder: (context, child) {
-        return Transform.scale(
-          scale: _scaleAnimation.value,
-          child: Container(
-            width: widget.size + 8,
-            height: widget.size + 8,
-            decoration: BoxDecoration(
-              shape: BoxShape.circle,
-              color: effectiveColor.withAlpha(
-                (35 * _glowAnimation.value).round(),
-              ),
-              boxShadow: [
-                BoxShadow(
-                  color: effectiveColor.withAlpha(
-                    (80 * _glowAnimation.value).round(),
-                  ),
-                  blurRadius: 8 * _glowAnimation.value,
-                  spreadRadius: 1.2 * _glowAnimation.value,
+    // Chỉ phần vòng sáng rebuild theo nhịp; icon và phần còn lại không đổi.
+    return RepaintBoundary(
+      child: ValueListenableBuilder<double>(
+        valueListenable: _ticker.phase,
+        builder: (context, phase, _) {
+          final p = _easedOf(phase);
+          final scale = 0.88 + 0.24 * p;
+          final glow = 0.25 + 0.6 * p;
+          return Transform.scale(
+            scale: scale,
+            child: Container(
+              width: widget.size + 8,
+              height: widget.size + 8,
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                // Vầng sáng bằng gradient, KHÔNG dùng BoxShadow có blur: blur phải tính lại mỗi nhịp
+                gradient: RadialGradient(
+                  colors: [
+                    effectiveColor.withAlpha((70 * glow).round()),
+                    effectiveColor.withAlpha(0),
+                  ],
+                  stops: const [0.55, 1.0],
                 ),
-              ],
-            ),
-            child: Center(
-              child: Icon(
-                Icons.smart_toy_rounded,
-                size: widget.size,
-                color: effectiveColor,
+              ),
+              child: Center(
+                child: Icon(
+                  Icons.smart_toy_rounded,
+                  size: widget.size,
+                  color: effectiveColor,
+                ),
               ),
             ),
-          ),
-        );
-      },
+          );
+        },
+      ),
     );
   }
 }
@@ -184,9 +202,27 @@ class _AiResponseTypewriter extends StatefulWidget {
 }
 
 class _AiResponseTypewriterState extends State<_AiResponseTypewriter> {
-  static const Duration _tick = Duration(milliseconds: 20);
+  /// 16 nhịp/giây (thay 50): mỗi nhịp dựng lại markdown của cả thẻ, nên giảm nhịp là giảm CPU/GPU
+  static const Duration _tick = Duration(milliseconds: 60);
   Timer? _timer;
   late int _visibleLength = widget.text.length;
+  bool _tickerOn = true;
+  bool _reduceMotion = false;
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _reduceMotion = reduceMotionOf(context);
+    final on = tickerEnabledOf(context);
+    if (on == _tickerOn) return;
+    _tickerOn = on;
+    if (on) {
+      _ensureTimer(); // bật lại: gõ tiếp từ chỗ đang dở
+    } else {
+      _timer?.cancel(); // bị ẩn (chat nằm dưới panel): tạm dừng, không dựng lại markdown
+      _timer = null;
+    }
+  }
 
   @override
   void didUpdateWidget(covariant _AiResponseTypewriter oldWidget) {
@@ -207,6 +243,12 @@ class _AiResponseTypewriterState extends State<_AiResponseTypewriter> {
   void _ensureTimer() {
     if (_timer?.isActive == true) return;
     if (_visibleLength >= widget.text.length) return;
+    // Giảm chuyển động: hiện ngay toàn bộ, không gõ
+    if (_reduceMotion) {
+      _visibleLength = widget.text.length;
+      return;
+    }
+    if (!_tickerOn) return; // đang bị ẩn: chờ didChangeDependencies bật lại
     _timer = Timer.periodic(_tick, (timer) {
       if (!mounted) {
         timer.cancel();
@@ -217,7 +259,8 @@ class _AiResponseTypewriterState extends State<_AiResponseTypewriter> {
         timer.cancel();
         return;
       }
-      final step = math.max(1, (remaining / 18).ceil());
+      // Bước lớn hơn bù cho nhịp thưa, tốc độ gõ cảm nhận gần như không đổi
+      final step = math.max(2, (remaining / 9).ceil());
       setState(() {
         _visibleLength = math.min(_visibleLength + step, widget.text.length);
       });

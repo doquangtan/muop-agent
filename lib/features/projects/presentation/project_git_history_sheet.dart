@@ -1,6 +1,8 @@
 import 'package:flutter/services.dart';
 import 'package:material_ui/material_ui.dart';
 
+import 'package:muop_agent/core/widgets/throttled_spinner.dart';
+
 import 'package:muop_agent/core/di/app_dependencies.dart';
 import 'package:muop_agent/core/theme/app_theme.dart';
 import 'package:muop_agent/core/widgets/glass_scaffold.dart';
@@ -318,11 +320,7 @@ class _ProjectGitHistorySheetState extends State<ProjectGitHistorySheetView> {
         // Nút Push to Remote nếu có
         IconButton(
           icon: _isPushing
-              ? const SizedBox(
-                  width: 16,
-                  height: 16,
-                  child: CircularProgressIndicator(strokeWidth: 2),
-                )
+              ? const ThrottledSpinner(size: 16, strokeWidth: 2)
               : const Icon(Icons.cloud_upload_outlined, size: 20),
           tooltip: 'Push lên Remote Git',
           onPressed: _isPushing ? null : _triggerPush,
@@ -347,7 +345,7 @@ class _ProjectGitHistorySheetState extends State<ProjectGitHistorySheetView> {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            CircularProgressIndicator(),
+            ThrottledSpinner(size: 36, strokeWidth: 4),
             SizedBox(height: 14),
             Text('Đang nạp Git Tree & Commit History...'),
           ],
@@ -837,7 +835,7 @@ class _ProjectGitHistorySheetState extends State<ProjectGitHistorySheetView> {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            CircularProgressIndicator(),
+            ThrottledSpinner(size: 36, strokeWidth: 4),
             SizedBox(height: 12),
             Text('Đang nạp chi tiết commit và git diff...'),
           ],
@@ -1345,7 +1343,7 @@ class _MobileCommitDetailSheetState extends State<_MobileCommitDetailSheetView> 
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            CircularProgressIndicator(),
+            ThrottledSpinner(size: 36, strokeWidth: 4),
             SizedBox(height: 14),
             Text('Đang nạp chi tiết commit và git diff...'),
           ],

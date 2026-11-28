@@ -169,10 +169,7 @@ extension _CanvasExtScroll on _ChatCanvasViewState {
                   SizedBox(
                     width: 14,
                     height: 14,
-                    child: CircularProgressIndicator(
-                      strokeWidth: 2,
-                      color: colorScheme.primary,
-                    ),
+                    child: ThrottledSpinner(strokeWidth: 2, color: colorScheme.primary),
                   ),
                   const SizedBox(width: 8),
                   Flexible(

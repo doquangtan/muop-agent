@@ -1,6 +1,9 @@
 import 'dart:async';
 import 'package:material_ui/material_ui.dart';
 
+import 'package:muop_agent/core/widgets/throttled_spinner.dart';
+import 'package:muop_agent/core/widgets/throttled_linear_progress.dart';
+
 import 'package:muop_agent/core/di/app_dependencies.dart';
 import 'package:muop_agent/core/theme/app_theme.dart';
 import 'package:muop_agent/core/widgets/desktop_panel.dart';
@@ -11,8 +14,6 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:muop_agent/core/state/server_address_provider.dart';
 
 /// Tự quét lại container khi màn hình đang mở
-const _autoRefresh = Duration(seconds: 10);
-
 String _clock(String iso) {
   final t = DateTime.tryParse(iso)?.toLocal();
   if (t == null) return '';
@@ -141,7 +142,7 @@ class _DockerHostsScreenState extends State<DockerHostsScreenView> {
         ),
       ],
       body: _loading
-          ? const Center(child: CircularProgressIndicator())
+          ? const Center(child: ThrottledSpinner(size: 36, strokeWidth: 4))
           : _loadError != null
               ? Center(
                   child: Padding(
@@ -223,12 +224,7 @@ class _DockerHostsScreenState extends State<DockerHostsScreenView> {
                               ),
                             ),
                             trailing: opening
-                                ? const SizedBox(
-                                    width: 18,
-                                    height: 18,
-                                    child: CircularProgressIndicator(
-                                        strokeWidth: 2),
-                                  )
+                                ? const ThrottledSpinner(size: 18, strokeWidth: 2)
                                 : const Icon(Icons.chevron_right_rounded),
                           ),
                         );
@@ -286,7 +282,8 @@ class DockerSessionScreenView extends StatefulWidget {
 
 class _DockerSessionScreenState extends State<DockerSessionScreenView> {
   late DockerSession _session;
-  Timer? _timer;
+  /// Nhận trạng thái phiên do server đẩy khi đang xem
+  StreamSubscription<DockerSessionResult>? _watchSub;
   /// Đang có thao tác hoặc quét thủ công
   bool _working = false;
   /// Phiên đã bị kết thúc trên server
@@ -298,13 +295,22 @@ class _DockerSessionScreenState extends State<DockerSessionScreenView> {
   void initState() {
     super.initState();
     _session = widget.initial;
-    _timer = Timer.periodic(_autoRefresh, (_) => _refresh());
+    _startWatch();
   }
 
   @override
   void dispose() {
-    _timer?.cancel();
+    _watchSub?.cancel();
     super.dispose();
+  }
+
+  /// Xem phiên hiện tại: server đẩy trạng thái khi có thay đổi (đăng ký lại khi đổi sang phiên mới)
+  void _startWatch() {
+    _watchSub?.cancel();
+    _watchSub = AppDependencies.docker.watchDockerSession(_session.sessionId).listen((res) {
+      if (!mounted) return;
+      setState(() => _apply(res));
+    });
   }
 
   void _apply(DockerSessionResult res) {
@@ -349,6 +355,7 @@ class _DockerSessionScreenState extends State<DockerSessionScreenView> {
         _linkError = res.error;
       }
     });
+    if (res.session != null) _startWatch();
   }
 
   Future<bool> _confirm({
@@ -495,7 +502,7 @@ class _DockerSessionScreenState extends State<DockerSessionScreenView> {
       ],
       body: Column(
         children: [
-          if (_working) const LinearProgressIndicator(minHeight: 2),
+          if (_working) const ThrottledLinearProgress(minHeight: 2),
           _StatusBar(
             connected: _session.connected && !_ended,
             scannedAt: _clock(_session.scannedAt),
@@ -1041,7 +1048,7 @@ class _DockerLogsScreenState extends State<DockerLogsScreen> {
       ],
       body: Column(
         children: [
-          if (_opening) const LinearProgressIndicator(minHeight: 2),
+          if (_opening) const ThrottledLinearProgress(minHeight: 2),
           Padding(
             padding: const EdgeInsets.fromLTRB(16, 8, 16, 6),
             child: Text(

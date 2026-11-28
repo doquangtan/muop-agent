@@ -34,6 +34,7 @@ mod side_effects;
 mod status;
 mod steps;
 mod transcript;
+mod transcript_index;
 mod watch;
 
 use cache::*;
@@ -49,4 +50,5 @@ use side_effects::*;
 use status::*;
 use steps::*;
 use transcript::*;
+use transcript_index::*;
 pub use watch::*;

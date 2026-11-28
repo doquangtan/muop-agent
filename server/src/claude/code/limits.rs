@@ -1,4 +1,5 @@
 use super::*;
+use serde::{Deserialize, Serialize};
 
 /// Thời gian giữ dữ liệu usage lấy từ endpoint OAuth trước khi gọi lại
 pub(super) const LIMITS_CACHE_TTL: Duration = Duration::from_secs(60);
@@ -7,9 +8,15 @@ pub(super) const USAGE_RATE_LIMIT_BACKOFF: Duration = Duration::from_secs(300);
 /// Sau lỗi khác (mạng, định dạng), chờ ngắn trước khi thử lại
 pub(super) const USAGE_ERROR_BACKOFF: Duration = Duration::from_secs(60);
 pub(super) const USAGE_URL: &str = "https://api.anthropic.com/api/oauth/usage";
+/// Khoá `app_settings` lưu trạng thái usage (cửa sổ đã biết, backoff, lỗi gần nhất) để sống qua khởi động lại
+const USAGE_STATE_KEY: &str = "claude_usage_state";
+/// Giới hạn cho thời gian chờ đọc từ `retry-after` của server
+const RETRY_AFTER_MIN_MS: i64 = 60_000;
+const RETRY_AFTER_MAX_MS: i64 = 6 * 3600 * 1000;
 
 /// Một cửa sổ limit của tài khoản Claude (phiên 5 giờ, tuần, tuần Sonnet, theo model...)
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct LimitWindow {
     /// `five_hour`, `seven_day`, `seven_day_sonnet`, `seven_day_opus`, hoặc `model:<tên>`
     pub key: String,
@@ -27,15 +34,57 @@ pub struct LimitWindow {
 #[derive(Default)]
 pub(super) struct LimitsState {
     pub(super) windows: Vec<LimitWindow>,
+    /// Lần cuối gọi endpoint usage (chỉ trong bộ nhớ, để giữ TTL)
     pub(super) usage_fetched_at: Option<Instant>,
-    pub(super) backoff_until: Option<Instant>,
+    /// Epoch ms: trước thời điểm này không gọi endpoint usage (0 = không backoff). Lưu DB.
+    pub(super) backoff_until_ms: i64,
     pub(super) last_error: String,
+    /// Epoch ms của lỗi gần nhất (0 = chưa có). Lưu DB.
+    pub(super) last_error_at_ms: i64,
+}
+
+/// Trạng thái usage lưu trong `app_settings`. Cửa sổ là bản cuối đã lấy được, nên khi endpoint
+/// bị rate limit vẫn trả về số này thay vì rỗng.
+#[derive(Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+struct PersistedUsage {
+    windows: Vec<LimitWindow>,
+    backoff_until_ms: i64,
+    last_error: String,
+    last_error_at_ms: i64,
 }
 
 pub(super) static LIMITS_STATE: OnceLock<Mutex<LimitsState>> = OnceLock::new();
 
 pub(super) fn limits_state() -> &'static Mutex<LimitsState> {
-    LIMITS_STATE.get_or_init(|| Mutex::new(LimitsState::default()))
+    LIMITS_STATE.get_or_init(|| Mutex::new(load_persisted()))
+}
+
+/// Đọc trạng thái đã lưu trong DB (lần đầu dùng sau khi khởi động)
+fn load_persisted() -> LimitsState {
+    let saved: PersistedUsage = crate::infra::store::get_app_setting(USAGE_STATE_KEY)
+        .and_then(|raw| serde_json::from_str(&raw).ok())
+        .unwrap_or_default();
+    LimitsState {
+        windows: saved.windows,
+        usage_fetched_at: None,
+        backoff_until_ms: saved.backoff_until_ms,
+        last_error: saved.last_error,
+        last_error_at_ms: saved.last_error_at_ms,
+    }
+}
+
+/// Ghi trạng thái hiện tại vào DB. Gọi khi đang giữ khoá `LIMITS_STATE`.
+fn persist(s: &LimitsState) {
+    let saved = PersistedUsage {
+        windows: s.windows.clone(),
+        backoff_until_ms: s.backoff_until_ms,
+        last_error: s.last_error.clone(),
+        last_error_at_ms: s.last_error_at_ms,
+    };
+    if let Ok(raw) = serde_json::to_string(&saved) {
+        crate::infra::store::set_app_setting(USAGE_STATE_KEY, &raw);
+    }
 }
 
 /// Xoá TTL của usage để lần lấy kế tiếp gọi lại API (dùng sau mỗi lượt chat Claude).
@@ -44,6 +93,14 @@ pub fn invalidate_limits_cache() {
     if let Ok(mut s) = limits_state().lock() {
         s.usage_fetched_at = None;
     }
+}
+
+/// Lỗi khi gọi endpoint usage
+pub(super) struct UsageError {
+    pub(super) message: String,
+    pub(super) rate_limited: bool,
+    /// Thời gian chờ do server yêu cầu (`retry-after`), ms
+    pub(super) retry_after_ms: Option<i64>,
 }
 
 /// Nhãn và loại cửa sổ theo khoá của `rate_limit_info.unifiedWindows` / `rate_limits`
@@ -121,6 +178,7 @@ pub fn ingest_rate_limit_event(event: &Value) {
         for w in windows {
             upsert_window(&mut s.windows, w);
         }
+        persist(&s);
     }
 }
 
@@ -213,15 +271,15 @@ pub fn windows_from_usage(usage: &Value, now_ms: i64) -> Vec<LimitWindow> {
     out
 }
 
-/// Gọi endpoint usage nếu đã đến lúc: không trong TTL, không trong backoff.
-/// Không giữ lock khi gọi mạng (curl có thể mất tới 15 giây).
+/// Gọi endpoint usage nếu đã đến lúc: không trong TTL, không trong backoff. Backoff nằm trong DB nên
+/// còn hiệu lực sau khi server khởi động lại. Không giữ lock khi gọi mạng (curl có thể mất tới 15 giây).
 pub(super) fn refresh_usage_if_due(token: &str) {
     let now = Instant::now();
     {
         let Ok(s) = limits_state().lock() else {
             return;
         };
-        if s.backoff_until.is_some_and(|t| now < t) {
+        if chrono::Utc::now().timestamp_millis() < s.backoff_until_ms {
             return;
         }
         if s.usage_fetched_at
@@ -235,25 +293,30 @@ pub(super) fn refresh_usage_if_due(token: &str) {
         return;
     };
     s.usage_fetched_at = Some(Instant::now());
+    let now_ms = chrono::Utc::now().timestamp_millis();
     match result {
         Ok(usage) => {
-            let now_ms = chrono::Utc::now().timestamp_millis();
             for w in windows_from_usage(&usage, now_ms) {
                 upsert_window(&mut s.windows, w);
             }
-            s.backoff_until = None;
+            s.backoff_until_ms = 0;
             s.last_error.clear();
+            s.last_error_at_ms = 0;
         }
-        Err((msg, rate_limited)) => {
-            let wait = if rate_limited {
-                USAGE_RATE_LIMIT_BACKOFF
+        Err(err) => {
+            // Bị rate limit: chờ đúng `retry-after` nếu server cho biết, không thì 5 phút
+            let wait_ms = if err.rate_limited {
+                err.retry_after_ms
+                    .unwrap_or(USAGE_RATE_LIMIT_BACKOFF.as_millis() as i64)
             } else {
-                USAGE_ERROR_BACKOFF
+                USAGE_ERROR_BACKOFF.as_millis() as i64
             };
-            s.backoff_until = Some(Instant::now() + wait);
-            s.last_error = msg;
+            s.backoff_until_ms = now_ms + wait_ms;
+            s.last_error = err.message;
+            s.last_error_at_ms = now_ms;
         }
     }
+    persist(&s);
 }
 
 /// Đọc accessToken OAuth của Claude Code CLI, cùng nguồn với danh sách model (`cli::claude_oauth_token`):
@@ -323,47 +386,107 @@ mod oauth_source_tests {
     }
 }
 
+/// Tách đầu ra của `curl -i -w "\n%{http_code}"`: mã HTTP, header, body
+pub(super) fn split_usage_response(raw: &str) -> (u16, String, String) {
+    let (rest, code) = raw.rsplit_once('\n').unwrap_or(("", raw));
+    let status = code.trim().parse().unwrap_or(0);
+    let (headers, body) = rest
+        .split_once("\r\n\r\n")
+        .or_else(|| rest.split_once("\n\n"))
+        .unwrap_or(("", rest));
+    (status, headers.to_string(), body.to_string())
+}
+
+/// `retry-after` (số giây) trong header, đổi sang ms và giới hạn trong [1 phút, 6 giờ]
+pub(super) fn parse_retry_after_ms(headers: &str) -> Option<i64> {
+    let value = headers.lines().find_map(|line| {
+        let (name, value) = line.split_once(':')?;
+        name.trim()
+            .eq_ignore_ascii_case("retry-after")
+            .then(|| value.trim().to_string())
+    })?;
+    let secs: i64 = value.parse().ok()?;
+    Some((secs * 1000).clamp(RETRY_AFTER_MIN_MS, RETRY_AFTER_MAX_MS))
+}
+
 /// Gọi endpoint usage (cùng nguồn với `/usage` của Claude Code). Token được đưa qua stdin của curl
-/// (`-K -`) để không lộ trên dòng lệnh. Trả về Err(msg, is_rate_limited) để phân biệt.
-pub(super) fn fetch_usage_json(token: &str) -> Result<Value, (String, bool)> {
+/// (`-K -`) để không lộ trên dòng lệnh. Đọc cả mã HTTP và header để nhận rate limit (429) và `retry-after`.
+pub(super) fn fetch_usage_json(token: &str) -> Result<Value, UsageError> {
     let config = format!(
         "header = \"Authorization: Bearer {}\"\nheader = \"anthropic-beta: oauth-2025-04-20\"\nuser-agent = \"muop-agent\"\n",
         token
     );
+    let failure = |message: String, rate_limited: bool, retry_after_ms: Option<i64>| UsageError {
+        message,
+        rate_limited,
+        retry_after_ms,
+    };
     let mut child = Command::new("curl")
-        .args(["-s", "-m", "15", "-K", "-", USAGE_URL])
+        .args([
+            "-s",
+            "-i",
+            "-m",
+            "15",
+            "-K",
+            "-",
+            "-w",
+            "\n%{http_code}",
+            USAGE_URL,
+        ])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .spawn()
-        .map_err(|e| (format!("Không chạy được curl: {}", e), false))?;
+        .map_err(|e| failure(format!("Không chạy được curl: {}", e), false, None))?;
     if let Some(mut stdin) = child.stdin.take() {
         let _ = stdin.write_all(config.as_bytes());
     }
     let out = child
         .wait_with_output()
-        .map_err(|e| (format!("curl lỗi: {}", e), false))?;
-    let v: Value = serde_json::from_slice(&out.stdout).map_err(|_| {
-        (
-            "Không đọc được phản hồi usage từ Anthropic".to_string(),
+        .map_err(|e| failure(format!("curl lỗi: {}", e), false, None))?;
+    let raw = String::from_utf8_lossy(&out.stdout);
+    let (status, headers, body) = split_usage_response(&raw);
+    let parsed: Option<Value> = serde_json::from_str(&body).ok();
+    let error_type: Option<String> = parsed
+        .as_ref()
+        .and_then(|v| v.pointer("/error/type"))
+        .and_then(|x| x.as_str())
+        .map(str::to_string);
+    if status == 429 || error_type.as_deref() == Some("rate_limit_error") {
+        return Err(failure(
+            "Anthropic API bị rate limit (usage), thử lại sau".to_string(),
+            true,
+            parse_retry_after_ms(&headers),
+        ));
+    }
+    let Some(v) = parsed else {
+        return Err(failure(
+            format!(
+                "Không đọc được phản hồi usage từ Anthropic (HTTP {})",
+                status
+            ),
             false,
-        )
-    })?;
+            None,
+        ));
+    };
     if let Some(err) = v.get("error") {
-        let error_type = err
-            .get("type")
-            .and_then(|x| x.as_str())
-            .unwrap_or("unknown");
         let error_msg = err
             .get("message")
             .and_then(|x| x.as_str())
-            .unwrap_or(error_type);
-
-        if error_type == "rate_limit_error" {
-            return Err(("Anthropic API bị rate limit, thử lại sau".to_string(), true));
-        }
-
-        return Err((format!("Lỗi từ Anthropic: {}", error_msg), false));
+            .or(error_type.as_deref())
+            .unwrap_or("unknown");
+        return Err(failure(
+            format!("Lỗi từ Anthropic: {}", error_msg),
+            false,
+            None,
+        ));
+    }
+    if status >= 400 {
+        return Err(failure(
+            format!("Anthropic trả HTTP {}", status),
+            false,
+            None,
+        ));
     }
     Ok(v)
 }
@@ -620,5 +743,67 @@ mod claude_limits_tests {
         let g = build_limit_group(&ws, "", at("2026-11-19T00:00:00Z"));
         let ids: Vec<&str> = g.buckets.iter().map(|b| b.bucket_id.as_str()).collect();
         assert_eq!(ids, ["five_hour", "seven_day", "model:Opus"]);
+    }
+}
+
+#[cfg(test)]
+mod usage_persistence_tests {
+    use super::*;
+
+    #[test]
+    fn curl_output_is_split_into_status_headers_and_body() {
+        let raw = "HTTP/2 429 \r\ncontent-type: application/json\r\nretry-after: 120\r\n\r\n{\"error\":{\"type\":\"rate_limit_error\"}}\n429";
+        let (status, headers, body) = split_usage_response(raw);
+        assert_eq!(status, 429);
+        assert!(headers.contains("retry-after: 120"));
+        assert_eq!(body, "{\"error\":{\"type\":\"rate_limit_error\"}}");
+    }
+
+    #[test]
+    fn retry_after_seconds_are_read_and_clamped() {
+        assert_eq!(parse_retry_after_ms("Retry-After: 120\r\n"), Some(120_000));
+        assert_eq!(
+            parse_retry_after_ms("retry-after: 1"),
+            Some(RETRY_AFTER_MIN_MS)
+        );
+        assert_eq!(
+            parse_retry_after_ms("retry-after: 999999"),
+            Some(RETRY_AFTER_MAX_MS)
+        );
+        assert_eq!(parse_retry_after_ms("content-type: json"), None);
+        assert_eq!(
+            parse_retry_after_ms("retry-after: Wed, 21 Oct 2026 07:28:00 GMT"),
+            None
+        );
+    }
+
+    #[test]
+    fn persisted_state_keeps_windows_backoff_and_error() {
+        let saved = PersistedUsage {
+            windows: vec![LimitWindow {
+                key: "five_hour".into(),
+                label: "Phiên 5 giờ".into(),
+                window: "5h".into(),
+                utilization: 29.0,
+                resets_at: Some("2026-11-28T09:30:00+00:00".into()),
+                updated_at_ms: 42,
+            }],
+            backoff_until_ms: 1_000,
+            last_error: "Anthropic API bị rate limit (usage), thử lại sau".into(),
+            last_error_at_ms: 500,
+        };
+        let raw = serde_json::to_string(&saved).unwrap();
+        let back: PersistedUsage = serde_json::from_str(&raw).unwrap();
+        assert_eq!(back.windows, saved.windows);
+        assert_eq!(back.backoff_until_ms, 1_000);
+        assert_eq!(back.last_error_at_ms, 500);
+        assert!(back.last_error.contains("rate limit"));
+    }
+
+    #[test]
+    fn missing_or_old_state_loads_as_empty() {
+        let back: PersistedUsage = serde_json::from_str("{}").unwrap();
+        assert!(back.windows.is_empty());
+        assert_eq!(back.backoff_until_ms, 0);
     }
 }

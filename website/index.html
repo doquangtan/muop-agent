@@ -9,7 +9,7 @@
   <meta property="og:description" content="Giám sát và trò chuyện trực tiếp với AI coding agent trong mạng LAN.">
   <meta property="og:image" content="assets/img/dashboard.png">
   <link rel="icon" type="image/png" href="assets/img/favicon.png">
-  <link rel="stylesheet" href="assets/css/style.css?v=4">
+  <link rel="stylesheet" href="assets/css/style.css?v=6">
 </head>
 <body>
 
@@ -23,6 +23,7 @@
     <div class="nav-links" id="navLinks">
       <a href="#ung-ho">Ủng hộ</a>
       <a href="#tinh-nang">Tính năng</a>
+      <a href="#chia-se">Chia sẻ</a>
       <a href="#anh">Giao diện</a>
       <a href="#kien-truc">Kiến trúc</a>
       <a href="#tai-ve">Tải về</a>
@@ -157,7 +158,7 @@
       <div class="card">
         <div class="ico">scr</div>
         <h3>Màn hình máy chủ</h3>
-        <p>Xem màn hình máy đang chạy server qua luồng RTSP, mở bằng app hoặc bất kỳ player nào như VLC, mpv, ffplay.</p>
+        <p>Xem màn hình máy đang chạy server trực tiếp trong app hoặc trên bản web, không cần player riêng.</p>
       </div>
       <div class="card">
         <div class="ico">mnt</div>
@@ -173,6 +174,42 @@
         <div class="ico">tray</div>
         <h3>Chạy nền</h3>
         <p>Server chạy như dịch vụ systemd user, có icon trên khay hệ thống (GNOME, KDE). Khởi động lại server vẫn nhận lại lượt chat đang chạy.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ MỚI: CHIA SẺ LỊCH SỬ ============ -->
+<section class="section" id="chia-se" style="padding-top: 0;">
+  <div class="wrap">
+    <div class="spotlight">
+      <span class="badge">Mới trong bản 1.1.0</span>
+      <h2>Chia sẻ lịch sử giữa các conversation</h2>
+      <p class="lead">Chia sẻ một đoạn chat sang conversation khác để agent đọc lại đúng phần lịch sử đó, không cần sao chép tay. Dùng để chuyển lỗi đã phân tích sang conversation sửa lỗi, hoặc tiếp tục phần việc đang làm dở trong conversation mới.</p>
+      <div class="grid-3" style="margin-top: 28px;">
+        <div class="card">
+          <div class="ico">1</div>
+          <h3>Bấm chia sẻ</h3>
+          <p>Nút chia sẻ nằm dưới tin của bạn và dưới thẻ trả lời của agent. Chia sẻ từ bước đó tới tin mới nhất trong conversation.</p>
+        </div>
+        <div class="card">
+          <div class="ico">2</div>
+          <h3>Chọn conversation</h3>
+          <p>Gửi vào một conversation có sẵn cùng project, hoặc tạo conversation mới. Chọn model và mức suy luận, sửa lời nhắc nếu cần.</p>
+        </div>
+        <div class="card">
+          <div class="ico">3</div>
+          <h3>Agent đọc lại</h3>
+          <p>Agent lấy lịch sử theo từng trang (50 bước mỗi trang) qua link rồi tiếp tục công việc từ đó. Không ghi đè hay mất lịch sử của conversation gốc.</p>
+        </div>
+      </div>
+      <figure class="share-shot">
+        <img src="assets/img/share-dialog.png" alt="Hộp thoại Chia sẻ lịch sử: chọn conversation có sẵn hoặc mới, model và mức suy luận" width="606" height="442" loading="lazy">
+        <figcaption>Hộp thoại chia sẻ: chọn conversation đích, model và mức suy luận, rồi sửa lời nhắc trước khi gửi.</figcaption>
+      </figure>
+      <div class="hero-cta" style="margin-top: 28px;">
+        <a class="btn btn-primary" href="#tai-ve">Tải bản mới</a>
+        <a class="btn btn-ghost" href="api.html#ep-get-api-session-share">Xem API chia sẻ</a>
       </div>
     </div>
   </div>
@@ -216,11 +253,18 @@
         <figcaption><b>Docker.</b> Container nhóm theo project compose, có nút xem log, khởi động lại và dừng.</figcaption>
       </figure>
 
+      <figure class="shot">
+        <button type="button" data-zoom="assets/img/share-dialog.png" aria-label="Phóng to ảnh hộp thoại chia sẻ lịch sử">
+          <img src="assets/img/share-dialog.png" alt="Hộp thoại Chia sẻ lịch sử: chọn conversation đích, model và mức suy luận" loading="lazy" width="606" height="442">
+        </button>
+        <figcaption><b>Chia sẻ lịch sử.</b> Gửi một đoạn chat sang conversation khác; chọn conversation đích, model và mức suy luận trước khi gửi.</figcaption>
+      </figure>
+
       <figure class="shot wide">
         <button type="button" data-zoom="assets/img/screen.png" aria-label="Phóng to ảnh màn hình máy chủ">
           <img src="assets/img/screen.png" alt="Màn hình máy chủ được phát trực tiếp trong app" loading="lazy" width="1568" height="961">
         </button>
-        <figcaption><b>Màn hình máy chủ.</b> Luồng trực tiếp được phát trong app; cũng có thể mở địa chỉ RTSP bằng player bên ngoài.</figcaption>
+        <figcaption><b>Màn hình máy chủ.</b> Khung hình được gửi trực tiếp tới app và bản web (khung JPEG, không cần player riêng).</figcaption>
       </figure>
     </div>
   </div>
@@ -274,7 +318,7 @@
             <li><span class="tag">ssh</span> máy từ xa</li>
             <li><span class="tag">docker</span> container</li>
             <li><span class="tag">gopls</span> <span class="tag">dart</span> <span class="tag">rust-analyzer</span></li>
-            <li><span class="tag">RTSP :8554</span> màn hình</li>
+            <li><span class="tag">:8788</span> bản web (màn hình, chat)</li>
             <li><span class="tag">FUSE</span> mount project máy khác</li>
           </ul>
         </div>
@@ -311,26 +355,26 @@
         <span class="dl-step-tag dl-step-required">Bước 1 · Bắt buộc</span>
         <div class="dl-os">Server · Linux Ubuntu / Debian</div>
         <h3>Gói .deb (server và app desktop)</h3>
-        <p class="dl-meta">muop-agent_1.1.0-7_amd64.deb · 17.4 MB · x86_64</p>
+        <p class="dl-meta">muop-agent_1.1.0-9_amd64.deb · 28.5 MB · x86_64</p>
         <p>Cài <strong>server</strong> trước. Server chạy nền trên máy có agent (Claude Code hoặc agy), lắng nghe cổng <code>8787</code>. Gói này cũng cài app desktop Linux. Phần phụ thuộc được apt tự cài.</p>
         <div class="codeblock">
-          <pre>sudo apt install ./muop-agent_1.1.0-7_amd64.deb</pre>
+          <pre>sudo apt install ./muop-agent_1.1.0-9_amd64.deb</pre>
           <button class="copy" type="button">Sao chép</button>
         </div>
         <p class="dl-count"><span data-dl-platform="linux">—</span> lượt tải</p>
-        <a class="btn btn-primary dl-btn" href="assets/downloads/muop-agent_1.1.0-7_amd64.deb" download>Tải .deb</a>
-        <div class="sha">SHA-256 <code>8aeca695a6911ccadf60d21dabe74123df3bb800d6da8c2fb1c6bb33415053d9</code></div>
+        <a class="btn btn-primary dl-btn" href="assets/downloads/muop-agent_1.1.0-9_amd64.deb" download>Tải .deb</a>
+        <div class="sha">SHA-256 <code>76e2da395c518eed8199758837d82e55299bbca85325fb2594c3aa518118b03b</code></div>
       </div>
       <div class="dl-card dl-server">
         <span class="dl-step-tag dl-step-required">Bước 1 · Bắt buộc</span>
         <div class="dl-os">Server · macOS (Apple Silicon)</div>
-        <h3>Ứng dụng .app (có sẵn server)</h3>
-        <p class="dl-meta">muop-agent-macos_1.1.0-7.zip · 48.1 MB · v1.1.0 (7)</p>
-        <p>Giải nén, kéo <code>muop_agent.app</code> vào thư mục Applications rồi mở. App tự chạy <strong>server</strong> đi kèm, không cần cài riêng. Thoát app không tắt server; muốn tắt server thì dùng icon trên thanh menu. Bản này chỉ chạy trên Mac chip Apple Silicon.</p>
-        <p class="dl-hint">Nếu macOS chặn lần mở đầu, bấm chuột phải vào app và chọn Mở.</p>
+        <h3>Gói cài đặt .pkg (có sẵn server)</h3>
+        <p class="dl-meta">muop-agent-macos-1.1.0-9.pkg · 47.5 MB · v1.1.0 (9)</p>
+        <p>Mở file <code>.pkg</code> và làm theo trình cài đặt. Trình cài đặt cài app <strong>Mướp Agents</strong> và <strong>server</strong> đi kèm; server tự chạy nền, không cần cài riêng. Thoát app không tắt server; muốn tắt server thì dùng icon trên thanh menu. Nếu thiếu ffmpeg hoặc FUSE-T, trình cài mở Terminal để cài (cần mật khẩu admin). Bản này chỉ chạy trên Mac chip Apple Silicon.</p>
+        <p class="dl-hint">Nếu macOS chặn lần mở đầu, bấm chuột phải vào file và chọn Mở.</p>
         <p class="dl-count"><span data-dl-platform="macos">—</span> lượt tải</p>
-        <a class="btn btn-primary dl-btn" href="assets/downloads/muop-agent-macos_1.1.0-7.zip" download>Tải .zip</a>
-        <div class="sha">SHA-256 <code>c667450d19f7d35b85f2db59ae50b39e685434ef7b39eb18f0e185ac3419ae47</code></div>
+        <a class="btn btn-primary dl-btn" href="assets/downloads/muop-agent-macos-1.1.0-9.pkg" download>Tải .pkg</a>
+        <div class="sha">SHA-256 <code>d747f3e42b4228685075dbd58d619ee76b5172d15d3e03fcdbdb6770b44c5e61</code></div>
       </div>
       </div>
 
@@ -348,23 +392,23 @@
       <div class="dl-card dl-client">
         <div class="dl-os">Android</div>
         <h3>File .apk</h3>
-        <p class="dl-meta">muop-agent-release.apk · 107.0 MB</p>
+        <p class="dl-meta">muop-agent-release.apk · 62.5 MB</p>
         <p>Mở file APK trên điện thoại. Lần đầu, Android sẽ yêu cầu cho phép cài từ nguồn ngoài Google Play cho trình quản lý file bạn dùng.</p>
         <p class="dl-hint">Khi mở lần đầu, nhập địa chỉ server (cổng 8787).</p>
         <p class="dl-count"><span data-dl-platform="android">—</span> lượt tải</p>
         <a class="btn btn-primary dl-btn" href="assets/downloads/muop-agent-release.apk" download>Tải .apk</a>
-        <div class="sha">SHA-256 <code>34a96d49ca00e1b6387d5ebb80a65a7b8ce75eb743a1dd9232b483d33898837f</code></div>
+        <div class="sha">SHA-256 <code>7f53f7be4e1ff4f8eebe5b4e9d3bb18e42afe295bfca701d89c5577b10d41ba6</code></div>
       </div>
 
       <div class="dl-card dl-client">
         <div class="dl-os">iOS · TrollStore</div>
         <h3>File .ipa</h3>
-        <p class="dl-meta">muop-agent-trollstore.ipa · 18.9 MB</p>
+        <p class="dl-meta">muop-agent-trollstore.ipa · 11.8 MB</p>
         <p>Cài bằng <strong>TrollStore</strong> trên thiết bị đã hỗ trợ. Không dùng để cài trực tiếp qua App Store hay TestFlight.</p>
         <p class="dl-hint">Khi mở lần đầu, nhập địa chỉ server (cổng 8787).</p>
         <p class="dl-count"><span data-dl-platform="ios">—</span> lượt tải</p>
         <a class="btn btn-primary dl-btn" href="assets/downloads/muop-agent-trollstore.ipa" download>Tải .ipa</a>
-        <div class="sha">SHA-256 <code>ad54e73ddc5639966dd23e0b579ce7bb94337799702f1130e150b9dbbf2815c3</code></div>
+        <div class="sha">SHA-256 <code>e5ad1217717987a9917fcc76afa85cd780e5fedddebc97600147f71799546307</code></div>
       </div>
 
       </div>

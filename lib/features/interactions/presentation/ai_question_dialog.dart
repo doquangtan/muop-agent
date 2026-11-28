@@ -2,6 +2,7 @@ import 'package:material_ui/material_ui.dart';
 
 import 'package:muop_agent/core/di/app_dependencies.dart';
 import 'package:muop_agent/core/theme/app_theme.dart';
+import 'package:muop_agent/core/widgets/throttled_spinner.dart';
 import 'package:muop_agent/features/interactions/domain/interaction_entities.dart';
 import 'package:muop_agent/features/interactions/domain/interactions_repository.dart';
 
@@ -133,13 +134,10 @@ class _AIQuestionDialogState extends State<AIQuestionDialog> {
                     backgroundColor: context.scheme.primary,
                   ),
                   child: _isSubmitting
-                      ? SizedBox(
-                          width: 20,
-                          height: 20,
-                          child: CircularProgressIndicator(
-                            strokeWidth: 2,
-                            valueColor: AlwaysStoppedAnimation<Color>(context.scheme.onPrimary),
-                          ),
+                      ? ThrottledSpinner(
+                          size: 20,
+                          strokeWidth: 2,
+                          color: context.scheme.onPrimary,
                         )
                       : const Text('Gửi'),
                 ),

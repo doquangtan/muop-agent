@@ -11,7 +11,7 @@ axum = "0.7"
 tokio = { version = "1", features = ["full"] }
 tokio-util = { version = "0.7", features = ["io"] }
 tower = "0.4"
-tower-http = { version = "0.5", features = ["cors"] }
+tower-http = { version = "0.5", features = ["cors", "fs"] }
 socketioxide = { version = "0.14", features = ["state"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"

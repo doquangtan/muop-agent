@@ -2,6 +2,8 @@ import 'dart:async';
 
 import 'package:flutter/services.dart';
 import 'package:material_ui/material_ui.dart';
+
+import 'package:muop_agent/core/widgets/throttled_spinner.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import 'package:muop_agent/core/di/app_dependencies.dart';
@@ -200,7 +202,7 @@ class ClaudeAuthSectionState extends State<ClaudeAuthSection> {
     if (_loading) {
       return const Padding(
         padding: EdgeInsets.symmetric(vertical: 24),
-        child: Center(child: CircularProgressIndicator()),
+        child: Center(child: ThrottledSpinner(size: 36, strokeWidth: 4)),
       );
     }
     if (_state == null || !_state!.ok) {
@@ -258,11 +260,7 @@ class _LoggedOutSection extends StatelessWidget {
       child: FilledButton.icon(
         onPressed: busy ? null : onStart,
         icon: busy
-            ? const SizedBox(
-                width: 16,
-                height: 16,
-                child: CircularProgressIndicator(strokeWidth: 2),
-              )
+            ? const ThrottledSpinner(size: 16, strokeWidth: 2)
             : const Icon(Icons.login_rounded),
         label: const Text('Đăng nhập Claude CLI'),
       ),
@@ -369,11 +367,7 @@ class _CodeSection extends StatelessWidget {
             FilledButton(
               onPressed: busy ? null : onSubmit,
               child: busy
-                  ? const SizedBox(
-                      width: 16,
-                      height: 16,
-                      child: CircularProgressIndicator(strokeWidth: 2),
-                    )
+                  ? const ThrottledSpinner(size: 16, strokeWidth: 2)
                   : const Text('Gửi mã'),
             ),
           ],

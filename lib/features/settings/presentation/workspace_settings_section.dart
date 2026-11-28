@@ -1,6 +1,8 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:material_ui/material_ui.dart';
 
+import 'package:muop_agent/core/widgets/throttled_spinner.dart';
+
 import 'package:muop_agent/core/di/app_dependencies.dart';
 import 'package:muop_agent/core/theme/app_theme.dart';
 import 'package:muop_agent/features/setup/domain/setup_entities.dart';
@@ -40,7 +42,7 @@ class _WorkspaceSettingsSectionState
     final textTheme = Theme.of(context).textTheme;
     final scheme = context.scheme;
     if (_loading) {
-      return const Center(child: CircularProgressIndicator());
+      return const Center(child: ThrottledSpinner(size: 36, strokeWidth: 4));
     }
     final root = _status.workspaceRoot;
     return ListView(

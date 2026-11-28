@@ -1,5 +1,7 @@
 import 'package:material_ui/material_ui.dart';
 
+import 'package:muop_agent/core/widgets/throttled_spinner.dart';
+
 import 'package:muop_agent/core/theme/app_theme.dart';
 import 'package:muop_agent/features/setup/domain/setup_entities.dart';
 import 'package:muop_agent/features/setup/domain/setup_repository.dart';
@@ -146,7 +148,7 @@ class _WorkspaceFolderPickerState extends State<WorkspaceFolderPicker> {
 
   Widget _buildBody(SetupDirListing? listing, ColorScheme scheme, TextTheme textTheme) {
     if (_loading || listing == null) {
-      return const Center(child: CircularProgressIndicator());
+      return const Center(child: ThrottledSpinner(size: 36, strokeWidth: 4));
     }
     if (!listing.ok) {
       return Center(

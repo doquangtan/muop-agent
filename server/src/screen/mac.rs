@@ -1,24 +1,22 @@
-//! Quay màn hình trên macOS: ffmpeg (avfoundation) chụp màn hình, mã hoá H.264 và gửi RTP qua UDP
-//! tới một cổng trên 127.0.0.1. Server nhận từng gói RTP và đẩy vào cùng hub RTSP với luồng Linux.
+//! Quay màn hình trên macOS: ffmpeg (avfoundation) chụp màn hình, scale và mã hoá từng khung JPEG
+//! ra stdout. Server tách khung (`jpeg.rs`) và đăng vào `FrameHub` như luồng Linux.
 //!
-//! Quyền "Ghi màn hình" (Screen Recording) được gắn với app Mướp Agents (tiến trình cha của server),
-//! nên người dùng phải bật một lần trong System Settings rồi mở lại app.
+//! Quyền "Ghi màn hình" (Screen Recording) gắn với chính binary máy chủ. Máy chủ được đóng gói trong
+//! app bundle `Muop Agents Server.app` (bundle id `vn.muop.agent-server`) để macOS hiện đúng mục này trong
+//! System Settings; máy chủ chạy nền nên không thể tự thêm vào danh sách, phải yêu cầu quyền khi khởi động.
 
 use std::process::Stdio;
-use std::sync::Arc;
-use tokio::net::UdpSocket;
-use tokio::process::{Child, Command};
-use tokio::sync::broadcast;
+use tokio::process::{Child, ChildStdout, Command};
 
-use super::capture::{BITRATE_KBPS, MAX_FPS, RTP_PAYLOAD_TYPE, TARGET_HEIGHT};
-use super::rtsp::{Packet, RtspHub};
+use super::capture::{MAX_FPS, TARGET_HEIGHT};
 
 /// FPS của thiết bị chụp; khung thừa được lọc xuống `MAX_FPS` trong bộ lọc `fps`
 const CAPTURE_INPUT_FPS: u32 = 30;
 
 pub const PERMISSION_MSG: &str =
-    "Chưa cấp quyền Ghi màn hình cho Mướp Agents: vào System Settings → \
-     Privacy & Security → Screen Recording, bật Mướp Agents rồi mở lại app";
+    "Chưa cấp quyền Ghi màn hình cho \"Mướp Agents Server\": vào Cài đặt hệ thống → \
+     Quyền riêng tư & Bảo mật → Ghi màn hình, bật \"Mướp Agents Server\", rồi bấm Quay màn hình lại \
+     (nếu vẫn lỗi, khởi động lại máy chủ: launchctl kickstart -k gui/$(id -u)/vn.muop.agent-server)";
 
 /// Chỉ số màn hình trong danh sách thiết bị avfoundation (dòng `[N] Capture screen M`).
 /// Hàm thuần để kiểm thử; danh sách là đầu ra stderr của `ffmpeg -f avfoundation -list_devices true -i ""`.
@@ -34,9 +32,9 @@ pub fn parse_screen_index(listing: &str) -> Option<u32> {
     None
 }
 
-/// Tham số ffmpeg: chụp màn hình `screen`, scale về `out_h`, mã hoá H.264 (baseline), gửi RTP tới `udp_port`.
-/// `repeat-headers` và GOP bằng một giây để client vào giữa chừng nhận SPS/PPS và khung khoá sớm.
-pub fn ffmpeg_args(screen: u32, out_h: u32, udp_port: u16) -> Vec<String> {
+/// Tham số ffmpeg: chụp màn hình `screen`, giảm tốc độ khung về `MAX_FPS`, scale về `out_h`,
+/// xuất từng khung JPEG (`image2pipe`) ra stdout. `-q:v` 6 tương đương chất lượng ~75 của libjpeg.
+pub fn ffmpeg_args(screen: u32, out_h: u32) -> Vec<String> {
     let s = |v: &str| v.to_string();
     vec![
         s("-hide_banner"),
@@ -54,51 +52,16 @@ pub fn ffmpeg_args(screen: u32, out_h: u32, udp_port: u16) -> Vec<String> {
         s("-vf"),
         format!("fps={MAX_FPS},scale=-2:{out_h}"),
         s("-c:v"),
-        s("libx264"),
-        s("-preset"),
-        s("veryfast"),
-        s("-tune"),
-        s("zerolatency"),
-        s("-profile:v"),
-        s("baseline"),
+        s("mjpeg"),
+        // 4:2:0 như trên Linux: file nhỏ hơn đáng kể so với 4:4:4
         s("-pix_fmt"),
-        s("yuv420p"),
-        s("-b:v"),
-        format!("{BITRATE_KBPS}k"),
-        s("-maxrate"),
-        format!("{BITRATE_KBPS}k"),
-        s("-bufsize"),
-        format!("{}k", BITRATE_KBPS * 2),
-        s("-g"),
-        MAX_FPS.to_string(),
-        s("-keyint_min"),
-        MAX_FPS.to_string(),
-        s("-sc_threshold"),
-        s("0"),
-        s("-x264-params"),
-        s("repeat-headers=1"),
+        s("yuvj420p"),
+        s("-q:v"),
+        s("6"),
         s("-f"),
-        s("rtp"),
-        s("-payload_type"),
-        RTP_PAYLOAD_TYPE.to_string(),
-        format!("rtp://127.0.0.1:{udp_port}?pkt_size=1200"),
+        s("image2pipe"),
+        s("pipe:1"),
     ]
-}
-
-/// Đọc gói RTP từ UDP và đẩy vào hub. Mỗi datagram là một gói RTP đầy đủ (không cần tách khung).
-pub async fn read_packets(socket: UdpSocket, out: broadcast::Sender<Packet>, hub: Arc<RtspHub>) {
-    let mut buf = vec![0u8; 2048];
-    loop {
-        match socket.recv_from(&mut buf).await {
-            Ok((n, _)) => {
-                let packet = buf[..n].to_vec();
-                hub.observe(&packet);
-                // Không có client nào thì send trả lỗi: bỏ qua, luồng vẫn chạy
-                let _ = out.send(Arc::new(packet));
-            }
-            Err(_) => break,
-        }
-    }
 }
 
 #[cfg(target_os = "macos")]
@@ -132,6 +95,29 @@ pub fn request_screen_access() {
 #[cfg(not(target_os = "macos"))]
 pub fn request_screen_access() {}
 
+/// Mở trang Ghi màn hình trong System Settings. Máy chủ chạy trong phiên GUI (LaunchAgent gui/<uid>)
+/// nên `open` hiện được cửa sổ cài đặt.
+#[cfg(target_os = "macos")]
+pub fn open_screen_recording_settings() {
+    const URL: &str =
+        "x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension?Privacy_ScreenCapture";
+    if let Err(e) = std::process::Command::new("/usr/bin/open").arg(URL).spawn() {
+        tracing::warn!("Không mở được System Settings (Ghi màn hình): {e}");
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn open_screen_recording_settings() {}
+
+/// Khi máy chủ khởi động (sau khi đăng nhập): nếu chưa có quyền thì hiện hộp thoại yêu cầu ngay,
+/// vì máy chủ chạy nền và người dùng không có nút nào để kích hoạt yêu cầu quyền.
+pub fn prompt_screen_access_at_startup() {
+    if !screen_access_granted() {
+        tracing::info!("📺 Chưa có quyền Ghi màn hình: yêu cầu quyền cho \"Mướp Agents Server\"");
+        request_screen_access();
+    }
+}
+
 /// Lấy chỉ số màn hình đầu tiên từ ffmpeg (danh sách thiết bị được in ra stderr)
 async fn find_screen(ffmpeg: &str) -> Result<u32, String> {
     let out = Command::new(ffmpeg)
@@ -152,32 +138,21 @@ async fn find_screen(ffmpeg: &str) -> Result<u32, String> {
         .ok_or_else(|| "Không tìm thấy màn hình để quay (avfoundation)".into())
 }
 
-/// Tiến trình ffmpeg đang chụp và socket nhận RTP
-pub struct Capture {
-    pub child: Child,
-    pub socket: UdpSocket,
-}
-
 /// Bật chụp màn hình. Trả lỗi có nội dung hiển thị cho người dùng nếu chưa có quyền, thiếu ffmpeg...
-pub async fn start(out_h: u32) -> Result<Capture, String> {
+/// Khung JPEG đọc từ `stdout` của tiến trình (xem `capture::read_frames`).
+pub async fn start() -> Result<(Child, ChildStdout), String> {
     let ffmpeg = crate::infra::tools::require("ffmpeg")?;
     if !screen_access_granted() {
+        // Yêu cầu quyền và mở đúng trang System Settings, để người dùng bật ngay từ lần bấm này
         request_screen_access();
+        open_screen_recording_settings();
         return Err(PERMISSION_MSG.into());
     }
     let screen = find_screen(&ffmpeg).await?;
-    // Giữ socket để nhận RTP; cổng cấp cho ffmpeg chính là cổng của socket này
-    let socket = UdpSocket::bind("127.0.0.1:0")
-        .await
-        .map_err(|e| format!("Không mở được cổng UDP nhận hình: {e}"))?;
-    let port = socket
-        .local_addr()
-        .map_err(|e| format!("Không đọc được cổng UDP: {e}"))?
-        .port();
     let mut child = Command::new(&ffmpeg)
-        .args(ffmpeg_args(screen, out_h, port))
+        .args(ffmpeg_args(screen, OUTPUT_HEIGHT))
         .stdin(Stdio::null())
-        .stdout(Stdio::null())
+        .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true)
         .spawn()
@@ -191,7 +166,11 @@ pub async fn start(out_h: u32) -> Result<Capture, String> {
             }
         });
     }
-    Ok(Capture { child, socket })
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or("Không lấy được stdout của ffmpeg")?;
+    Ok((child, stdout))
 }
 
 /// Chiều cao đầu ra mặc định (giống luồng Linux)
@@ -221,36 +200,13 @@ mod tests {
     }
 
     #[test]
-    fn args_scale_to_height_and_send_rtp_to_port() {
-        let args = ffmpeg_args(2, 720, 5004);
+    fn args_scale_to_height_and_write_jpeg_to_stdout() {
+        let args = ffmpeg_args(2, 720);
         assert!(args.contains(&"2:none".to_string()));
-        assert!(args.iter().any(|a| a == "fps=24,scale=-2:720"));
-        assert!(args.contains(&"libx264".to_string()));
-        assert!(args.contains(&"repeat-headers=1".to_string()));
-        assert_eq!(
-            args.last().map(String::as_str),
-            Some("rtp://127.0.0.1:5004?pkt_size=1200")
-        );
-    }
-
-    #[tokio::test]
-    async fn forwards_udp_rtp_packets_to_hub_subscribers() {
-        let hub = RtspHub::new();
-        let tx = hub.go_live();
-        let mut rx = tx.subscribe();
-        let listener = UdpSocket::bind("127.0.0.1:0").await.unwrap();
-        let port = listener.local_addr().unwrap().port();
-        let reader = tokio::spawn(read_packets(listener, tx, hub.clone()));
-
-        let sender = UdpSocket::bind("127.0.0.1:0").await.unwrap();
-        // RTP tối thiểu: version 2, payload type 96, rồi một NAL IDR (0x65)
-        let packet = [0x80u8, 0x60, 0, 1, 0, 0, 0, 2, 0, 0, 0, 3, 0x65, 1, 2, 3];
-        sender.send_to(&packet, ("127.0.0.1", port)).await.unwrap();
-        let got = tokio::time::timeout(std::time::Duration::from_secs(2), rx.recv())
-            .await
-            .expect("gói RTP tới hub")
-            .unwrap();
-        assert_eq!(got.as_slice(), &packet);
-        reader.abort();
+        assert!(args.iter().any(|a| a == "fps=10,scale=-2:720"));
+        assert!(args.contains(&"mjpeg".to_string()));
+        assert!(args.contains(&"image2pipe".to_string()));
+        assert_eq!(args.last().map(String::as_str), Some("pipe:1"));
+        assert!(!args.iter().any(|a| a.contains("264") || a == "rtp"));
     }
 }

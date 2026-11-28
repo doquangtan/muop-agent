@@ -16,6 +16,12 @@ pub struct ProjectWorkspace {
     pub custom_agents: Vec<CustomAgentSpec>,
     #[serde(default)]
     pub available_agents: Vec<String>,
+    /// Project là thư mục mount từ máy khác (hiện với icon đám mây, nhãn "Mount - <tên>")
+    #[serde(default)]
+    pub is_mount: bool,
+    /// Chỉ có ý nghĩa khi `is_mount`: điểm mount đang là FUSE còn hoạt động. false = đã gỡ, khung chat khóa
+    #[serde(default)]
+    pub mount_live: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -402,6 +408,22 @@ pub struct SessionStepsPageResponse {
     pub has_more: bool,
     pub earliest_step_index: usize,
     pub total_steps: usize,
+}
+
+/// Một trang lịch sử để chia sẻ: các bước có `step_index` trong
+/// `[from_step + page * page_size, from_step + (page + 1) * page_size)`, tăng dần theo thời gian.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionSharePageResponse {
+    pub session_id: String,
+    pub from_step: usize,
+    pub page: usize,
+    pub page_size: usize,
+    pub total_pages: usize,
+    pub last_step_index: usize,
+    pub total_steps: usize,
+    pub has_more: bool,
+    pub steps: Vec<AgentStep>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -2,11 +2,12 @@
 # Đóng gói .pkg cài đặt Mướp Agents cho macOS: app Flutter + máy chủ + helper menu bar + LaunchAgent + script gói phụ thuộc.
 # Máy chủ được đặt trong app bundle "Muop Agents Server.app" (bundle id vn.muop.agent-server) để macOS
 # hiện đúng mục trong Privacy & Security → Screen Recording. Chạy trên máy Mac (sau khi đã build app và máy chủ). Dùng:
-#   sh packaging/macos/build-pkg.sh <app.app> <muop-agent-server> <muop-agent-tray> <version> <out.pkg>
+#   sh packaging/macos/build-pkg.sh <app.app> <muop-agent-server> <muop-agent-tray> <version> <out.pkg> [web-dir]
+# web-dir (tuỳ chọn): thư mục build/web của Flutter; có thì bản web được đặt trong bundle máy chủ.
 set -eu
 
-if [ "$#" -ne 5 ]; then
-  echo "Cách dùng: $0 <app.app> <muop-agent-server> <muop-agent-tray> <version> <out.pkg>" >&2
+if [ "$#" -lt 5 ] || [ "$#" -gt 6 ]; then
+  echo "Cách dùng: $0 <app.app> <muop-agent-server> <muop-agent-tray> <version> <out.pkg> [web-dir]" >&2
   exit 2
 fi
 APP="$1"
@@ -14,6 +15,7 @@ SERVER="$2"
 TRAY="$3"
 VERSION="$4"
 OUT="$5"
+WEB="${6:-}"
 HERE=$(cd "$(dirname "$0")" && pwd)
 SERVER_BUNDLE_NAME="Muop Agents Server.app"
 # Tên file app hiển thị trong Finder/Applications là tên bundle (không phải CFBundleDisplayName)
@@ -52,6 +54,15 @@ cat > "$BUNDLE/Contents/Info.plist" <<PLIST
 </dict>
 </plist>
 PLIST
+# Bản web Flutter: máy chủ đọc qua MUOP_WEB_DIR (LaunchAgent bên dưới trỏ tới đây)
+if [ -n "$WEB" ]; then
+  if [ ! -f "$WEB/index.html" ]; then
+    echo "Thiếu bản web: $WEB/index.html" >&2
+    exit 2
+  fi
+  mkdir -p "$BUNDLE/Contents/Resources/web"
+  cp -R "$WEB/." "$BUNDLE/Contents/Resources/web/"
+fi
 # Ký ad-hoc: helper ký trước, bundle ký sau (TCC nhận diện theo bundle id)
 codesign --force --sign - "$BUNDLE/Contents/MacOS/muop-agent-tray"
 codesign --force --sign - --identifier vn.muop.agent-server "$BUNDLE/Contents/MacOS/muop-agent-server"

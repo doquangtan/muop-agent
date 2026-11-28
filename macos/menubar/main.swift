@@ -38,10 +38,10 @@ let helperDelegate = HelperDelegate()
 final class TrayController: NSObject {
     private let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
     private let toggleItem = NSMenuItem(title: "Quay màn hình", action: #selector(toggleScreen), keyEquivalent: "")
-    private let copyItem = NSMenuItem(title: "Sao chép địa chỉ RTSP", action: #selector(copyRtspURL), keyEquivalent: "")
+    private let copyItem = NSMenuItem(title: "Sao chép địa chỉ xem màn hình", action: #selector(copyViewerURL), keyEquivalent: "")
     private let openItem = NSMenuItem(title: "Mở Mướp Agents", action: #selector(openApp), keyEquivalent: "")
     private let stopItem = NSMenuItem(title: "Dừng máy chủ", action: #selector(stopServer), keyEquivalent: "")
-    private var rtspURL = ""
+    private var viewerURL = ""
     private var offlineCount = 0
     private var timer: Timer?
 
@@ -108,7 +108,7 @@ final class TrayController: NSObject {
         let streaming = status["streaming"] as? Bool ?? false
         let starting = status["starting"] as? Bool ?? false
         let error = status["error"] as? String ?? ""
-        rtspURL = status["rtspUrl"] as? String ?? ""
+        viewerURL = status["viewerUrl"] as? String ?? ""
 
         if starting {
             toggleItem.title = "Đang bật quay màn hình…"
@@ -119,7 +119,7 @@ final class TrayController: NSObject {
         }
         toggleItem.isEnabled = true
         toggleItem.state = streaming ? .on : .off
-        copyItem.isEnabled = !rtspURL.isEmpty
+        copyItem.isEnabled = !viewerURL.isEmpty
         stopItem.isEnabled = true
         statusItem.button?.toolTip = error.isEmpty ? "Mướp Agents" : error
     }
@@ -146,10 +146,10 @@ final class TrayController: NSObject {
         }
     }
 
-    @objc private func copyRtspURL() {
-        guard !rtspURL.isEmpty else { return }
+    @objc private func copyViewerURL() {
+        guard !viewerURL.isEmpty else { return }
         NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(rtspURL, forType: .string)
+        NSPasteboard.general.setString(viewerURL, forType: .string)
     }
 
     /// Mở app Flutter theo bundle id (không hardcode đường dẫn cài đặt)
