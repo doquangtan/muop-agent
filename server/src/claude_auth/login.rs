@@ -539,6 +539,8 @@ fn spawn_tui() -> Result<Session, String> {
         let _ = fs::remove_dir_all(&dir);
         return Err("Không mở được PTY".into());
     }
+    crate::infra::platform::set_cloexec(master_fd);
+    crate::infra::platform::set_cloexec(slave_fd);
     let master = unsafe { OwnedFd::from_raw_fd(master_fd) };
     let slave = unsafe { OwnedFd::from_raw_fd(slave_fd) };
     let (slave_out, slave_err) = match (slave.try_clone(), slave.try_clone()) {

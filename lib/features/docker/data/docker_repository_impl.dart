@@ -53,7 +53,40 @@ class DockerRepositoryImpl implements DockerRepository {
         timeout: const Duration(seconds: 60),
       );
 
-  /// Quét lại container đang chạy của phiên
+  @override
+  Stream<DockerSessionResult> watchDockerSession(String sessionId) {
+    final controller = StreamController<DockerSessionResult>();
+    StreamSubscription<dynamic>? updates;
+    StreamSubscription<void>? reconnects;
+
+    // Vào room của phiên trên server (gọi lại sau khi socket kết nối lại, vì server quên room khi ngắt)
+    Future<void> join() async {
+      try {
+        await _gateway.emitWithAck('docker:session:watch', {'sessionId': sessionId});
+      } catch (_) {
+        // Chưa kết nối: sẽ đăng ký lại khi kết nối xong
+      }
+    }
+
+    controller.onListen = () {
+      updates = _gateway.on('docker:session:update').listen((data) {
+        if (controller.isClosed || data is! Map) return;
+        final map = Map<String, dynamic>.from(data);
+        if ('${map['sessionId'] ?? ''}' != sessionId) return;
+        controller.add(DockerSessionResult.fromJson(map, ended: map['ended'] == true));
+      });
+      reconnects = _gateway.connectEvents.listen((_) => unawaited(join()));
+      unawaited(join());
+    };
+    controller.onCancel = () {
+      updates?.cancel();
+      reconnects?.cancel();
+      _gateway.emit('docker:session:unwatch', {'sessionId': sessionId});
+    };
+    return controller.stream;
+  }
+
+  /// Quét lại container đang chạy của phiên (thao tác thủ công)
   @override
   Future<DockerSessionResult> scanDockerSession(
     String address,

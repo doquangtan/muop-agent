@@ -298,10 +298,11 @@ pub fn schedule(
     if conversation_id.is_empty() {
         return;
     }
-    let cfg = store::conversation_retry_config(&conversation_id).unwrap_or_else(|| RetryConfigDto {
-        conversation_id: conversation_id.clone(),
-        ..RetryConfigDto::default()
-    });
+    let cfg =
+        store::conversation_retry_config(&conversation_id).unwrap_or_else(|| RetryConfigDto {
+            conversation_id: conversation_id.clone(),
+            ..RetryConfigDto::default()
+        });
     if !cfg.enabled || attempt > cfg.max_attempts {
         return;
     }
@@ -490,7 +491,12 @@ mod tests {
         Utc.timestamp_opt(secs, 0).unwrap()
     }
 
-    fn bucket(id: &str, name: &str, remaining: f64, reset: &str) -> crate::models::ModelQuotaBucket {
+    fn bucket(
+        id: &str,
+        name: &str,
+        remaining: f64,
+        reset: &str,
+    ) -> crate::models::ModelQuotaBucket {
         crate::models::ModelQuotaBucket {
             bucket_id: id.to_string(),
             display_name: name.to_string(),
@@ -557,18 +563,33 @@ mod tests {
             vec![
                 bucket("five_hour", "Phiên 5 giờ", 0.0, "2023-11-14T23:00:00Z"),
                 bucket("seven_day", "Tuần", 0.0, "2023-11-16T00:00:00Z"),
-                bucket("seven_day_sonnet", "Tuần Sonnet", 0.0, "2023-11-20T00:00:00Z"),
+                bucket(
+                    "seven_day_sonnet",
+                    "Tuần Sonnet",
+                    0.0,
+                    "2023-11-20T00:00:00Z",
+                ),
             ],
         )];
         // Tuần Sonnet không áp dụng cho model Haiku; cửa sổ tuần còn lại hết quota và reset muộn nhất
-        let (reset, window) =
-            quota_reset(&groups, "claude-cli", "claude-cli:claude-haiku-5-5", at(NOW)).unwrap();
+        let (reset, window) = quota_reset(
+            &groups,
+            "claude-cli",
+            "claude-cli:claude-haiku-5-5",
+            at(NOW),
+        )
+        .unwrap();
         assert_eq!(window, "Tuần");
         assert_eq!(reset.to_rfc3339(), "2023-11-16T00:00:00+00:00");
 
         // Với model Sonnet thì cửa sổ Sonnet mới là mốc muộn nhất
-        let (_, window) =
-            quota_reset(&groups, "claude-cli", "claude-cli:claude-sonnet-5-5", at(NOW)).unwrap();
+        let (_, window) = quota_reset(
+            &groups,
+            "claude-cli",
+            "claude-cli:claude-sonnet-5-5",
+            at(NOW),
+        )
+        .unwrap();
         assert_eq!(window, "Tuần Sonnet");
     }
 
@@ -596,7 +617,8 @@ mod tests {
                 vec![bucket("3p-weekly", "Tuần", 0.0, "2023-11-18T00:00:00Z")],
             ),
         ];
-        let (reset, window) = quota_reset(&groups, "agy", "agy:gemini-4-argon-low", at(NOW)).unwrap();
+        let (reset, window) =
+            quota_reset(&groups, "agy", "agy:gemini-4-argon-low", at(NOW)).unwrap();
         assert_eq!(window, "5h");
         assert_eq!(reset.to_rfc3339(), "2023-11-14T23:30:00+00:00");
     }
@@ -605,14 +627,26 @@ mod tests {
     fn plan_prefers_quota_then_message_then_interval() {
         let exhausted = vec![group(
             "Claude Code CLI",
-            vec![bucket("five_hour", "Phiên 5 giờ", 0.0, "2023-11-14T23:00:00Z")],
+            vec![bucket(
+                "five_hour",
+                "Phiên 5 giờ",
+                0.0,
+                "2023-11-14T23:00:00Z",
+            )],
         )];
         let cfg = RetryConfigDto {
             interval_minutes: 7,
             ..RetryConfigDto::default()
         };
 
-        let quota = plan_wait(&cfg, "claude-cli", "haiku", "Usage limit reached", at(NOW), &exhausted);
+        let quota = plan_wait(
+            &cfg,
+            "claude-cli",
+            "haiku",
+            "Usage limit reached",
+            at(NOW),
+            &exhausted,
+        );
         assert_eq!(quota.source, "quota");
         assert_eq!(quota.detail, "Chờ reset quota · Phiên 5 giờ");
         assert_eq!(
@@ -637,14 +671,26 @@ mod tests {
     fn plan_skips_quota_when_disabled() {
         let exhausted = vec![group(
             "Claude Code CLI",
-            vec![bucket("five_hour", "Phiên 5 giờ", 0.0, "2023-11-14T23:00:00Z")],
+            vec![bucket(
+                "five_hour",
+                "Phiên 5 giờ",
+                0.0,
+                "2023-11-14T23:00:00Z",
+            )],
         )];
         let cfg = RetryConfigDto {
             use_quota_reset: false,
             interval_minutes: 3,
             ..RetryConfigDto::default()
         };
-        let plan = plan_wait(&cfg, "claude-cli", "haiku", "retry in 90s", at(NOW), &exhausted);
+        let plan = plan_wait(
+            &cfg,
+            "claude-cli",
+            "haiku",
+            "retry in 90s",
+            at(NOW),
+            &exhausted,
+        );
         assert_eq!(plan.source, "interval");
         assert_eq!(plan.retry_at, at(NOW + 180));
     }

@@ -8,9 +8,9 @@ pub(super) fn agy_turn_cut_short(
 ) -> bool {
     cut.contains(&parsed.id)
         && parsed
-            .steps
-            .last()
-            .is_some_and(|s| s.step_type != "PLANNER_RESPONSE")
+            .last_step_type
+            .as_deref()
+            .is_some_and(|t| t != "PLANNER_RESPONSE")
 }
 
 /// Quét toàn bộ /proc để tìm danh sách các conversation_id của các tiến trình agy CLI đang thực sự chạy trên hệ thống

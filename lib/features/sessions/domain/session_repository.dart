@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:muop_agent/features/chat/domain/chat_entities.dart';
 import 'package:muop_agent/features/sessions/domain/session_entities.dart';
+import 'package:muop_agent/features/sessions/domain/session_share.dart';
 
 /// Interface (domain) của feature sessions. Presentation chỉ phụ thuộc interface này.
 abstract class SessionRepository {
@@ -40,6 +41,15 @@ abstract class SessionRepository {
     required String sessionId,
     int? beforeStepIndex,
     int limit = 30,
+  });
+
+  /// Trang đầu của link chia sẻ (để biết tổng số trang và kiểm tra link dùng được)
+  Future<SessionSharePage?> fetchSessionSharePage({
+    required String address,
+    required String sessionId,
+    required int fromStep,
+    int page = 0,
+    int limit = kSharePageSize,
   });
 
   void requestSync();

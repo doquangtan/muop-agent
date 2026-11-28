@@ -2,6 +2,8 @@ import 'dart:async';
 
 import 'package:material_ui/material_ui.dart';
 
+import 'package:muop_agent/core/widgets/throttled_spinner.dart';
+
 import 'package:muop_agent/core/di/app_dependencies.dart';
 import 'package:muop_agent/core/theme/app_theme.dart';
 import 'package:muop_agent/features/agy_auth/domain/agy_auth_entities.dart';
@@ -57,9 +59,6 @@ class _SetupAccountsSectionState extends State<SetupAccountsSection> {
   /// Nhận trạng thái do server đẩy qua socket (khi đăng nhập xong, bị hủy, hết hạn...)
   StreamSubscription<AgyAuthState>? _updatesSub;
 
-  /// Hẹn hỏi lại email sau khi đăng nhập (xem [_refreshAccountsUntilReady])
-  Timer? _accountsRetry;
-
   @override
   void initState() {
     super.initState();
@@ -72,7 +71,6 @@ class _SetupAccountsSectionState extends State<SetupAccountsSection> {
   @override
   void dispose() {
     _updatesSub?.cancel();
-    _accountsRetry?.cancel();
     super.dispose();
   }
 
@@ -109,20 +107,6 @@ class _SetupAccountsSectionState extends State<SetupAccountsSection> {
     setState(() => _accounts = accounts);
   }
 
-  /// Sau khi đăng nhập, email có thể chưa có trong DB ở lần hỏi đầu tiên. Hỏi lại vài lần (chỉ đọc DB)
-  /// cho tới khi có email, để không phải thoát màn hình mới thấy.
-  void _refreshAccountsUntilReady({int attempt = 0}) {
-    _accountsRetry?.cancel();
-    _refreshAccounts().then((_) {
-      if (!mounted || !(_state?.loggedIn ?? false)) return;
-      if (_accounts.agyEmail.isNotEmpty || attempt >= 9) return;
-      _accountsRetry = Timer(
-        const Duration(seconds: 1),
-        () => _refreshAccountsUntilReady(attempt: attempt + 1),
-      );
-    });
-  }
-
   /// Áp dụng trạng thái từ server: ack của một lệnh hoặc event `agy:auth:update`.
   /// Khi thất bại, giữ trạng thái đăng nhập theo server và hiện lỗi.
   void _onUpdate(AgyAuthState res, {String fallbackError = 'Thao tác thất bại'}) {
@@ -146,8 +130,8 @@ class _SetupAccountsSectionState extends State<SetupAccountsSection> {
       setState(() => _accounts = AccountsStatus.empty);
       _refreshAccounts();
     } else if (!wasLoggedIn && nowLoggedIn) {
-      // Vừa đăng nhập: email và gói có thể chưa sẵn sàng, hỏi lại tới khi có
-      _refreshAccountsUntilReady();
+      // Vừa đăng nhập: tải ngay. Khi server lưu xong email và gói, nó phát lại agy:auth:update và màn hình tải lại
+      _refreshAccounts();
     } else if (res.ok && res.loggedIn) {
       // Định kỳ hoặc sau khi server lấy lại thông tin: tải lại để hiện thông tin mới
       _refreshAccounts();
@@ -178,14 +162,6 @@ class _SetupAccountsSectionState extends State<SetupAccountsSection> {
     if (!mounted) return res;
     _onUpdate(res, fallbackError: 'Mã xác thực không hợp lệ');
     return res;
-  }
-
-  /// Kiểm tra định kỳ khi khung đăng nhập hiện (`agy:auth:check`). Bỏ qua khi đang có thao tác (gửi mã...)
-  /// để không làm mở lại ô mã; lỗi kiểm tra không thay màn hình đăng nhập.
-  Future<void> _checkStatus() async {
-    final res = await _repo.checkStatus();
-    if (!mounted || _busy || !res.ok) return;
-    _onUpdate(res);
   }
 
   Future<void> _cancelLogin() async {
@@ -290,7 +266,7 @@ class _SetupAccountsSectionState extends State<SetupAccountsSection> {
     if (_loading) {
       return const Padding(
         padding: EdgeInsets.all(24),
-        child: Center(child: CircularProgressIndicator()),
+        child: Center(child: ThrottledSpinner(size: 36, strokeWidth: 4)),
       );
     }
     if (_state == null || !_state!.ok) {
@@ -322,7 +298,6 @@ class _SetupAccountsSectionState extends State<SetupAccountsSection> {
             onRestart: _startLogin,
             onCancel: _cancelLogin,
             onSubmitCode: _submitCode,
-            onCheck: _checkStatus,
             terminalHeight: 320,
           )
         else
@@ -404,11 +379,7 @@ class _LoggedInSection extends StatelessWidget {
         style: OutlinedButton.styleFrom(foregroundColor: scheme.error),
         onPressed: busy ? null : onLogout,
         icon: busy
-            ? const SizedBox(
-                width: 16,
-                height: 16,
-                child: CircularProgressIndicator(strokeWidth: 2),
-              )
+            ? const ThrottledSpinner(size: 16, strokeWidth: 2)
             : const Icon(Icons.logout_rounded),
         label: const Text('Đăng xuất'),
       ),
@@ -428,11 +399,7 @@ class _LoggedOutSection extends StatelessWidget {
       child: FilledButton.icon(
         onPressed: busy ? null : onStart,
         icon: busy
-            ? const SizedBox(
-                width: 16,
-                height: 16,
-                child: CircularProgressIndicator(strokeWidth: 2),
-              )
+            ? const ThrottledSpinner(size: 16, strokeWidth: 2)
             : const Icon(Icons.login_rounded),
         label: const Text('Đăng nhập bằng Google'),
       ),

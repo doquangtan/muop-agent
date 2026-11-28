@@ -1,6 +1,5 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:io';
 
 import 'package:muop_agent/core/config/server_config.dart';
 import 'package:muop_agent/core/network/json_utils.dart';
@@ -9,6 +8,7 @@ import 'package:muop_agent/core/network/socket_gateway.dart';
 import 'package:muop_agent/features/chat/domain/chat_entities.dart';
 import 'package:muop_agent/features/sessions/domain/session_entities.dart';
 import 'package:muop_agent/features/sessions/domain/session_repository.dart';
+import 'package:muop_agent/features/sessions/domain/session_share.dart';
 
 class SessionRepositoryImpl implements SessionRepository {
   final SocketGateway _gateway;
@@ -190,21 +190,17 @@ class SessionRepositoryImpl implements SessionRepository {
     required String sessionId,
   }) async {
     final baseUrl = normalizeBaseUrl(address);
-    final client = HttpClient()
-      ..connectionTimeout = const Duration(seconds: 4);
     try {
-      final uri = Uri.parse('$baseUrl/api/session?id=$sessionId');
-      final req = await client.getUrl(uri);
-      final resp = await req.close().timeout(const Duration(seconds: 15));
-      if (resp.statusCode == 200) {
-        final body = await resp.transform(utf8.decoder).join();
-        final map = jsonDecode(body) as Map<String, dynamic>;
+      final reply = await httpRequest(
+        'GET',
+        Uri.parse('$baseUrl/api/session?id=$sessionId'),
+        timeout: const Duration(seconds: 15),
+      );
+      if (reply.status == 200) {
+        final map = jsonDecode(reply.text) as Map<String, dynamic>;
         return ConversationSession.fromJson(map);
       }
-    } catch (_) {
-    } finally {
-      client.close(force: true);
-    }
+    } catch (_) {}
     return null;
   }
 
@@ -217,8 +213,6 @@ class SessionRepositoryImpl implements SessionRepository {
     int limit = 30,
   }) async {
     final baseUrl = normalizeBaseUrl(address);
-    final client = HttpClient()
-      ..connectionTimeout = const Duration(seconds: 4);
     try {
       final uri = Uri.parse('$baseUrl/api/session/steps').replace(
         queryParameters: {
@@ -228,17 +222,42 @@ class SessionRepositoryImpl implements SessionRepository {
           'limit': limit.toString(),
         },
       );
-      final req = await client.getUrl(uri);
-      final resp = await req.close().timeout(const Duration(seconds: 15));
-      if (resp.statusCode == 200) {
-        final body = await resp.transform(utf8.decoder).join();
-        final map = jsonDecode(body) as Map<String, dynamic>;
+      final reply = await httpRequest('GET', uri, timeout: const Duration(seconds: 15));
+      if (reply.status == 200) {
+        final map = jsonDecode(reply.text) as Map<String, dynamic>;
         return SessionStepsPageResult.fromJson(map);
       }
-    } catch (_) {
-    } finally {
-      client.close(force: true);
-    }
+    } catch (_) {}
+    return null;
+  }
+
+  @override
+  Future<SessionSharePage?> fetchSessionSharePage({
+    required String address,
+    required String sessionId,
+    required int fromStep,
+    int page = 0,
+    int limit = kSharePageSize,
+  }) async {
+    final url = buildShareUrl(
+      baseUrl: normalizeBaseUrl(address),
+      sessionId: sessionId,
+      fromStep: fromStep,
+      page: page,
+      limit: limit,
+    );
+    try {
+      final reply = await httpRequest(
+        'GET',
+        Uri.parse(url),
+        timeout: const Duration(seconds: 20),
+      );
+      if (reply.status == 200) {
+        return SessionSharePage.fromJson(
+          jsonDecode(reply.text) as Map<String, dynamic>,
+        );
+      }
+    } catch (_) {}
     return null;
   }
 

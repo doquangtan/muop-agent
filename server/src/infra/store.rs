@@ -42,6 +42,44 @@ fn open() -> Option<Connection> {
              model TEXT NOT NULL,
              updated_at TEXT NOT NULL
          );
+         CREATE TABLE IF NOT EXISTS conversation_projects (
+             conversation_id TEXT PRIMARY KEY,
+             project_name TEXT NOT NULL,
+             project_path TEXT NOT NULL,
+             updated_at TEXT NOT NULL
+         );
+         CREATE TABLE IF NOT EXISTS transcript_meta (
+             kind TEXT NOT NULL,
+             conversation_id TEXT NOT NULL,
+             fingerprint TEXT NOT NULL,
+             meta_json TEXT NOT NULL,
+             updated_at TEXT NOT NULL,
+             PRIMARY KEY (kind, conversation_id)
+         );
+         CREATE TABLE IF NOT EXISTS transcript_state (
+             kind TEXT NOT NULL,
+             conversation_id TEXT NOT NULL,
+             state_json TEXT NOT NULL,
+             PRIMARY KEY (kind, conversation_id)
+         );
+         CREATE TABLE IF NOT EXISTS claude_transcript_lines (
+             conversation_id TEXT NOT NULL,
+             step_index INTEGER NOT NULL,
+             byte_offset INTEGER NOT NULL,
+             byte_len INTEGER NOT NULL,
+             input_tokens INTEGER NOT NULL,
+             output_tokens INTEGER NOT NULL,
+             cache_tokens INTEGER NOT NULL,
+             PRIMARY KEY (conversation_id, step_index)
+         );
+         CREATE TABLE IF NOT EXISTS agy_transcript_lines (
+             conversation_id TEXT NOT NULL,
+             seq INTEGER NOT NULL,
+             step_index INTEGER NOT NULL,
+             byte_offset INTEGER NOT NULL,
+             byte_len INTEGER NOT NULL,
+             PRIMARY KEY (conversation_id, seq)
+         );
          CREATE TABLE IF NOT EXISTS conversation_context (
              conversation_id TEXT PRIMARY KEY,
              model_id TEXT NOT NULL,
@@ -348,6 +386,329 @@ pub fn set_conversation_model(conversation_id: &str, model: &str) -> bool {
         .ok()
     })
     .is_some()
+}
+
+/// Ghi project mà lượt của conversation chạy: tên project gốc và đường dẫn nơi agent làm việc.
+/// Dùng để nhóm conversation đúng project, kể cả khi agy không lưu thư mục làm việc hoặc lượt chạy qua mount.
+pub fn set_conversation_project(
+    conversation_id: &str,
+    project_name: &str,
+    project_path: &str,
+) -> bool {
+    with_db(|c| {
+        c.execute(
+            "INSERT INTO conversation_projects (conversation_id, project_name, project_path, updated_at)
+             VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(conversation_id) DO UPDATE SET
+                 project_name = excluded.project_name,
+                 project_path = excluded.project_path,
+                 updated_at = excluded.updated_at",
+            params![
+                conversation_id,
+                project_name,
+                project_path,
+                chrono::Utc::now().to_rfc3339()
+            ],
+        )
+        .ok()
+    })
+    .is_some()
+}
+
+/// Metadata transcript đã lưu của một conversation: (dấu vết file, JSON). None nếu chưa có.
+pub fn transcript_meta_get(kind: &str, conversation_id: &str) -> Option<(String, String)> {
+    with_db(|c| {
+        c.query_row(
+            "SELECT fingerprint, meta_json FROM transcript_meta WHERE kind = ?1 AND conversation_id = ?2",
+            params![kind, conversation_id],
+            |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
+        )
+        .ok()
+    })
+}
+
+/// Ghi (hoặc thay) metadata transcript của một conversation
+pub fn transcript_meta_set(
+    kind: &str,
+    conversation_id: &str,
+    fingerprint: &str,
+    meta_json: &str,
+) -> bool {
+    with_db(|c| {
+        c.execute(
+            "INSERT INTO transcript_meta (kind, conversation_id, fingerprint, meta_json, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5)
+             ON CONFLICT(kind, conversation_id) DO UPDATE SET
+                 fingerprint = excluded.fingerprint,
+                 meta_json = excluded.meta_json,
+                 updated_at = excluded.updated_at",
+            params![
+                kind,
+                conversation_id,
+                fingerprint,
+                meta_json,
+                chrono::Utc::now().to_rfc3339()
+            ],
+        )
+        .ok()
+    })
+    .is_some()
+}
+
+/// Có trạng thái parser đã lưu cho conversation này không (không đọc nội dung)
+pub fn transcript_state_exists(kind: &str, conversation_id: &str) -> bool {
+    with_db(|c| {
+        c.query_row(
+            "SELECT 1 FROM transcript_state WHERE kind = ?1 AND conversation_id = ?2",
+            params![kind, conversation_id],
+            |_| Ok(()),
+        )
+        .ok()
+    })
+    .is_some()
+}
+
+/// Trạng thái parser đã lưu của một conversation (JSON), None nếu chưa có
+pub fn transcript_state_get(kind: &str, conversation_id: &str) -> Option<String> {
+    with_db(|c| {
+        c.query_row(
+            "SELECT state_json FROM transcript_state WHERE kind = ?1 AND conversation_id = ?2",
+            params![kind, conversation_id],
+            |r| r.get::<_, String>(0),
+        )
+        .ok()
+    })
+}
+
+/// Ghi kết quả đồng bộ một transcript trong một transaction: metadata, trạng thái, và các dòng chỉ mục mới.
+/// `reset`: xóa chỉ mục cũ của conversation trước (file đã được dựng lại từ đầu).
+/// Chỉ mục dòng chỉ dành cho agy. Trả về false nếu ghi lỗi.
+pub fn transcript_sync_write(
+    kind: &str,
+    conversation_id: &str,
+    fingerprint: &str,
+    meta_json: &str,
+    state_json: &str,
+    rows: &[(i64, i64, i64, i64)],
+    reset: bool,
+) -> bool {
+    with_db(|c| {
+        let tx = c.unchecked_transaction().ok()?;
+        let now = chrono::Utc::now().to_rfc3339();
+        if kind == "agy" {
+            if reset {
+                tx.execute(
+                    "DELETE FROM agy_transcript_lines WHERE conversation_id = ?1",
+                    params![conversation_id],
+                )
+                .ok()?;
+            }
+            for (seq, step_index, offset, len) in rows {
+                tx.execute(
+                    "INSERT OR REPLACE INTO agy_transcript_lines
+                         (conversation_id, seq, step_index, byte_offset, byte_len)
+                     VALUES (?1, ?2, ?3, ?4, ?5)",
+                    params![conversation_id, seq, step_index, offset, len],
+                )
+                .ok()?;
+            }
+        }
+        tx.execute(
+            "INSERT INTO transcript_meta (kind, conversation_id, fingerprint, meta_json, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5)
+             ON CONFLICT(kind, conversation_id) DO UPDATE SET
+                 fingerprint = excluded.fingerprint,
+                 meta_json = excluded.meta_json,
+                 updated_at = excluded.updated_at",
+            params![kind, conversation_id, fingerprint, meta_json, now],
+        )
+        .ok()?;
+        tx.execute(
+            "INSERT INTO transcript_state (kind, conversation_id, state_json) VALUES (?1, ?2, ?3)
+             ON CONFLICT(kind, conversation_id) DO UPDATE SET state_json = excluded.state_json",
+            params![kind, conversation_id, state_json],
+        )
+        .ok()?;
+        tx.commit().ok()?;
+        Some(())
+    })
+    .is_some()
+}
+
+/// Các dòng cuối của chỉ mục agy: (step_index, offset, độ dài), theo thứ tự tăng dần của seq
+pub fn agy_tail_rows(conversation_id: &str, n: usize) -> Vec<(i64, i64, i64)> {
+    with_db(|c| {
+        let mut stmt = c
+            .prepare(
+                "SELECT step_index, byte_offset, byte_len FROM (
+                     SELECT seq, step_index, byte_offset, byte_len FROM agy_transcript_lines
+                     WHERE conversation_id = ?1 ORDER BY seq DESC LIMIT ?2
+                 ) ORDER BY seq ASC",
+            )
+            .ok()?;
+        let rows = stmt
+            .query_map(params![conversation_id, n as i64], |r| {
+                Ok((
+                    r.get::<_, i64>(0)?,
+                    r.get::<_, i64>(1)?,
+                    r.get::<_, i64>(2)?,
+                ))
+            })
+            .ok()?
+            .filter_map(Result::ok)
+            .collect();
+        Some(rows)
+    })
+    .unwrap_or_default()
+}
+
+/// Ghi kết quả đồng bộ một transcript Claude trong một transaction: metadata, trạng thái, và các dòng chỉ mục
+/// mới. Mỗi dòng là (step_index, offset, độ dài, token input, output, cache). `reset`: xóa chỉ mục cũ trước.
+pub fn claude_sync_write(
+    conversation_id: &str,
+    fingerprint: &str,
+    meta_json: &str,
+    state_json: &str,
+    rows: &[(i64, i64, i64, i64, i64, i64)],
+    reset: bool,
+) -> bool {
+    with_db(|c| {
+        let tx = c.unchecked_transaction().ok()?;
+        let now = chrono::Utc::now().to_rfc3339();
+        if reset {
+            tx.execute(
+                "DELETE FROM claude_transcript_lines WHERE conversation_id = ?1",
+                params![conversation_id],
+            )
+            .ok()?;
+        }
+        for (step_index, offset, len, input, output, cache) in rows {
+            tx.execute(
+                "INSERT OR REPLACE INTO claude_transcript_lines
+                     (conversation_id, step_index, byte_offset, byte_len, input_tokens, output_tokens, cache_tokens)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                params![conversation_id, step_index, offset, len, input, output, cache],
+            )
+            .ok()?;
+        }
+        tx.execute(
+            "INSERT INTO transcript_meta (kind, conversation_id, fingerprint, meta_json, updated_at)
+             VALUES ('claude', ?1, ?2, ?3, ?4)
+             ON CONFLICT(kind, conversation_id) DO UPDATE SET
+                 fingerprint = excluded.fingerprint,
+                 meta_json = excluded.meta_json,
+                 updated_at = excluded.updated_at",
+            params![conversation_id, fingerprint, meta_json, now],
+        )
+        .ok()?;
+        tx.execute(
+            "INSERT INTO transcript_state (kind, conversation_id, state_json) VALUES ('claude', ?1, ?2)
+             ON CONFLICT(kind, conversation_id) DO UPDATE SET state_json = excluded.state_json",
+            params![conversation_id, state_json],
+        )
+        .ok()?;
+        tx.commit().ok()?;
+        Some(())
+    })
+    .is_some()
+}
+
+/// Ghi lại metadata (không đổi trạng thái/chỉ mục), dùng khi file không đổi nhưng dấu vết khác
+pub fn claude_meta_only_write(conversation_id: &str, fingerprint: &str, meta_json: &str) -> bool {
+    crate::infra::store::transcript_meta_set("claude", conversation_id, fingerprint, meta_json)
+}
+
+/// Các dòng chỉ mục Claude có step_index < `before` (nếu có), lấy `limit` dòng cuối, theo thứ tự tăng dần
+pub fn claude_line_rows(
+    conversation_id: &str,
+    before: Option<i64>,
+    limit: usize,
+) -> Vec<(i64, i64, i64, i64, i64, i64)> {
+    with_db(|c| {
+        let mut stmt = c
+            .prepare(
+                "SELECT step_index, byte_offset, byte_len, input_tokens, output_tokens, cache_tokens
+                 FROM (
+                     SELECT step_index, byte_offset, byte_len, input_tokens, output_tokens, cache_tokens
+                     FROM claude_transcript_lines
+                     WHERE conversation_id = ?1 AND step_index < ?2
+                     ORDER BY step_index DESC LIMIT ?3
+                 ) ORDER BY step_index ASC",
+            )
+            .ok()?;
+        let rows = stmt
+            .query_map(
+                params![conversation_id, before.unwrap_or(i64::MAX), limit as i64],
+                |r| {
+                    Ok((
+                        r.get::<_, i64>(0)?,
+                        r.get::<_, i64>(1)?,
+                        r.get::<_, i64>(2)?,
+                        r.get::<_, i64>(3)?,
+                        r.get::<_, i64>(4)?,
+                        r.get::<_, i64>(5)?,
+                    ))
+                },
+            )
+            .ok()?
+            .filter_map(Result::ok)
+            .collect();
+        Some(rows)
+    })
+    .unwrap_or_default()
+}
+
+/// Xóa metadata, trạng thái và chỉ mục của các conversation không còn trên đĩa. Trả về số conversation đã xóa.
+pub fn transcript_meta_prune(kind: &str, keep: &std::collections::HashSet<String>) -> usize {
+    with_db(|c| {
+        let mut stmt = c
+            .prepare("SELECT conversation_id FROM transcript_meta WHERE kind = ?1")
+            .ok()?;
+        let stored: Vec<String> = stmt
+            .query_map(params![kind], |r| r.get::<_, String>(0))
+            .ok()?
+            .filter_map(Result::ok)
+            .collect();
+        drop(stmt);
+        let mut removed = 0;
+        for id in stored.iter().filter(|id| !keep.contains(*id)) {
+            let _ = c.execute(
+                "DELETE FROM transcript_meta WHERE kind = ?1 AND conversation_id = ?2",
+                params![kind, id],
+            );
+            let _ = c.execute(
+                "DELETE FROM transcript_state WHERE kind = ?1 AND conversation_id = ?2",
+                params![kind, id],
+            );
+            if kind == "agy" {
+                let _ = c.execute(
+                    "DELETE FROM agy_transcript_lines WHERE conversation_id = ?1",
+                    params![id],
+                );
+            }
+            if kind == "claude" {
+                let _ = c.execute(
+                    "DELETE FROM claude_transcript_lines WHERE conversation_id = ?1",
+                    params![id],
+                );
+            }
+            removed += 1;
+        }
+        Some(removed)
+    })
+    .unwrap_or(0)
+}
+
+/// Project đã ghi cho một conversation: (tên, đường dẫn). None nếu chưa có.
+pub fn conversation_project(conversation_id: &str) -> Option<(String, String)> {
+    with_db(|c| {
+        c.query_row(
+            "SELECT project_name, project_path FROM conversation_projects WHERE conversation_id = ?1",
+            params![conversation_id],
+            |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
+        )
+        .ok()
+    })
 }
 
 /// Model đã lưu cho một conversation, None nếu chưa có

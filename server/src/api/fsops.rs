@@ -15,13 +15,15 @@ use axum::{
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::fs;
-use std::io::{Read, Seek, SeekFrom};
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Component, Path, PathBuf};
 use std::time::UNIX_EPOCH;
 
 /// Giới hạn mỗi lần đọc qua API (byte)
 const MAX_READ_CHUNK: u64 = 16 * 1024 * 1024;
+/// Kích thước tối đa của file sau khi ghi theo đoạn (khớp giới hạn của máy nhận)
+const MAX_PATCH_BYTES: u64 = 512 * 1024 * 1024;
 
 #[derive(Debug)]
 pub enum FsErr {
@@ -390,6 +392,26 @@ pub async fn handle_write(Query(q): Query<PathQuery>, body: Bytes) -> Response {
     run_json(move || op_write(&root()?, &raw, &body[..])).await
 }
 
+#[derive(Deserialize)]
+pub struct PatchQuery {
+    pub path: Option<String>,
+    pub truncate: Option<u64>,
+}
+
+/// PUT /api/fs/patch?path=&truncate=  body = các khung ghi (xem `parse_patch_frames`)
+pub async fn handle_patch(Query(q): Query<PatchQuery>, body: Bytes) -> Response {
+    let raw = match required(q.path) {
+        Ok(r) => r,
+        Err(e) => return e.response(),
+    };
+    let writes = match parse_patch_frames(&body) {
+        Ok(w) => w,
+        Err(e) => return e.response(),
+    };
+    let truncate = q.truncate;
+    run_json(move || op_patch(&root()?, &raw, truncate, &writes)).await
+}
+
 /// POST /api/fs/mkdir {path}
 pub async fn handle_mkdir(Json(req): Json<MkdirRequest>) -> Response {
     run_json(move || op_mkdir(&root()?, &req.path)).await
@@ -403,6 +425,74 @@ pub async fn handle_delete(Json(req): Json<DeleteRequest>) -> Response {
 /// POST /api/fs/rename {from, to}
 pub async fn handle_rename(Json(req): Json<RenameRequest>) -> Response {
     run_json(move || op_rename(&root()?, &req.from, &req.to, req.overwrite)).await
+}
+
+/// Đọc các đoạn ghi từ body: mỗi đoạn là `offset` (u64 LE), `length` (u32 LE), rồi dữ liệu.
+pub fn parse_patch_frames(body: &[u8]) -> Result<Vec<(u64, Vec<u8>)>, FsErr> {
+    let mut out = Vec::new();
+    let mut i = 0usize;
+    while i < body.len() {
+        if body.len() - i < 12 {
+            return Err(FsErr::Invalid("khung ghi bị cắt cụt".into()));
+        }
+        let mut off = [0u8; 8];
+        off.copy_from_slice(&body[i..i + 8]);
+        let mut len = [0u8; 4];
+        len.copy_from_slice(&body[i + 8..i + 12]);
+        let len = u32::from_le_bytes(len) as usize;
+        i += 12;
+        if body.len() - i < len {
+            return Err(FsErr::Invalid("khung ghi bị cắt cụt".into()));
+        }
+        out.push((u64::from_le_bytes(off), body[i..i + len].to_vec()));
+        i += len;
+    }
+    Ok(out)
+}
+
+/// Ghi từng đoạn vào file ngay tại chỗ (không ghi lại cả file). `truncate` đặt kích thước trước khi ghi.
+/// File chưa có thì được tạo. Khác `op_write`: giữ nguyên inode và quyền của file đang có.
+pub fn op_patch(
+    root: &Path,
+    raw: &str,
+    truncate: Option<u64>,
+    writes: &[(u64, Vec<u8>)],
+) -> Result<Value, FsErr> {
+    let target = match resolve_existing(root, raw) {
+        Ok(p) => {
+            if p.is_dir() {
+                return Err(FsErr::IsDir);
+            }
+            p
+        }
+        Err(FsErr::NotFound) => resolve_child(root, raw)?,
+        Err(e) => return Err(e),
+    };
+    if truncate.is_some_and(|t| t > MAX_PATCH_BYTES) {
+        return Err(FsErr::Invalid("kích thước vượt giới hạn 512MB".into()));
+    }
+    for (off, data) in writes {
+        let end = off.checked_add(data.len() as u64).unwrap_or(u64::MAX);
+        if end > MAX_PATCH_BYTES {
+            return Err(FsErr::Invalid("kích thước vượt giới hạn 512MB".into()));
+        }
+    }
+    let mut f = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(&target)
+        .map_err(io_err)?;
+    if let Some(t) = truncate {
+        f.set_len(t).map_err(io_err)?;
+    }
+    for (off, data) in writes {
+        f.seek(SeekFrom::Start(*off)).map_err(io_err)?;
+        f.write_all(data).map_err(io_err)?;
+    }
+    let size = f.metadata().map(|m| m.len()).unwrap_or(0);
+    Ok(json!({ "ok": true, "size": size }))
 }
 
 #[cfg(test)]
@@ -419,6 +509,53 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("muopfs-{tag}-{}-{nanos}", std::process::id()));
         fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    #[test]
+    fn patch_writes_in_place_and_keeps_size_rules() {
+        let root = temp_root("patch");
+        let file = root.join("a.bin");
+        fs::write(&file, b"0123456789").unwrap();
+        let path = file.to_string_lossy().to_string();
+        // Ghi đè giữa file, rồi ghi nối đuôi (mở rộng file)
+        op_patch(
+            &root,
+            &path,
+            None,
+            &[(2, b"AB".to_vec()), (10, b"XYZ".to_vec())],
+        )
+        .unwrap();
+        assert_eq!(fs::read(&file).unwrap(), b"01AB456789XYZ");
+        // Cắt bớt trước khi ghi
+        op_patch(&root, &path, Some(4), &[(0, b"zz".to_vec())]).unwrap();
+        assert_eq!(fs::read(&file).unwrap(), b"zzAB");
+        // File chưa có được tạo
+        let fresh = root.join("new.txt");
+        op_patch(
+            &root,
+            &fresh.to_string_lossy(),
+            Some(0),
+            &[(0, b"hi".to_vec())],
+        )
+        .unwrap();
+        assert_eq!(fs::read(&fresh).unwrap(), b"hi");
+        // Vượt giới hạn bị từ chối
+        assert!(op_patch(&root, &path, None, &[(MAX_PATCH_BYTES, vec![0])]).is_err());
+        fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn patch_frames_round_trip_and_reject_truncated_body() {
+        let mut body = Vec::new();
+        for (off, data) in [(5u64, b"abc".to_vec()), (0u64, b"Z".to_vec())] {
+            body.extend_from_slice(&off.to_le_bytes());
+            body.extend_from_slice(&(data.len() as u32).to_le_bytes());
+            body.extend_from_slice(&data);
+        }
+        let frames = parse_patch_frames(&body).unwrap();
+        assert_eq!(frames, vec![(5, b"abc".to_vec()), (0, b"Z".to_vec())]);
+        assert!(parse_patch_frames(&body[..body.len() - 1]).is_err());
+        assert!(parse_patch_frames(&body[..5]).is_err());
     }
 
     #[test]

@@ -61,7 +61,8 @@ class SocketGateway {
     final socket = io.io(
       baseUrl,
       io.OptionBuilder()
-          .setTransports(['websocket', 'polling'])
+          // Chỉ WebSocket: không dùng long-polling (transport=polling). Server hỗ trợ WebSocket cho mọi client
+          .setTransports(['websocket'])
           .enableAutoConnect()
           .enableReconnection()
           .setReconnectionDelay(1000)

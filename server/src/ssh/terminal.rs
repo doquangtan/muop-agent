@@ -305,6 +305,8 @@ fn spawn_pty(
         cleanup(&tmp_dir);
         return Err("Không mở được PTY".into());
     }
+    crate::infra::platform::set_cloexec(master_fd);
+    crate::infra::platform::set_cloexec(slave_fd);
     let master = unsafe { OwnedFd::from_raw_fd(master_fd) };
     let slave = unsafe { OwnedFd::from_raw_fd(slave_fd) };
     let (slave_out, slave_err) = match (slave.try_clone(), slave.try_clone()) {
@@ -603,6 +605,54 @@ pub fn resize(session_id: &str, cols: u16, rows: u16) -> Result<(), String> {
         return Err("Không đổi được kích thước".into());
     }
     Ok(())
+}
+
+/// Khi server khởi động: phiên SSH không được giữ qua lần chạy trước (PTY đã đóng cùng tiến trình cũ).
+/// Xóa thư mục tạm còn sót (key riêng, askpass) nếu server cũ bị kill trước khi kịp dọn.
+pub fn cleanup_stale() -> usize {
+    cleanup_stale_in(&std::env::temp_dir())
+}
+
+/// Xóa thư mục tạm của phiên SSH trong `root`. Trả về số thư mục đã xóa.
+fn cleanup_stale_in(root: &std::path::Path) -> usize {
+    let Ok(entries) = fs::read_dir(root) else {
+        return 0;
+    };
+    let mut removed = 0;
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if !(name.starts_with("muop-sshterm-") || name.starts_with("muop-ssh-")) {
+            continue;
+        }
+        if fs::remove_dir_all(entry.path()).is_ok() {
+            removed += 1;
+        }
+    }
+    removed
+}
+
+#[cfg(test)]
+mod cleanup_tests {
+    use super::cleanup_stale_in;
+    use std::fs;
+
+    #[test]
+    fn removes_only_ssh_temp_dirs() {
+        let root = std::env::temp_dir().join(format!("muop-cleanup-test-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        fs::create_dir(root.join("muop-sshterm-ssh-1-2")).unwrap();
+        fs::create_dir(root.join("muop-ssh-123-456")).unwrap();
+        fs::create_dir(root.join("muop-sftp-sess-1")).unwrap();
+        fs::create_dir(root.join("muop-docker-x")).unwrap();
+
+        assert_eq!(cleanup_stale_in(&root), 2);
+        assert!(!root.join("muop-sshterm-ssh-1-2").exists());
+        assert!(!root.join("muop-ssh-123-456").exists());
+        assert!(root.join("muop-sftp-sess-1").exists());
+        assert!(root.join("muop-docker-x").exists());
+        let _ = fs::remove_dir_all(&root);
+    }
 }
 
 /// Yêu cầu đóng phiên. Thread đọc sẽ tự dọn khi ssh thoát.

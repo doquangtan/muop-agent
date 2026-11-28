@@ -1,10 +1,20 @@
 import 'dart:async';
 import 'dart:convert';
 
+import 'package:flutter/foundation.dart' show debugPrint;
+
 import 'package:muop_agent/core/network/rest_client.dart';
 import 'package:muop_agent/core/network/socket_gateway.dart';
 import 'package:muop_agent/features/ssh/domain/ssh_entities.dart';
 import 'package:muop_agent/features/ssh/domain/ssh_repository.dart';
+
+/// Ghi giờ gửi và giờ nhận ack của lệnh socket SSH (chẩn đoán treo >10 giây; so với log `[SSH]` của server)
+Future<dynamic> _timed(String event, Future<dynamic> ack) {
+  final sw = Stopwatch()..start();
+  debugPrint('[SSH_CLIENT] ${DateTime.now().toIso8601String()} gửi $event');
+  return ack.whenComplete(() => debugPrint(
+      '[SSH_CLIENT] ${DateTime.now().toIso8601String()} ack $event sau ${sw.elapsedMilliseconds}ms'));
+}
 
 class SshRepositoryImpl implements SshRepository {
   final SocketGateway _gateway;
@@ -163,11 +173,11 @@ class SshRepositoryImpl implements SshRepository {
       );
     }
     try {
-      final ack = await _gateway.emitWithAck('ssh:open', {
+      final ack = await _timed('ssh:open', _gateway.emitWithAck('ssh:open', {
         'hostId': hostId,
         'cols': cols,
         'rows': rows,
-      }).timeout(sshAckTimeout);
+      })).timeout(sshAckTimeout);
       final map = Map<String, dynamic>.from(
         (ack is List ? ack.first : ack) as Map,
       );
@@ -217,9 +227,9 @@ class SshRepositoryImpl implements SshRepository {
       );
     }
     try {
-      final ack = await _gateway.emitWithAck(
+      final ack = await _timed(
         'ssh:attach',
-        {'sessionId': sessionId},
+        _gateway.emitWithAck('ssh:attach', {'sessionId': sessionId}),
       ).timeout(sshAckTimeout);
       final map = Map<String, dynamic>.from(
         (ack is List ? ack.first : ack) as Map,

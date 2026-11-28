@@ -27,6 +27,12 @@ const READY_TIMEOUT: Duration = Duration::from_secs(15);
 const PROG: &str = "muop-remote";
 /// Tùy chọn mount: tên hiển thị và để kernel tự kiểm tra quyền theo thuộc tính trả về
 const MOUNT_OPTS: &str = "fsname=muop-remote,default_permissions";
+/// Handle chỉ đọc giữ nội dung file nhỏ lúc mở (đến mức này), để không gọi máy gửi cho mỗi lần đọc
+const READ_CACHE_MAX: u64 = 64 * 1024 * 1024;
+/// Đẩy các đoạn ghi lên máy gửi khi phần chờ đã vượt mức này
+const FLUSH_AT: usize = 16 * 1024 * 1024;
+/// Mỗi request ghi tối đa khoảng này (đoạn lớn hơn thì gửi riêng)
+const PATCH_BATCH: usize = 8 * 1024 * 1024;
 
 /// Con trỏ hàm của `struct fuse_operations`; mọi con trỏ hàm C đều cùng kích thước nên dùng chung kiểu này
 type Ptr = Option<unsafe extern "C" fn()>;
@@ -149,11 +155,14 @@ extern "C" {
 struct Handle {
     /// Đường dẫn tương đối tại thời điểm mở (cập nhật khi đổi tên)
     rel: String,
-    /// Nội dung đang sửa; `None` với handle chỉ đọc
-    buf: Option<Vec<u8>>,
-    /// Tăng mỗi lần ghi vào bộ đệm, để flush không xóa cờ bẩn của lần ghi mới hơn
-    version: u64,
-    dirty: bool,
+    /// Mở để ghi (kể cả ghi nối đuôi)
+    writable: bool,
+    /// Handle chỉ đọc: nội dung file lúc mở (file nhỏ); `None` thì đọc từng đoạn từ máy gửi
+    cache: Option<Vec<u8>>,
+    /// Độ dài file hiện tại, tính cả các đoạn chưa đẩy
+    len: u64,
+    /// Các đoạn đã ghi nhưng chưa đẩy lên máy gửi (theo thứ tự ghi)
+    pending: Vec<(u64, Vec<u8>)>,
 }
 
 /// Trạng thái của một mount, sống từ lúc mount đến lúc gỡ
@@ -170,75 +179,95 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
 }
 
 impl Ctx {
-    fn insert_handle(&self, rel: String, buf: Option<Vec<u8>>, dirty: bool) -> u64 {
+    fn insert_handle(&self, rel: String, writable: bool, cache: Option<Vec<u8>>, len: u64) -> u64 {
         let fh = self.next_fh.fetch_add(1, Ordering::Relaxed);
         lock(&self.handles).insert(
             fh,
             Handle {
                 rel,
-                buf,
-                version: 0,
-                dirty,
+                writable,
+                cache,
+                len,
+                pending: Vec::new(),
             },
         );
         fh
     }
 
-    /// Kích thước bộ đệm đang mở để ghi của một đường dẫn (handle mới nhất), nếu có
+    /// Kích thước của handle ghi mới nhất đang mở cho một đường dẫn, nếu có
     fn buffered_size(&self, rel: &str) -> Option<u64> {
         lock(&self.handles)
             .iter()
-            .filter(|(_, h)| h.rel == rel)
-            .filter_map(|(fh, h)| h.buf.as_ref().map(|b| (*fh, b.len() as u64)))
-            .max_by_key(|(fh, _)| *fh)
-            .map(|(_, len)| len)
+            .filter(|(_, h)| h.writable && h.rel == rel)
+            .max_by_key(|(fh, _)| **fh)
+            .map(|(_, h)| h.len)
     }
 
-    /// Đẩy bộ đệm của handle lên máy gửi nếu có thay đổi
+    /// Đẩy các đoạn ghi chưa gửi của handle lên máy gửi. Chỉ phần đã đổi được gửi, không gửi lại cả file.
+    /// Lô lỗi thì trả các đoạn chưa gửi về đầu hàng đợi để lần sau thử lại.
     fn flush_fh(&self, fh: u64) -> Result<(), Errno> {
-        let (rel, data, version) = {
-            let handles = lock(&self.handles);
-            match handles.get(&fh) {
-                Some(h) if h.dirty => match &h.buf {
-                    Some(buf) => (h.rel.clone(), buf.clone(), h.version),
-                    None => return Ok(()),
-                },
+        let (rel, pending) = {
+            let mut handles = lock(&self.handles);
+            match handles.get_mut(&fh) {
+                Some(h) if h.writable && !h.pending.is_empty() => {
+                    (h.rel.clone(), std::mem::take(&mut h.pending))
+                }
                 _ => return Ok(()),
             }
         };
-        self.remote.write(&rel, data)?;
-        if let Some(h) = lock(&self.handles).get_mut(&fh) {
-            if h.version == version {
-                h.dirty = false;
+        let mut start = 0;
+        let mut failure = None;
+        while start < pending.len() {
+            let mut end = start;
+            let mut bytes = 0usize;
+            while end < pending.len()
+                && (end == start || bytes + pending[end].1.len() <= PATCH_BATCH)
+            {
+                bytes += pending[end].1.len();
+                end += 1;
+            }
+            let writes: Vec<(u64, &[u8])> = pending[start..end]
+                .iter()
+                .map(|(off, data)| (*off, data.as_slice()))
+                .collect();
+            if let Err(e) = self.remote.patch(&rel, None, &writes) {
+                failure = Some(e);
+                break;
+            }
+            start = end;
+        }
+        match failure {
+            None => Ok(()),
+            Some(e) => {
+                let unsent: Vec<(u64, Vec<u8>)> = pending.into_iter().skip(start).collect();
+                if let Some(h) = lock(&self.handles).get_mut(&fh) {
+                    let newer = std::mem::take(&mut h.pending);
+                    h.pending = unsent;
+                    h.pending.extend(newer);
+                }
+                Err(e)
             }
         }
-        Ok(())
     }
 
-    /// Đổi kích thước file: với handle đang mở để ghi thì đổi trên bộ đệm, không thì ghi thẳng lên máy gửi
+    /// Đổi kích thước file. Handle ghi đang mở thì đẩy phần chờ trước, rồi cắt trên máy gửi.
     fn truncate(&self, rel: &str, fh: Option<u64>, size: u64) -> Result<(), Errno> {
         let size = usize::try_from(size)
             .ok()
             .filter(|s| *s <= MAX_FILE_BYTES)
             .ok_or(Errno::EFBIG)?;
         if let Some(fh) = fh {
-            let mut handles = lock(&self.handles);
-            if let Some(h) = handles.get_mut(&fh) {
-                if let Some(buf) = h.buf.as_mut() {
-                    buf.resize(size, 0);
-                    h.version += 1;
-                    h.dirty = true;
-                    return Ok(());
-                }
+            self.flush_fh(fh)?;
+        }
+        // Không có file thì ENOENT (patch sẽ tạo file mới)
+        self.remote.stat(rel)?;
+        self.remote.patch(rel, Some(size as u64), &[])?;
+        if let Some(fh) = fh {
+            if let Some(h) = lock(&self.handles).get_mut(&fh) {
+                h.len = size as u64;
             }
         }
-        let mut data = if size == 0 {
-            Vec::new()
-        } else {
-            self.remote.read_all(rel)?
-        };
-        data.resize(size, 0);
-        self.remote.write(rel, data)
+        Ok(())
     }
 
     /// Sau khi đổi tên, các handle đang mở trỏ tới đường dẫn mới
@@ -377,16 +406,24 @@ unsafe extern "C" fn cb_open(path: *const c_char, fi: *mut FuseFileInfo) -> c_in
         let flags = (*fi).flags;
         let writable = (flags & libc::O_ACCMODE) != libc::O_RDONLY;
         let truncate = (flags & libc::O_TRUNC) != 0;
-        let (buf, dirty) = if writable {
+        let size = info["size"].as_u64().unwrap_or(0);
+        (*fi).fh = if writable {
             if truncate {
-                (Some(Vec::new()), true)
+                // Cắt về 0 ngay (một request); không cần đọc nội dung cũ
+                c.remote.patch(&rel, Some(0), &[]).map_err(neg)?;
+                c.insert_handle(rel, true, None, 0)
             } else {
-                (Some(c.remote.read_all(&rel).map_err(neg)?), false)
+                c.insert_handle(rel, true, None, size)
             }
         } else {
-            (None, false)
+            // Chỉ đọc: file nhỏ thì giữ nội dung lúc mở để không gọi máy gửi cho mỗi lần đọc
+            let cache = if size <= READ_CACHE_MAX {
+                Some(c.remote.read_all(&rel).map_err(neg)?)
+            } else {
+                None
+            };
+            c.insert_handle(rel, false, cache, size)
         };
-        (*fi).fh = c.insert_handle(rel, buf, dirty);
         Ok(0)
     }))
 }
@@ -400,7 +437,7 @@ unsafe extern "C" fn cb_create(
         let c = ctx();
         let rel = rel_of(path)?;
         c.remote.write(&rel, Vec::new()).map_err(neg)?;
-        (*fi).fh = c.insert_handle(rel, Some(Vec::new()), false);
+        (*fi).fh = c.insert_handle(rel, true, None, 0);
         Ok(0)
     }))
 }
@@ -415,22 +452,26 @@ unsafe extern "C" fn cb_read(
     guard(AssertUnwindSafe(|| -> Result<c_int, c_int> {
         let c = ctx();
         let fh = (*fi).fh;
-        let (rel, cached) = {
+        let (rel, cached, writable) = {
             let handles = lock(&c.handles);
             let Some(h) = handles.get(&fh) else {
                 return Err(-libc::EBADF);
             };
             let start = offset.max(0) as usize;
-            let cached = h.buf.as_ref().map(|b| {
+            let cached = h.cache.as_ref().map(|b| {
                 let s = start.min(b.len());
                 let e = s.saturating_add(size).min(b.len());
                 b[s..e].to_vec()
             });
-            (h.rel.clone(), cached)
+            (h.rel.clone(), cached, h.writable)
         };
         let data = match cached {
             Some(data) => data,
             None => {
+                // Handle ghi: đẩy phần chờ trước để đọc thấy đúng nội dung vừa ghi
+                if writable {
+                    c.flush_fh(fh).map_err(neg)?;
+                }
                 c.remote
                     .read(&rel, offset.max(0) as u64, size as u64)
                     .map_err(neg)?
@@ -458,15 +499,27 @@ unsafe extern "C" fn cb_write(
             .checked_add(data.len())
             .filter(|e| *e <= MAX_FILE_BYTES)
             .ok_or(-libc::EFBIG)?;
-        let mut handles = lock(&c.handles);
-        let h = handles.get_mut(&(*fi).fh).ok_or(-libc::EBADF)?;
-        let b = h.buf.as_mut().ok_or(-libc::EBADF)?;
-        if b.len() < end {
-            b.resize(end, 0);
+        let fh = (*fi).fh;
+        let flush_now = {
+            let mut handles = lock(&c.handles);
+            let h = handles.get_mut(&fh).ok_or(-libc::EBADF)?;
+            if !h.writable {
+                return Err(-libc::EBADF);
+            }
+            let off = start as u64;
+            // Ghi liền kề đoạn cuối thì nối vào cùng đoạn, để ghi tuần tự thành một lần gửi
+            match h.pending.last_mut() {
+                Some((last_off, last)) if *last_off + last.len() as u64 == off => {
+                    last.extend_from_slice(data)
+                }
+                _ => h.pending.push((off, data.to_vec())),
+            }
+            h.len = h.len.max(end as u64);
+            h.pending.iter().map(|(_, d)| d.len()).sum::<usize>() >= FLUSH_AT
+        };
+        if flush_now {
+            c.flush_fh(fh).map_err(neg)?;
         }
-        b[start..end].copy_from_slice(data);
-        h.version += 1;
-        h.dirty = true;
         Ok(data.len() as c_int)
     }))
 }

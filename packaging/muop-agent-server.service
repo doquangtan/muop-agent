@@ -11,6 +11,8 @@ Restart=on-failure
 RestartSec=2s
 KillMode=process
 Environment=RUST_LOG=info
+# Bản web Flutter (cổng 8788) cài cùng gói
+Environment=MUOP_WEB_DIR=/usr/share/muop-agent/web
 LimitNOFILE=65535
 
 [Install]

@@ -29,11 +29,15 @@ extension _CanvasExtBlocks on _ChatCanvasViewState {
 
         return Padding(
           padding: const EdgeInsets.only(top: 8, bottom: 14),
-          child: Align(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.end,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Align(
             alignment: Alignment.centerRight,
             child: ConstrainedBox(
               constraints: BoxConstraints(maxWidth: isMobile ? 320 : 660),
-              // Content Layer: dùng bề mặt đục/gradient nhẹ theo theme widget User, tránh BackdropFilter trong ListView
+              // Content Layer: dùng bề mặt đục/gradient nhẹ theo theme widget User, tránh hiệu ứng nặng trong ListView
               child: Container(
                 key: const Key('chat-user-bubble'),
                 decoration: BoxDecoration(
@@ -218,6 +222,9 @@ extension _CanvasExtBlocks on _ChatCanvasViewState {
                 ),
               ),
             ),
+          ),
+              _buildShareButton(context, userStep.stepIndex),
+            ],
           ),
         );
 
@@ -479,7 +486,7 @@ extension _CanvasExtBlocks on _ChatCanvasViewState {
       alignment: Alignment.centerLeft,
       child: ConstrainedBox(
         constraints: BoxConstraints(maxWidth: isMobile ? 320 : 660),
-        // Content Layer: không dùng BackdropFilter trên từng thẻ trong ListView để cuộn mượt 60/120fps
+        // Content Layer: không dùng hiệu ứng nặng (blur, saveLayer) trên từng thẻ trong ListView để cuộn mượt 60/120fps
         child: Container(
           key: const Key('chat-ai-card'),
           decoration: BoxDecoration(
@@ -534,10 +541,7 @@ extension _CanvasExtBlocks on _ChatCanvasViewState {
           SizedBox(
             width: 13,
             height: 13,
-            child: CircularProgressIndicator(
-              strokeWidth: 2,
-              color: colorScheme.primary,
-            ),
+            child: ThrottledSpinner(strokeWidth: 2, color: colorScheme.primary),
           ),
           const SizedBox(width: 8),
           Expanded(
@@ -690,26 +694,55 @@ extension _CanvasExtBlocks on _ChatCanvasViewState {
         ],
       ],
     );
+    final shareFrom = turn.agentSteps.isNotEmpty
+        ? turn.agentSteps.first.stepIndex
+        : turn.userStep?.stepIndex;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       mainAxisSize: MainAxisSize.min,
       children: [
         card,
-        if (responseModel.isNotEmpty)
-          Padding(
-            padding: const EdgeInsets.only(top: 4, left: 4),
-            child: Tooltip(
-              message: responseModel,
-              child: Text(
-                _formatResponseModel(responseModel),
-                style: textTheme.labelSmall?.copyWith(
-                  color: colorScheme.onSurfaceVariant,
-                  fontWeight: FontWeight.w600,
+        Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            if (responseModel.isNotEmpty)
+              Padding(
+                padding: const EdgeInsets.only(top: 4, left: 4),
+                child: Tooltip(
+                  message: responseModel,
+                  child: Text(
+                    _formatResponseModel(responseModel),
+                    style: textTheme.labelSmall?.copyWith(
+                      color: colorScheme.onSurfaceVariant,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
                 ),
               ),
-            ),
-          ),
+            if (shareFrom != null)
+              _buildShareButton(context, shareFrom),
+          ],
+        ),
       ],
+    );
+  }
+
+  /// Nút chia sẻ lịch sử từ bước [stepIndex] tới tin mới nhất; ẩn khi chưa có session
+  Widget _buildShareButton(BuildContext context, int stepIndex) {
+    final onShare = widget.onShareFromStep;
+    if (onShare == null || widget.session == null) {
+      return const SizedBox.shrink();
+    }
+    return IconButton(
+      key: Key('chat-share-$stepIndex'),
+      tooltip: 'Chia sẻ lịch sử từ đây',
+      visualDensity: VisualDensity.compact,
+      iconSize: 16,
+      constraints: const BoxConstraints(minWidth: 32, minHeight: 28),
+      padding: EdgeInsets.zero,
+      color: Theme.of(context).colorScheme.onSurfaceVariant,
+      icon: const Icon(Icons.ios_share_rounded),
+      onPressed: () => onShare(stepIndex),
     );
   }
 
@@ -839,7 +872,7 @@ class _UserAttachmentThumbs extends StatelessWidget {
                     width: _size,
                     height: _size,
                     child: const Center(
-                      child: CircularProgressIndicator(strokeWidth: 2),
+                      child: ThrottledSpinner(strokeWidth: 2),
                     ),
                   );
                 },

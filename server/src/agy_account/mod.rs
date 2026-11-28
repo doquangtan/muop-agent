@@ -149,10 +149,21 @@ fn refresh() -> Result<(), String> {
     if let Some(quota) = quota {
         return save_account(&email, &state.tier, &quota);
     }
-    // Email và gói có trước; quota chưa có (lần sau hoặc khi hub lên)
-    save_account(&email, &state.tier, &[])?;
-    let quota = hub_quota()?;
-    save_account(&email, &state.tier, &quota)
+    // Lần đầu (hoặc đổi tài khoản): ghi email và gói trước để màn Tài khoản hiện ngay, quota để trống.
+    // Làm mới cùng tài khoản thì giữ quota cũ trong lúc hub khởi động lại, không xóa để tránh báo lỗi nhấp nháy.
+    let same_account =
+        store::load_agy_account().is_some_and(|a| a.email == email && a.plan == state.tier);
+    if !same_account {
+        save_account(&email, &state.tier, &[])?;
+    }
+    match hub_quota() {
+        Ok(quota) => save_account(&email, &state.tier, &quota),
+        Err(e) => {
+            // Không dùng số cũ khi lấy được số mới thất bại: xóa quota để báo lỗi thay vì hiện con số sai
+            save_account(&email, &state.tier, &[])?;
+            Err(e)
+        }
+    }
 }
 
 fn save_account(email: &str, plan: &str, quota: &[ModelQuotaGroup]) -> Result<(), String> {
@@ -164,8 +175,11 @@ fn save_account(email: &str, plan: &str, quota: &[ModelQuotaGroup]) -> Result<()
     }
 }
 
-/// Quota từ hub do server mở (dùng khi không có token file)
+/// Quota từ hub do server mở (dùng khi không có token file).
+/// Hub giữ số liệu quota của lúc nó khởi động và không tự làm mới: đã đo, hub chạy lâu vẫn báo nhóm đã 0%
+/// với thời điểm reset đã qua, còn hub mới báo đúng (kể cả lỗi 429 vừa xảy ra). Vì vậy mỗi lần làm mới khởi động lại hub.
 fn hub_quota() -> Result<Vec<ModelQuotaGroup>, String> {
+    stop_hub();
     let (port, token) = ensure_hub()?;
     crate::scanner::call_retrieve_user_quota_summary(port, &token)
         .ok_or_else(|| "Hub chưa trả quota".to_string())

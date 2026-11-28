@@ -1,7 +1,7 @@
 use super::*;
 
 /// Bản ghi hội thoại cuối cùng của transcript, để biết lượt đã trả lời xong hay chưa
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub(super) enum LastRecord {
     User,
     Assistant { stop_reason: String },

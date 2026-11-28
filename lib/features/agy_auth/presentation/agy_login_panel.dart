@@ -2,6 +2,8 @@ import 'dart:async';
 
 import 'package:material_ui/material_ui.dart';
 
+import 'package:muop_agent/core/widgets/throttled_spinner.dart';
+
 import 'package:muop_agent/core/theme/app_theme.dart';
 import 'package:muop_agent/features/agy_auth/domain/agy_auth_entities.dart';
 import 'package:muop_agent/features/agy_auth/presentation/agy_login_code_field.dart';
@@ -25,7 +27,6 @@ class AgyLoginPanel extends StatefulWidget {
     required this.onSubmitCode,
     required this.onCancel,
     required this.onRestart,
-    required this.onCheck,
     this.terminalHeight = 360,
   });
 
@@ -39,47 +40,15 @@ class AgyLoginPanel extends StatefulWidget {
   /// Mở lại đăng nhập khi terminal SSH đã đóng (nút "Mở lại" trong khung terminal)
   final VoidCallback onRestart;
 
-  /// Hỏi server đã đăng nhập chưa (`agy:auth:check`). Kết quả do màn hình cha áp dụng.
-  final Future<void> Function() onCheck;
-
   final double terminalHeight;
-
-  /// Khoảng cách kiểm tra trạng thái khi khung đang hiện
-  static const checkEvery = Duration(seconds: 3);
 
   @override
   State<AgyLoginPanel> createState() => _AgyLoginPanelState();
 }
 
 class _AgyLoginPanelState extends State<AgyLoginPanel> {
-  Timer? _timer;
-  bool _checking = false;
-
   /// Người dùng đã mở terminal SSH (trường hợp bất đắc dĩ)
   bool _showTerminal = false;
-
-  @override
-  void initState() {
-    super.initState();
-    _timer = Timer.periodic(AgyLoginPanel.checkEvery, (_) => _check());
-  }
-
-  @override
-  void dispose() {
-    _timer?.cancel();
-    super.dispose();
-  }
-
-  /// Không chồng nhiều lần kiểm tra cùng lúc
-  Future<void> _check() async {
-    if (_checking || !mounted) return;
-    _checking = true;
-    try {
-      await widget.onCheck();
-    } finally {
-      _checking = false;
-    }
-  }
 
   @override
   Widget build(BuildContext context) {
@@ -117,11 +86,7 @@ class _AgyLoginPanelState extends State<AgyLoginPanel> {
           const SizedBox(height: 10),
           Row(
             children: [
-              const SizedBox(
-                width: 16,
-                height: 16,
-                child: CircularProgressIndicator(strokeWidth: 2),
-              ),
+              const ThrottledSpinner(size: 16, strokeWidth: 2),
               const SizedBox(width: 10),
               Expanded(
                 child: Text('Đang xác nhận mã với agy...', style: textTheme.bodyMedium),

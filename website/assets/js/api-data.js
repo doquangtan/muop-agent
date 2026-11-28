@@ -173,6 +173,29 @@ window.MUOP_API = {
   "totalSteps": 2560
 }`,
           err: "400 thiếu `id`; 404 không tìm thấy."
+        },
+        {
+          m: "GET", p: "/api/session/share",
+          s: "Lịch sử chia sẻ theo trang, đi tiến từ một bước",
+          q: [
+            ["id", "string", true, "Id conversation"],
+            ["from_step", "integer", false, "Bước bắt đầu, mặc định 0. Alias: `fromStep`"],
+            ["page", "integer", false, "Số trang, đếm từ 0, mặc định 0"],
+            ["limit", "integer", false, "Số bước mỗi trang, mặc định 50, tối đa 100"]
+          ],
+          d: "Trang `page` gồm các bước có `stepIndex` trong `[from_step + page*limit, from_step + (page+1)*limit)`, tăng dần theo thời gian. Chia theo khoảng chỉ số (không theo số lượng) vì `stepIndex` của agy có thể thưa, nên trang có thể ít hơn `limit` bước. Trang vượt `totalPages` trả `steps` rỗng. App dùng link này cho nút chia sẻ trên mỗi đoạn chat: gửi link kèm prompt vào conversation để agent đọc lại từng trang.",
+          res: `{
+  "sessionId": "conv-123",
+  "fromStep": 120,
+  "page": 0,
+  "pageSize": 50,
+  "totalPages": 20,
+  "lastStepIndex": 1083,
+  "totalSteps": 1064,
+  "hasMore": true,
+  "steps": [ /* AgentStep */ ]
+}`,
+          err: "400 `Missing session id`; 404 `Session not found`."
         }
       ]
     },
@@ -1231,7 +1254,7 @@ window.MUOP_API = {
       { e: "sessions:list", w: "Sau `request-sessions`", p: "{ sessions: [SessionSummary] }" },
       { e: "meta:update", w: "Sau `request-meta`", p: "MetaPayload" },
       { e: "streams:update", w: "Sau `request-streams` và khi danh sách lượt đang chạy đổi", p: "{ activeStreams: { <id>: ChatTurnStreamState } }" },
-      { e: "screen:status", w: "Khi kết nối và khi trạng thái màn hình đổi", p: "{ streaming, starting, error, height, fps, rtspUrl }" },
+      { e: "screen:status", w: "Khi kết nối và khi trạng thái màn hình đổi", p: "{ streaming, starting, error, height, fps, viewerUrl }" },
       { e: "chat:stream", w: "Trong lượt chat", p: "ChatTurnStreamState: conversationId, projectPath, userPrompt, streamingText, thinkingText, isRunning, activeStepType, startedAt, error" },
       { e: "session:update", w: "Conversation thay đổi", p: "ConversationSession đầy đủ" },
       { e: "session:removed", w: "Conversation bị xóa khỏi đĩa", p: "{ id }" },
@@ -1262,17 +1285,17 @@ window.MUOP_API = {
     ]
   },
 
-  /* ---------- Màn hình (RTSP) ---------- */
+  /* ---------- Màn hình (khung JPEG qua HTTP) ---------- */
   screen: {
-    url: "rtsp://<ip-server>:8554/screen",
-    desc: "Luồng màn hình của máy server, phát qua RTSP. Bật và tắt từ icon khay hệ thống. Lần bật đầu có thể cần xác nhận chia sẻ màn hình qua xdg-desktop-portal. Server không có REST cho luồng này; trạng thái đến qua `screen:status`.",
+    url: "GET /api/screen/frame?after=<seq>&wait=<ms>",
+    desc: "Luồng màn hình của máy server gửi từng khung JPEG (720p, tối đa 10 khung/giây) qua HTTP long-poll, chạy được trên web, desktop và mobile. `200` kèm `image/jpeg` và header `X-Frame-Seq` khi có khung mới hơn `after`; `204` khi hết giờ đợi. Bật và tắt từ icon khay hệ thống (Linux) hoặc menu bar (macOS). Lần bật đầu có thể cần xác nhận chia sẻ màn hình qua xdg-desktop-portal. Trạng thái đến qua `screen:status`; `viewerUrl` là trang xem trên bản web (cổng 8788).",
     status: `{
   "streaming": true,
   "starting": false,
   "error": "",
   "height": 720,
-  "fps": 30,
-  "rtspUrl": "rtsp://192.168.1.10:8554/screen"
+  "fps": 10,
+  "viewerUrl": "http://192.168.1.10:8788/"
 }`
   },
 

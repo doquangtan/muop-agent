@@ -1,5 +1,7 @@
 import 'package:material_ui/material_ui.dart';
 
+import 'package:muop_agent/core/widgets/throttled_spinner.dart';
+
 import 'package:muop_agent/core/di/app_dependencies.dart';
 import 'package:muop_agent/core/theme/app_theme.dart';
 import 'package:muop_agent/core/widgets/desktop_panel.dart';
@@ -247,7 +249,7 @@ class _SshHostsScreenState extends State<SshHostsScreenView> {
         label: const Text('Thêm máy'),
       ),
       body: _loading
-          ? const Center(child: CircularProgressIndicator())
+          ? const Center(child: ThrottledSpinner(size: 36, strokeWidth: 4))
           : _loadError != null
               ? Center(
                   child: Padding(
@@ -586,11 +588,7 @@ class _SshHostFormState extends State<_SshHostFormView> {
                 FilledButton(
                   onPressed: _saving ? null : _save,
                   child: _saving
-                      ? const SizedBox(
-                          width: 16,
-                          height: 16,
-                          child: CircularProgressIndicator(strokeWidth: 2),
-                        )
+                      ? const ThrottledSpinner(size: 16, strokeWidth: 2)
                       : const Text('Lưu'),
                 ),
               ],
@@ -711,11 +709,7 @@ class _SshExecSheetState extends State<_SshExecSheet> {
               FilledButton(
                 onPressed: _running ? null : _run,
                 child: _running
-                    ? const SizedBox(
-                        width: 16,
-                        height: 16,
-                        child: CircularProgressIndicator(strokeWidth: 2),
-                      )
+                    ? const ThrottledSpinner(size: 16, strokeWidth: 2)
                     : const Text('Chạy'),
               ),
             ],

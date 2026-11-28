@@ -108,6 +108,26 @@ Phân trang lịch sử. Lấy `limit` bước (mặc định 50) nằm ngay tr�
 
 Thiếu `id` trả 400, không tìm thấy trả 404.
 
+### `GET /api/session/share?id=<sessionId>&from_step=<index>&page=<n>&limit=<n>`
+
+Lịch sử chia sẻ, đi **tiến** từ `from_step` (mặc định 0) tới tin mới nhất. Trang `page` (đếm từ 0, mặc định 0) gồm các bước có `step_index` trong `[from_step + page*limit, from_step + (page+1)*limit)`, tăng dần theo thời gian. `limit` mặc định 50, tối đa 100. Chia theo khoảng `step_index` (không theo số lượng) vì `step_index` của agy có thể thưa; trang có thể có ít hơn `limit` bước. Alias: `fromStep`. Trang vượt `totalPages` trả `steps` rỗng. Thiếu `id` trả 400, không tìm thấy trả 404.
+
+```json
+{
+  "sessionId": "...",
+  "fromStep": 120,
+  "page": 0,
+  "pageSize": 50,
+  "totalPages": 20,
+  "lastStepIndex": 1083,
+  "totalSteps": 1064,
+  "hasMore": true,
+  "steps": [AgentStep]
+}
+```
+
+App dùng link này cho nút chia sẻ trên mỗi đoạn chat: gửi prompt kèm link vào conversation có sẵn hoặc mới (cùng project) để agent tự đọc lại từng trang.
+
 ---
 
 ## 3. Chat
@@ -559,7 +579,7 @@ Ngay khi kết nối, server gửi: `retry:update`, `screen:status`, `setup:upda
 | `quotas:update` | Số liệu quota đổi (và khi kết nối) | `QuotaSnapshot`: `{ "agy": QuotaReport, "claude": QuotaReport }` (mục 1). Client tải lại quota khi nhận. |
 | `retry:update` | Khi kết nối và mỗi lần lịch tự gửi lại đổi | Mảng `PendingRetryDto`: `conversationId`, `provider`, `reason`, `retryAt` (RFC3339 UTC), `attempt`, `maxAttempts`, `waitSource` (`quota`/`message`/`interval`), `waitDetail`, `resetAt` (RFC3339, chỉ khi `quota`). |
 | `ai-question:answered` | Sau khi trả lời câu hỏi AI | `AIQuestion` đã trả lời. |
-| `screen:status` | Khi kết nối, sau `request-screen-status`, khi trạng thái quay màn hình đổi | Trạng thái quay màn hình (có URL RTSP khi đang bật). |
+| `screen:status` | Khi kết nối, sau `request-screen-status`, khi trạng thái quay màn hình đổi | Trạng thái quay màn hình (có `viewerUrl` là trang xem trên web app khi đang bật). |
 | `setup:update` | Khi kết nối và khi tiến trình cài đổi | `SetupStatus`, kèm `job.log` 300 dòng cuối. |
 | `agy:auth:update` | Khi kết nối và khi trạng thái đăng nhập agy đổi (chỉ phát khi nội dung đổi) | `AgyAuthEvent`. |
 | `claude:auth:update` | Khi kết nối và khi trạng thái đăng nhập Claude đổi | `ClaudeAuthResponse`. |
@@ -578,15 +598,24 @@ Ngay khi kết nối, server gửi: `retry:update`, `screen:status`, `setup:upda
 - Phiên SSH không được dùng (input/attach) quá 6 giờ thì tự đóng.
 - Explorer (`explore:*`): thư mục chỉ được theo dõi khi có ít nhất một socket đang xem. Hai UI xem hai thư mục khác nhau nhận sự kiện của đúng thư mục mình xem. Watcher dùng `notify` (inotify), không đệ quy.
 
-### 17.4. Màn hình máy chủ (RTSP)
+### 17.4. Màn hình máy chủ (khung JPEG, không RTSP)
 
-Không có REST cho luồng này. Server phát luồng màn hình qua RTSP tại `rtsp://<ip>:8554/screen` (mã nguồn `server/src/screen/`). Bật và tắt từ icon khay hệ thống; có thể tự bật khi khởi động. Lần bật đầu có thể cần xác nhận chia sẻ màn hình qua xdg-desktop-portal. Mở bằng VLC, mpv hoặc ffplay.
+Trình duyệt không phát được RTSP nên luồng màn hình dùng JPEG qua HTTP, chạy được trên web, desktop và mobile. Server chụp (PipeWire + GStreamer trên Linux, ffmpeg trên macOS), hạ về 720p và mã hoá từng khung JPEG (chất lượng 60, tối đa 10 khung/giây). Khung giống hệt khung trước (màn hình tĩnh) bị bỏ, nên không tốn băng thông.
+
+Bật và tắt từ icon khay hệ thống (Linux) hoặc menu bar (macOS); có thể tự bật khi khởi động. Lần bật đầu có thể cần xác nhận chia sẻ màn hình qua xdg-desktop-portal.
+
+**`GET /api/screen/frame?after=<seq>&wait=<ms>`** (long-poll, `wait` mặc định 2500, tối đa 10000):
+
+- `200` với body `image/jpeg` và header `X-Frame-Seq: <seq>`: khung có `seq > after`. Client gửi lại `after=<seq>` cho khung kế tiếp.
+- `204`: hết thời gian đợi, không có khung mới (màn hình tĩnh, hoặc luồng đang tắt).
 
 Trạng thái đến qua `screen:status` (khi kết nối, sau `request-screen-status`, khi đổi):
 
 ```json
-{ "streaming": true, "starting": false, "error": "", "height": 720, "fps": 30, "rtspUrl": "rtsp://192.168.1.10:8554/screen" }
+{ "streaming": true, "starting": false, "error": "", "height": 720, "fps": 10, "viewerUrl": "http://192.168.1.10:8788/" }
 ```
+
+`viewerUrl` trỏ tới bản web (cổng `MUOP_WEB_PORT`, mặc định 8788), nơi màn hình được xem trực tiếp.
 
 ---
 
@@ -649,6 +678,7 @@ Khi máy chính thêm máy này vào cầu nối (`POST /api/bridge/peer`), máy
 | `GET /api/fs/list?path=` | | `{ok, path, entries: [{name, isDir, size, mtime, mode}]}` (sắp theo tên) |
 | `GET /api/fs/read?path=&offset=&length=` | `length` tối đa 16MB mỗi lần | Nhị phân. Header `X-Fs-Size` (kích thước tệp), `X-Fs-Eof` (`true` khi đã tới cuối) |
 | `PUT /api/fs/write?path=` | body = nội dung tệp (nhị phân) | `{ok, path, size}`. Ghi tệp tạm rồi đổi tên, giữ quyền truy cập cũ |
+| `PUT /api/fs/patch?path=&truncate=` | body = các khung ghi: mỗi khung là `offset` (u64 LE), `length` (u32 LE), rồi dữ liệu | `{ok, size}`. Ghi từng đoạn tại chỗ (giữ inode và quyền), tạo file nếu chưa có. `truncate` đặt kích thước trước khi ghi. Máy nhận dùng cho việc đẩy các đoạn đã đổi, không gửi lại cả file |
 | `POST /api/fs/mkdir` | `{path}` | `{ok, path}` |
 | `POST /api/fs/delete` | `{path, recursive}` | `{ok, path}`. `recursive=false` với thư mục chưa rỗng: `409 not_empty` |
 | `POST /api/fs/rename` | `{from, to, overwrite}` | `{ok, from, to}`. `overwrite=true` thay thế đích nếu là tệp (ngữ nghĩa POSIX); đích là thư mục luôn bị từ chối |
@@ -693,7 +723,8 @@ Route `POST /api/fsmount/ensure` chạy đúng bước 1 đến 3 với body là
 ### 19.3. Hành vi của mount
 
 - Đọc: mỗi lần `read` gọi `GET /api/fs/read` theo đoạn. Thuộc tính cache 1 giây.
-- Ghi: file mở để ghi được tải cả file vào bộ nhớ. Sửa trên bộ nhớ, rồi đẩy cả file bằng `PUT /api/fs/write` khi `flush`/`fsync`/`close`. Giới hạn 512MB mỗi file (`EFBIG` nếu vượt).
+- Đọc file chỉ đọc nhỏ (tối đa 64MB): nội dung được tải một lần lúc mở, các lần đọc sau dùng bộ đệm.
+- Ghi: các đoạn đã ghi được giữ trong bộ nhớ và chỉ đẩy phần đã đổi bằng `PUT /api/fs/patch` khi `flush`/`fsync`/`close` (hoặc khi phần chờ vượt 16MB). Mở với `O_TRUNC` thì cắt về 0 ngay. Giới hạn 512MB mỗi file (`EFBIG` nếu vượt).
 - Đổi tên: `POST /api/fs/rename` với `overwrite=true`, trừ khi có `RENAME_NOREPLACE` (khi đó kiểm tra đích trước, có thì `EEXIST`). Các cờ khác như `RENAME_EXCHANGE` bị từ chối (`EINVAL`).
 - Thư mục và xóa: `mkdir`, `delete` (xóa thư mục chưa rỗng bị `ENOTEMPTY`), `unlink` trên thư mục bị `EISDIR`.
 - Mã lỗi từ máy gửi được đổi sang errno: `not_found` → `ENOENT`, `exists` → `EEXIST`, `not_empty` → `ENOTEMPTY`, `is_dir` → `EISDIR`, `not_dir` → `ENOTDIR`, `outside_root` → `EACCES`, còn lại (kể cả mất kết nối) → `EIO`.

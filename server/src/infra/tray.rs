@@ -150,13 +150,13 @@ impl Tray for MuopAgentTray {
 fn screen_label(status: &crate::screen::ScreenStatus) -> String {
     if status.starting {
         "📺 Quay màn hình — đang chờ xác nhận…".to_string()
-    } else if status.streaming && !status.rtsp_url.is_empty() {
+    } else if status.streaming && !status.viewer_url.is_empty() {
         // Đang phát: hiện địa chỉ để mở bằng VLC/mpv/ffplay
-        format!("📺 Đang phát: {}", status.rtsp_url)
+        format!("📺 Đang phát: {}", status.viewer_url)
     } else if !status.error.is_empty() {
         format!("📺 Stream màn hình (lỗi: {})", status.error)
     } else {
-        "📺 Stream màn hình (RTSP 720p)".to_string()
+        "📺 Stream màn hình (720p, xem trên web)".to_string()
     }
 }
 

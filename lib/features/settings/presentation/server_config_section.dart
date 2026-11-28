@@ -3,6 +3,8 @@ import 'dart:async';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:material_ui/material_ui.dart';
 
+import 'package:muop_agent/core/widgets/throttled_spinner.dart';
+
 import 'package:muop_agent/core/config/server_config.dart';
 import 'package:muop_agent/core/di/app_dependencies.dart';
 import 'package:muop_agent/core/state/server_address_provider.dart';
@@ -320,13 +322,7 @@ class _ServerConfigSectionState extends ConsumerState<ServerConfigSection> {
                       child: OutlinedButton.icon(
                         onPressed: isPinging ? null : testPing,
                         icon: isPinging
-                            ? const SizedBox(
-                                width: 14,
-                                height: 14,
-                                child: CircularProgressIndicator(
-                                  strokeWidth: 2,
-                                ),
-                              )
+                            ? const ThrottledSpinner(size: 14, strokeWidth: 2)
                             : const Icon(Icons.network_check_rounded, size: 17),
                         label: Text(
                           isPinging ? 'Đang kiểm tra...' : 'Kiểm tra kết nối',
@@ -353,11 +349,7 @@ class _ServerConfigSectionState extends ConsumerState<ServerConfigSection> {
                       child: OutlinedButton.icon(
                         onPressed: isScanning ? null : scanLan,
                         icon: isScanning
-                            ? const SizedBox(
-                                width: 14,
-                                height: 14,
-                                child: CircularProgressIndicator(strokeWidth: 2),
-                              )
+                            ? const ThrottledSpinner(size: 14, strokeWidth: 2)
                             : const Icon(Icons.wifi_find_rounded, size: 17),
                         label: Text(
                           isScanning

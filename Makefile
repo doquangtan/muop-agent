@@ -4,7 +4,7 @@ FLUTTER ?= $(shell if [ -x $(HOME)/flutter/bin/flutter ]; then echo $(HOME)/flut
 CARGO ?= $(HOME)/.cargo/bin/cargo
 DX ?= $(HOME)/.cargo/bin/dx
 
-.PHONY: install-desktop-entry run server build-server build-server-mac build build-linux build-apk build-all analyze restart-linux clean start-daemon stop-daemon restart-daemon status-daemon deb deb-server app-run app-build app-check
+.PHONY: install-desktop-entry run server build-server build-server-mac build build-linux build-apk build-all analyze restart-linux clean start-daemon stop-daemon restart-daemon status-daemon deb deb-server app-run app-build app-check build-web
 
 ## Chạy ứng dụng giao diện Flutter trên Linux Desktop
 run:
@@ -69,7 +69,7 @@ MAC_SCP = scp -o BatchMode=yes -o ConnectTimeout=8 $(if $(MAC_SSH_KEY),-i $(MAC_
 APP_VERSION := $(shell sed -n 's/^version: *//p' pubspec.yaml | tr '+' '-')
 build-macos-app: build-server-mac
 	rsync -az --exclude='.git/' --exclude='build/' --exclude='.dart_tool/' --exclude='server/target/' --exclude='macos/Pods/' --exclude='*.ipa' --exclude='*.pkg' -e "$(MAC_SSH)" ./ $(MAC_HOST):$(MAC_APP_DIR)/
-	$(MAC_SSH) $(MAC_HOST) 'export PATH="/opt/homebrew/bin:$$HOME/flutter/bin:$$PATH"; cd $(MAC_APP_DIR) && flutter pub get && flutter build macos --release && APP=build/macos/Build/Products/Release/muop_agent.app && SIGN="-"; if [ -f "$$HOME/muop-install/signing/pw" ] && security unlock-keychain -p "$$(cat $$HOME/muop-install/signing/pw)" "$$HOME/Library/Keychains/muop-signing.keychain-db" 2>/dev/null; then security list-keychains -d user -s "$$HOME/Library/Keychains/muop-signing.keychain-db" "$$HOME/Library/Keychains/login.keychain-db"; SIGN="Muop Agents Local Signing"; fi && codesign --force --deep --sign "$$SIGN" --entitlements macos/Runner/Release.entitlements "$$APP" && echo "signed: $$SIGN" && (cd macos/menubar && swiftc -O -framework AppKit -o "$$HOME/$(MAC_BUILD_DIR)/muop-agent-tray" main.swift) && sh packaging/macos/build-pkg.sh "$$APP" "$$HOME/$(MAC_BUILD_DIR)/server/target/release/muop-agent-server" "$$HOME/$(MAC_BUILD_DIR)/muop-agent-tray" "$(APP_VERSION)" "$(MAC_APP_DIR)/build/macos-pkg/muop-agent-macos-$(APP_VERSION).pkg" && echo "PKG_BUILT_OK"'
+	$(MAC_SSH) $(MAC_HOST) 'export PATH="/opt/homebrew/bin:$$HOME/flutter/bin:$$PATH"; cd $(MAC_APP_DIR) && flutter pub get && flutter build macos --release && flutter build web --release && APP=build/macos/Build/Products/Release/muop_agent.app && SIGN="-"; if [ -f "$$HOME/muop-install/signing/pw" ] && security unlock-keychain -p "$$(cat $$HOME/muop-install/signing/pw)" "$$HOME/Library/Keychains/muop-signing.keychain-db" 2>/dev/null; then security list-keychains -d user -s "$$HOME/Library/Keychains/muop-signing.keychain-db" "$$HOME/Library/Keychains/login.keychain-db"; SIGN="Muop Agents Local Signing"; fi && codesign --force --deep --sign "$$SIGN" --entitlements macos/Runner/Release.entitlements "$$APP" && echo "signed: $$SIGN" && (cd macos/menubar && swiftc -O -framework AppKit -o "$$HOME/$(MAC_BUILD_DIR)/muop-agent-tray" main.swift) && sh packaging/macos/build-pkg.sh "$$APP" "$$HOME/$(MAC_BUILD_DIR)/server/target/release/muop-agent-server" "$$HOME/$(MAC_BUILD_DIR)/muop-agent-tray" "$(APP_VERSION)" "$(MAC_APP_DIR)/build/macos-pkg/muop-agent-macos-$(APP_VERSION).pkg" "$(MAC_APP_DIR)/build/web" && echo "PKG_BUILT_OK"'
 	$(MAC_SCP) $(MAC_HOST):$(MAC_APP_DIR)/build/macos-pkg/muop-agent-macos-$(APP_VERSION).pkg ./
 	@echo "✅ Gói cài đặt: ./muop-agent-macos-$(APP_VERSION).pkg (cài bằng: make install-macos-pkg MAC_HOST=...)"
 
@@ -97,6 +97,14 @@ deb:
 ## Đóng gói CHỈ server thành .deb tĩnh (musl, qua Docker) cho máy không có GUI, ví dụ NAS (build/deb-server/)
 deb-server:
 	bash packaging/build-server-deb.sh
+
+## Build bản Flutter web (release) rồi đưa vào thư mục máy chủ phục vụ ở cổng 8788 (không cần khởi động lại máy chủ).
+## Mở: http://<IP máy chủ>:8788. Thư mục đích: $(WEB_DIR) (đổi bằng MUOP_WEB_DIR cho máy chủ).
+WEB_DIR ?= $(HOME)/.local/share/muop-agent/web
+build-web:
+	$(FLUTTER) build web --release
+	@rm -rf "$(WEB_DIR)" && mkdir -p "$(WEB_DIR)" && cp -r build/web/. "$(WEB_DIR)/"
+	@echo "✅ Bản web đã cập nhật: $(WEB_DIR) (mở http://<IP máy chủ>:8788)"
 
 ## Cài desktop entry + icon cho người dùng hiện tại để dock hiện đúng tên "Mướp Agents" và icon
 install-desktop-entry:

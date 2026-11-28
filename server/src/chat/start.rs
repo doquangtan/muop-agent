@@ -72,6 +72,12 @@ pub async fn start_chat_turn_attempt(
 ) -> ChatSendResponse {
     // Project ở máy khác: mount về đây và chạy agent trên điểm mount. Làm trước khi chụp snapshot
     // để lượt tự gửi lại (retry) dùng luôn điểm mount, không mount lại theo đường dẫn của máy gửi.
+    // Project gốc của máy gửi (trước khi đổi thành điểm mount): dùng để nhóm conversation đúng project
+    let origin_project = req
+        .remote_project
+        .as_ref()
+        .map(|r| r.project_path.trim().to_string())
+        .unwrap_or_default();
     if let Some(remote) = req.remote_project.take() {
         match crate::fsmount::resolve_chat_project(&remote).await {
             Ok(mounted) => {
@@ -243,6 +249,8 @@ pub async fn start_chat_turn_attempt(
         })
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
+        // Nhóm tiến trình riêng (pgid = pid): dừng lượt gửi tín hiệu cho cả nhóm (agy có tiến trình con)
+        .process_group(0)
         .spawn()
     {
         Ok(c) => c,
@@ -272,6 +280,7 @@ pub async fn start_chat_turn_attempt(
         request: request_snapshot,
         attempt,
         provider,
+        origin_project,
     };
 
     // Quota agy lấy khi bắt đầu lượt (không chờ): watcher lấy từ API/hub rồi đẩy `quotas:update`

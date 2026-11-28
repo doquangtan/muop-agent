@@ -51,6 +51,7 @@ mod summary;
 mod system;
 mod text;
 mod transcript;
+mod transcript_index;
 mod types;
 mod watch;
 

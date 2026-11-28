@@ -1,5 +1,7 @@
 import 'package:material_ui/material_ui.dart';
 
+import 'package:muop_agent/core/widgets/throttled_spinner.dart';
+
 import 'package:muop_agent/core/di/app_dependencies.dart';
 import 'package:muop_agent/core/theme/app_theme.dart';
 import 'package:muop_agent/core/widgets/glass_scaffold.dart';
@@ -81,7 +83,7 @@ class _LspSettingsScreenState extends State<LspSettingsScreenView> {
     final textTheme = Theme.of(context).textTheme;
 
     final body = _loading
-        ? const Center(child: CircularProgressIndicator())
+        ? const Center(child: ThrottledSpinner(size: 36, strokeWidth: 4))
         : _loadError != null
         ? Center(
             child: Padding(
@@ -323,11 +325,7 @@ class _LspLanguageCardState extends State<_LspLanguageCard> {
                 FilledButton(
                   onPressed: _busy ? null : () => _save(_path.text.trim()),
                   child: _busy
-                      ? const SizedBox(
-                          width: 16,
-                          height: 16,
-                          child: CircularProgressIndicator(strokeWidth: 2),
-                        )
+                      ? const ThrottledSpinner(size: 16, strokeWidth: 2)
                       : const Text('Lưu'),
                 ),
               ],

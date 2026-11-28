@@ -1,5 +1,4 @@
 import 'package:flutter/rendering.dart' show RenderProxyBox;
-import 'package:liquid_glass_easy/liquid_glass_easy.dart';
 import 'package:material_ui/material_ui.dart';
 
 import 'package:muop_agent/core/theme/chat_theme_painter.dart';
@@ -12,14 +11,12 @@ class GlassHeaderSurface extends StatelessWidget {
     super.key,
     required this.child,
     this.borderRadius = 22.0,
-    this.blur = 14.0,
     this.padding,
     this.margin,
   });
 
   final Widget child;
   final double borderRadius;
-  final double blur;
   final EdgeInsetsGeometry? padding;
   final EdgeInsetsGeometry? margin;
 
@@ -29,26 +26,12 @@ class GlassHeaderSurface extends StatelessWidget {
     final baseTint = isDark
         ? const Color(0xFF131924)
         : const Color(0xFFF6F9FF);
-    final topTint = isDark
-        ? const Color(0xFF222C3D)
-        : const Color(0xFFFFFFFF);
-    final baseAlpha = isDark ? 0.34 : 0.46;
-    final topAlpha = isDark ? 0.44 : 0.58;
-
+    // Lớp phủ phẳng khoảng 10%, không gradient, không blur
     return LiquidGlassContainer(
       margin: margin,
       padding: padding,
       borderRadius: BorderRadius.circular(borderRadius),
-      blur: blur,
-      fillColor: baseTint.withValues(alpha: baseAlpha),
-      gradient: LinearGradient(
-        begin: Alignment.topLeft,
-        end: Alignment.bottomRight,
-        colors: [
-          topTint.withValues(alpha: topAlpha),
-          baseTint.withValues(alpha: baseAlpha),
-        ],
-      ),
+      fillColor: baseTint.withValues(alpha: kGlassTintOpacity),
       borderColor: isDark
           ? Colors.white.withValues(alpha: 0.20)
           : Colors.white.withValues(alpha: 0.72),
@@ -107,29 +90,7 @@ class GlassScreenScaffold extends StatefulWidget {
 }
 
 class _GlassScreenScaffoldState extends State<GlassScreenScaffold> {
-  final LiquidGlassViewController _glassController =
-      LiquidGlassViewController();
   double? _measuredHeaderHeight;
-
-  @override
-  void initState() {
-    super.initState();
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (mounted) _glassController.captureOnce();
-    });
-  }
-
-  @override
-  void didUpdateWidget(covariant GlassScreenScaffold oldWidget) {
-    super.didUpdateWidget(oldWidget);
-    if (oldWidget.title != widget.title ||
-        oldWidget.bottom != widget.bottom ||
-        oldWidget.actions?.length != widget.actions?.length) {
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (mounted) _glassController.captureOnce();
-      });
-    }
-  }
 
   bool get _hasAppBar =>
       widget.title != null ||
@@ -183,19 +144,9 @@ class _GlassScreenScaffoldState extends State<GlassScreenScaffold> {
       children: [
         ChatWallpaperSurface(highContrast: MediaQuery.highContrastOf(context)),
         Positioned.fill(
-          child: NotificationListener<ScrollNotification>(
-            onNotification: (notification) {
-              if (notification is ScrollStartNotification) {
-                _glassController.startRealtimeCapture();
-              } else if (notification is ScrollEndNotification) {
-                _glassController.stopRealtimeCapture();
-              }
-              return false;
-            },
-            child: Padding(
-              padding: EdgeInsets.only(top: topPadding),
-              child: contentArea,
-            ),
+          child: Padding(
+            padding: EdgeInsets.only(top: topPadding),
+            child: contentArea,
           ),
         ),
       ],
@@ -223,9 +174,6 @@ class _GlassScreenScaffoldState extends State<GlassScreenScaffold> {
           if (_measuredHeaderHeight == null ||
               (h - _measuredHeaderHeight!).abs() > 0.5) {
             setState(() => _measuredHeaderHeight = h);
-            WidgetsBinding.instance.addPostFrameCallback((_) {
-              if (mounted) _glassController.captureOnce();
-            });
           }
         },
         child: Padding(
@@ -244,7 +192,6 @@ class _GlassScreenScaffoldState extends State<GlassScreenScaffold> {
                   if (leadingBtn != null) ...[
                     LiquidGlassPill(
                       cornerRadius: 21,
-                      refractionWidth: 10,
                       shadowBlur: 10,
                       child: SizedBox(
                         width: 42,
@@ -259,7 +206,6 @@ class _GlassScreenScaffoldState extends State<GlassScreenScaffold> {
                       child: LiquidGlassPill(
                         key: const Key('glass-header-title-pill'),
                         cornerRadius: 22,
-                        refractionWidth: 12,
                         shadowBlur: 10,
                         child: ConstrainedBox(
                           constraints: const BoxConstraints(
@@ -292,7 +238,6 @@ class _GlassScreenScaffoldState extends State<GlassScreenScaffold> {
                     const SizedBox(width: 8),
                     LiquidGlassPill(
                       cornerRadius: 21,
-                      refractionWidth: 10,
                       shadowBlur: 10,
                       child: SizedBox(
                         height: 42,
@@ -315,7 +260,6 @@ class _GlassScreenScaffoldState extends State<GlassScreenScaffold> {
                   alignment: Alignment.centerLeft,
                   child: LiquidGlassPill(
                     cornerRadius: 21,
-                    refractionWidth: 10,
                     shadowBlur: 10,
                     child: SizedBox(
                       height: widget.bottom!.preferredSize.height,
@@ -334,14 +278,12 @@ class _GlassScreenScaffoldState extends State<GlassScreenScaffold> {
       backgroundColor: Colors.transparent,
       floatingActionButton: widget.floatingActionButton,
       bottomNavigationBar: widget.bottomNavigationBar,
-      body: LiquidGlassView(
-        controller: _glassController,
-        pixelRatio: 0.75,
-        realTimeCapture: false,
-        useSync: true,
-        refreshRate: LiquidGlassRefreshRate.high,
-        backgroundWidget: backdropLayer,
-        child: _hasAppBar ? floatingHeader : const SizedBox.shrink(),
+      body: Stack(
+        fit: StackFit.expand,
+        children: [
+          backdropLayer,
+          if (_hasAppBar) floatingHeader,
+        ],
       ),
     );
   }

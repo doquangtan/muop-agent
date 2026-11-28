@@ -14,7 +14,7 @@ website/
 │   └── stats/count_downloads.py  # Tổng hợp lượt tải từ log nginx
 └── assets/
     ├── css/style.css          # Giao diện dùng chung (nền than chì, accent cam)
-    ├── js/api-data.js         # Dữ liệu toàn bộ endpoint REST, sự kiện Socket.IO, RTSP
+    ├── js/api-data.js         # Dữ liệu toàn bộ endpoint REST, sự kiện Socket.IO, luồng màn hình
     ├── js/api.js              # Render trang API, ô địa chỉ server, tìm kiếm
     ├── js/main.js             # Menu mobile, phóng to ảnh, nút sao chép
     ├── downloads/             # File cài đặt (.deb, .apk, .ipa, .zip); không commit, xem .gitignore

@@ -1,8 +1,19 @@
 /// Cấu hình mặc định và chuẩn hoá địa chỉ của Rust Server
 library;
 
-const String defaultHostAddress = 'localhost:8787';
+import 'package:flutter/foundation.dart' show kIsWeb;
+
 const int defaultBridgePort = 8787;
+
+/// Địa chỉ server mặc định. Trên web là máy đang phục vụ trang (cổng API 8787 cùng IP),
+/// vì web được mở từ máy chủ ở cổng 8788; các nền tảng khác là localhost.
+String get defaultHostAddress {
+  if (kIsWeb) {
+    final host = Uri.base.host;
+    if (host.isNotEmpty) return '$host:$defaultBridgePort';
+  }
+  return 'localhost:$defaultBridgePort';
+}
 
 /// Danh sách model ban đầu trước khi có metadata đầu tiên. Model Claude cố định;
 /// model Antigravity (`agy:`) lấy động từ server (`agy models`).

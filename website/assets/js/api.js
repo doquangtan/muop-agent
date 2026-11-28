@@ -180,11 +180,11 @@
   // Socket trong mục lục
   sideHtml.push('<h5><a href="#socket" style="padding:0;display:inline;color:inherit">Socket.IO</a></h5>');
   sideHtml.push('<a href="#socket">Sự kiện client → server</a><a href="#socket">Sự kiện server → client</a>');
-  sideHtml.push('<h5><a href="#rtsp" style="padding:0;display:inline;color:inherit">Màn hình (RTSP)</a></h5>');
+  sideHtml.push('<h5><a href="#rtsp" style="padding:0;display:inline;color:inherit">Màn hình (khung JPEG)</a></h5>');
   sideHtml.push('<h5><a href="#quy-uoc" style="padding:0;display:inline;color:inherit">Quy ước chung</a></h5>');
   sideEl.innerHTML = sideHtml.join("");
 
-  // RTSP và quy ước
+  // Màn hình và quy ước
   var R = D.screen;
   document.getElementById("screenDesc").innerHTML = md(R.desc);
   document.getElementById("screenUrl").textContent = R.url;

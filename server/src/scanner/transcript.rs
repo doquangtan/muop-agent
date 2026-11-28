@@ -145,372 +145,318 @@ pub(super) fn parse_single_agent_step(
     }
 }
 
-pub(super) fn parse_transcript_file(
-    id: &str,
-    file_modified: DateTime<Utc>,
-    db_meta: Option<&DbConversationMeta>,
-) -> Option<ParsedTranscript> {
-    let path = brain_root()
+/// Đường dẫn transcript của một conversation agy
+pub(super) fn transcript_path(id: &str) -> PathBuf {
+    brain_root()
         .join(id)
-        .join(".system_generated/logs/transcript.jsonl");
+        .join(".system_generated/logs/transcript.jsonl")
+}
 
-    let meta = fs::metadata(&path).ok()?;
-    let file_len = meta.len();
-
-    // 1. Kiểm tra cache trong bộ nhớ RAM (tránh đọc đĩa và parse JSON lặp đi lặp lại)
-    if let Ok(cache) = get_transcript_cache().lock() {
-        if let Some(entry) = cache.get(id) {
-            if entry.modified == file_modified && entry.len == file_len {
-                return Some((*entry.parsed).clone());
-            }
+/// Trạng thái và pha của lượt agy theo bước cuối và thời điểm hiện tại (không cache: phụ thuộc thời gian).
+pub(super) fn derive_status(
+    last: Option<&LastStepMeta>,
+    updated_at: DateTime<Utc>,
+    has_verify: bool,
+    has_edit_or_parallel: bool,
+    now: DateTime<Utc>,
+) -> (String, String) {
+    let mut session_status = "completed".to_string();
+    let mut current_phase = "completed".to_string();
+    if let Some(last) = last {
+        // Đánh giá trạng thái chính xác theo tiến trình thực tế trong transcript:
+        // 1. Nếu bước cuối cùng là PLANNER_RESPONSE và không còn tool_calls -> ĐÃ HOÀN TẤT LƯỢT TRẢ LỜI
+        if last.step_type == "PLANNER_RESPONSE" && !last.has_tool_calls {
+            session_status = "completed".to_string();
+        } else if last.status != "DONE" || last.has_tool_calls {
+            // Chỉ coi là đang chạy nếu file vừa được ghi log gần đây (dưới 20 giây)
+            let age_secs = (now - updated_at).num_seconds().abs();
+            session_status = if age_secs < 20 {
+                "running".to_string()
+            } else {
+                "interrupted".to_string()
+            };
+        } else {
+            // Bước cuối là GENERIC hoặc USER_INPUT: chỉ đang chạy nếu phát sinh rất gần (dưới 15 giây)
+            let age_secs = (now - updated_at).num_seconds().abs();
+            session_status = if age_secs < 15
+                && (last.step_type == "GENERIC" || last.step_type == "USER_INPUT")
+            {
+                "running".to_string()
+            } else {
+                "completed".to_string()
+            };
         }
+
+        current_phase = if session_status == "completed" {
+            "completed".to_string()
+        } else if has_verify {
+            "crossVerification".to_string()
+        } else if has_edit_or_parallel {
+            "parallelExecution".to_string()
+        } else {
+            "contractDiscovery".to_string()
+        };
     }
+    (session_status, current_phase)
+}
 
-    use std::collections::VecDeque;
-    use std::io::{BufRead, BufReader};
-
-    let file = fs::File::open(&path).ok()?;
-    let reader = BufReader::new(file);
+/// Gắn metadata với DB (tiêu đề, project, nhóm mount) và tính trạng thái theo thời điểm hiện tại.
+/// `steps`, `files_touched`, `commands_run` rỗng khi chỉ cần metadata (session không active).
+pub(super) fn finish(
+    id: &str,
+    meta: &TranscriptMeta,
+    steps: Vec<AgentStep>,
+    files_touched: Vec<FileTouchRecord>,
+    commands_run: Vec<CommandExecutionRecord>,
+    db_meta: Option<&DbConversationMeta>,
+) -> ParsedTranscript {
+    let created_at = DateTime::parse_from_rfc3339(&meta.created_at)
+        .map(|d| d.with_timezone(&Utc))
+        .unwrap_or_else(|_| Utc::now());
+    let updated_at = DateTime::parse_from_rfc3339(&meta.updated_at)
+        .map(|d| d.with_timezone(&Utc))
+        .unwrap_or_else(|_| Utc::now());
 
     let mut title = db_meta
         .filter(|m| !m.title.is_empty())
         .map(|m| m.title.clone())
         .unwrap_or_else(|| format!("Phiên #{}", id));
-    let mut first_user_prompt_title = String::new();
-    let mut created_at: Option<DateTime<Utc>> = None;
-    let mut updated_at = file_modified;
-    let mut total_input: u64 = 0;
-    let mut total_output: u64 = 0;
-    let mut total_cache: u64 = 0;
-
-    let mut steps_deque: VecDeque<AgentStep> = VecDeque::new();
-    let mut files_deque: VecDeque<FileTouchRecord> = VecDeque::new();
-    let mut commands_deque: VecDeque<CommandExecutionRecord> = VecDeque::new();
-    let mut spawned_subagents: Vec<SpawnedSubagentMeta> = Vec::new();
-    let mut pending_subagent_indices: Vec<usize> = Vec::new();
-    // Vị trí đầu tiên trong `spawned_subagents` của lượt hiện tại (sau tin nhắn người dùng gần nhất)
-    let mut turn_spawn_start: usize = 0;
-
-    let conv_id_re = Regex::new(r#""conversationId"\s*:\s*"([^"]+)""#).ok()?;
-    let mut total_step_count: usize = 0;
-    let mut has_verify = false;
-    let mut has_edit_or_parallel = false;
-    let agy_turns = load_agy_turn_models(id);
-
-    for line_res in reader.lines() {
-        let line = match line_res {
-            Ok(l) => l,
-            Err(_) => continue,
-        };
-        if line.trim().is_empty() {
-            continue;
-        }
-        let map: Value = match serde_json::from_str(&line) {
-            Ok(v) => v,
-            Err(_) => continue,
-        };
-
-        let step_index = map
-            .get("step_index")
-            .and_then(|v| v.as_u64())
-            .map(|v| v as usize)
-            .unwrap_or(total_step_count);
-
-        total_step_count += 1;
-
-        let mut step = parse_single_agent_step(&map, step_index, file_modified);
-        let step_time = match DateTime::parse_from_rfc3339(&step.created_at) {
-            Ok(dt) => dt.with_timezone(&Utc),
-            Err(_) => file_modified,
-        };
-        if step.step_type == "PLANNER_RESPONSE" {
-            // agy ghi model ngay trong từng bước (kể cả subagent, vốn không có bản ghi DB theo lượt).
-            // Chỉ dùng bản ghi DB khi bước không có model.
-            step.model = map
-                .get("model")
-                .and_then(|v| v.as_str())
-                .filter(|m| !m.is_empty())
-                .map(String::from)
-                .unwrap_or_else(|| agy_turn_model_at(&agy_turns, step_time));
-        }
-
-        if created_at.is_none() {
-            created_at = Some(step_time);
-        }
-        if step_time > updated_at {
-            updated_at = step_time;
-        }
-
-        total_input += step.input_tokens;
-        total_output += step.output_tokens;
-        total_cache += step.cache_read_tokens;
-
-        if step.step_type == "USER_INPUT" && !step.content.is_empty() {
-            turn_spawn_start = spawned_subagents.len();
-        }
-
-        if step.step_type == "USER_INPUT"
-            && !step.content.is_empty()
-            && first_user_prompt_title.is_empty()
-        {
-            let extracted = extract_user_request(&step.content);
-            if !extracted.is_empty() {
-                first_user_prompt_title = extracted;
-            }
-        }
-
-        if step.phase == "crossVerification" {
-            has_verify = true;
-        } else if step.phase == "parallelExecution" {
-            has_edit_or_parallel = true;
-        }
-
-        for tc in &step.tool_calls {
-            let path_arg = tc.target_path.as_deref().unwrap_or("");
-            if !path_arg.is_empty() {
-                let action = match tc.name.as_str() {
-                    "read_file" | "view_file_outline" => Some("READ"),
-                    "write_file" => Some("WRITE"),
-                    "edit_file" => Some("EDIT"),
-                    _ => None,
-                };
-                if let Some(act) = action {
-                    let (added_lines, removed_lines, diff_preview) =
-                        extract_tool_diff(&tc.name, &tc.args);
-                    let touch_agent = if tc.repo_tag == "muop-erp-server" {
-                        "erp-server-agent"
-                    } else if tc.repo_tag == "muop-erp-app" {
-                        "erp-app-agent"
-                    } else {
-                        "Coordinator"
-                    };
-                    files_deque.push_back(FileTouchRecord {
-                        path: path_arg.to_string(),
-                        action: act.to_string(),
-                        repo: tc.repo_tag.clone(),
-                        agent_name: touch_agent.to_string(),
-                        step_index,
-                        timestamp: step.created_at.clone(),
-                        added_lines,
-                        removed_lines,
-                        diff_preview: safe_truncate(&diff_preview, 200).to_string(),
-                        source: String::new(),
-                    });
-                    if files_deque.len() > 80 {
-                        files_deque.pop_front();
-                    }
-                }
-            }
-
-            if tc.name == "run_command" {
-                let cmd_line = tc
-                    .args
-                    .get("CommandLine")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string();
-                let summary = tc
-                    .args
-                    .get("toolSummary")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("Thực thi lệnh terminal")
-                    .to_string();
-                let cmd_agent =
-                    if cmd_line.contains("flutter analyze") || cmd_line.contains("go build") {
-                        "erp-contract-verifier"
-                    } else if cmd_line.contains("muop-erp-server") {
-                        "erp-server-agent"
-                    } else if cmd_line.contains("muop-erp-app") {
-                        "erp-app-agent"
-                    } else {
-                        "Coordinator"
-                    };
-                commands_deque.push_back(CommandExecutionRecord {
-                    command_line: cmd_line,
-                    summary,
-                    agent_name: cmd_agent.to_string(),
-                    step_index,
-                    timestamp: step.created_at.clone(),
-                    output_preview: String::new(),
-                    is_success: true,
-                });
-                if commands_deque.len() > 40 {
-                    commands_deque.pop_front();
-                }
-            }
-
-            if tc.name == "invoke_subagent" {
-                let role = tc
-                    .args
-                    .get("Role")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("Subagent Worker")
-                    .to_string();
-                let type_name = tc
-                    .args
-                    .get("TypeName")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("self")
-                    .to_string();
-                let prompt = tc
-                    .args
-                    .get("Prompt")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string();
-                let name = if type_name == "self" {
-                    role.clone()
-                } else {
-                    type_name
-                };
-                let idx = spawned_subagents.len();
-                spawned_subagents.push(SpawnedSubagentMeta {
-                    id: String::new(),
-                    name,
-                    role: role.clone(),
-                    prompt,
-                    step_index,
-                    status: "running".to_string(),
-                    last_action: format!("Đang khởi chạy Subagent: {}", role),
-                    tool_name: "invoke_subagent".to_string(),
-                });
-                pending_subagent_indices.push(idx);
-            }
-        }
-
-        if step.step_type == "GENERIC"
-            && step.content.contains("Created the following subagent:")
-            && !pending_subagent_indices.is_empty()
-        {
-            let idx = pending_subagent_indices.remove(0);
-            if let Some(caps) = conv_id_re.captures(&step.content) {
-                if let Some(m) = caps.get(1) {
-                    if let Some(sub) = spawned_subagents.get_mut(idx) {
-                        sub.id = m.as_str().to_string();
-                    }
-                }
-            }
-        }
-
-        if step.step_type == "SYSTEM_MESSAGE" && step.content.contains("<SYSTEM_MESSAGE>") {
-            for sub in &mut spawned_subagents {
-                if !sub.id.is_empty() && step.content.contains(&sub.id) {
-                    if step.content.contains("encountered an error") {
-                        sub.status = "error".to_string();
-                        sub.last_action = "Subagent gặp lỗi khi thực thi".to_string();
-                    } else {
-                        sub.status = "completed".to_string();
-                        sub.last_action =
-                            "Đã hoàn thành nhiệm vụ & gửi báo cáo về Coordinator".to_string();
-                    }
-                }
-            }
-        }
-
-        steps_deque.push_back(step);
-        if steps_deque.len() > 150 {
-            steps_deque.pop_front();
-        }
-    }
-
-    if total_step_count == 0 {
-        return None;
-    }
-
-    let steps: Vec<AgentStep> = steps_deque.into_iter().collect();
-    let files_touched: Vec<FileTouchRecord> = files_deque.into_iter().collect();
-    let commands_run: Vec<CommandExecutionRecord> = commands_deque.into_iter().collect();
-
-    if title.starts_with("Phiên #") && !first_user_prompt_title.is_empty() {
-        title = first_user_prompt_title;
+    if title.starts_with("Phiên #") && !meta.first_prompt_title.is_empty() {
+        title = meta.first_prompt_title.clone();
     }
 
     let mut project_name = db_meta.map(|m| m.project_name.clone()).unwrap_or_default();
     let mut project_path = db_meta.map(|m| m.project_path.clone()).unwrap_or_default();
+    // Project đã ghi lúc bắt đầu lượt được ưu tiên: agy có thể không ghi thư mục làm việc
+    if let Some((name, path)) = crate::infra::store::conversation_project(id) {
+        project_name = name;
+        project_path = path;
+    }
     if project_name.is_empty() {
-        for f in &files_touched {
-            if f.repo != "system" && f.repo != ".agents" {
-                project_name = f.repo.clone();
-                project_path = crate::setup::workspace_root()
-                    .map(|r| r.join(&f.repo).to_string_lossy().into_owned())
-                    .unwrap_or_default();
-                break;
-            }
-        }
-        if project_name.is_empty() {
+        if !meta.fallback_repo.is_empty() {
+            project_name = meta.fallback_repo.clone();
+            project_path = crate::setup::workspace_root()
+                .map(|r| r.join(&meta.fallback_repo).to_string_lossy().into_owned())
+                .unwrap_or_default();
+        } else {
             project_name = "(không rõ project)".to_string();
         }
     }
 
-    let mut session_status = "completed".to_string();
-    let mut current_phase = "completed".to_string();
-
-    if let Some(last) = steps.last() {
-        // Đánh giá trạng thái chính xác theo tiến trình thực tế trong transcript:
-        // 1. Nếu bước cuối cùng là PLANNER_RESPONSE và không còn tool_calls -> ĐÃ HOÀN TẤT LƯỢT TRẢ LỜI
-        if last.step_type == "PLANNER_RESPONSE" && last.tool_calls.is_empty() {
-            session_status = "completed".to_string();
-        } else if last.status != "DONE" || !last.tool_calls.is_empty() {
-            // Bước cuối chưa DONE hoặc đang gọi tool_call:
-            // Chỉ coi là đang chạy nếu file vừa mới được ghi log gần đây (dưới 20 giây).
-            // Nếu đã quá 20 giây không có hoạt động, tiến trình đã dừng hoặc bị ngắt!
-            let age_secs = (Utc::now() - updated_at).num_seconds().abs();
-            if age_secs < 20 {
-                session_status = "running".to_string();
-            } else {
-                session_status = "interrupted".to_string();
-            }
-        } else {
-            // Bước cuối là GENERIC hoặc USER_INPUT: chỉ coi là đang chạy nếu phát sinh rất gần (dưới 15 giây)
-            let age_secs = (Utc::now() - updated_at).num_seconds().abs();
-            if age_secs < 15 && (last.step_type == "GENERIC" || last.step_type == "USER_INPUT") {
-                session_status = "running".to_string();
-            } else {
-                session_status = "completed".to_string();
-            }
-        }
-
-        if session_status == "completed" {
-            current_phase = "completed".to_string();
-        } else if has_verify {
-            current_phase = "crossVerification".to_string();
-        } else if has_edit_or_parallel {
-            current_phase = "parallelExecution".to_string();
-        } else {
-            current_phase = "contractDiscovery".to_string();
-        }
+    // Conversation chạy trong mount (project của máy khác): nhóm riêng, nhãn "Mount - <tên project>"
+    if crate::fsmount::is_mount_path(&project_path) && !project_name.starts_with("Mount - ") {
+        project_name = format!("Mount - {project_name}");
     }
 
-    let parsed_res = ParsedTranscript {
+    let (status, phase) = derive_status(
+        meta.last_step.as_ref(),
+        updated_at,
+        meta.has_verify,
+        meta.has_edit_or_parallel,
+        Utc::now(),
+    );
+
+    ParsedTranscript {
         id: id.to_string(),
         title,
-        created_at: created_at.unwrap_or(file_modified),
+        created_at,
         updated_at,
-        status: session_status,
-        current_phase,
+        status,
+        current_phase: phase,
         steps,
         files_touched,
         commands_run,
-        spawned_subagents,
-        turn_spawn_start,
-        total_input_tokens: total_input,
-        total_output_tokens: total_output,
-        total_cache_tokens: total_cache,
+        spawned_subagents: meta.spawned_subagents.clone(),
+        turn_spawn_start: meta.turn_spawn_start,
+        total_input_tokens: meta.total_input_tokens,
+        total_output_tokens: meta.total_output_tokens,
+        total_cache_tokens: meta.total_cache_tokens,
         project_name,
         project_path,
-        total_steps: total_step_count,
-    };
+        total_steps: meta.total_steps,
+        last_step_type: meta.last_step.as_ref().map(|s| s.step_type.clone()),
+        referenced_ids: meta.referenced_ids.clone(),
+    }
+}
 
-    if let Ok(mut cache) = get_transcript_cache().lock() {
-        cache.insert(
-            id.to_string(),
-            CachedTranscript {
-                modified: file_modified,
-                len: file_len,
-                parsed: std::sync::Arc::new(parsed_res.clone()),
-            },
+/// Dấu hiệu thay đổi của transcript: mtime (nano giây) và độ dài file
+pub(super) fn transcript_fingerprint(path: &Path) -> Option<String> {
+    let m = fs::metadata(path).ok()?;
+    let nanos = m
+        .modified()
+        .ok()?
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .ok()?
+        .as_nanos();
+    Some(format!("{nanos}:{}", m.len()))
+}
+
+/// Parse đầy đủ một transcript cho session đang xem chi tiết hoặc đang chạy: metadata + tối đa
+/// `TAIL_STEPS` bước cuối (đọc theo chỉ mục) + tệp/lệnh gần nhất. Không giữ kết quả trong RAM.
+pub(super) fn parse_transcript_file(
+    id: &str,
+    file_modified: DateTime<Utc>,
+    db_meta: Option<&DbConversationMeta>,
+) -> Option<ParsedTranscript> {
+    super::transcript_index::load_parsed(
+        id,
+        file_modified,
+        db_meta,
+        super::transcript_index::TAIL_STEPS,
+        true,
+    )
+}
+
+/// Chỉ metadata của transcript (không có bước, tệp, lệnh) cho danh sách conversation.
+pub(super) fn parse_transcript_shell(
+    id: &str,
+    file_modified: DateTime<Utc>,
+    db_meta: Option<&DbConversationMeta>,
+) -> Option<ParsedTranscript> {
+    super::transcript_index::load_parsed(id, file_modified, db_meta, 0, false)
+}
+
+#[cfg(test)]
+mod meta_tests {
+    use super::*;
+
+    fn last(step_type: &str, status: &str, has_tool_calls: bool) -> LastStepMeta {
+        LastStepMeta {
+            step_type: step_type.to_string(),
+            status: status.to_string(),
+            has_tool_calls,
+        }
+    }
+
+    #[test]
+    fn planner_response_without_tools_is_completed() {
+        let now = Utc::now();
+        let (status, phase) = derive_status(
+            Some(&last("PLANNER_RESPONSE", "DONE", false)),
+            now,
+            false,
+            false,
+            now,
+        );
+        assert_eq!(
+            (status.as_str(), phase.as_str()),
+            ("completed", "completed")
         );
     }
 
-    Some(parsed_res)
+    #[test]
+    fn recent_tool_call_is_running_and_old_one_is_interrupted() {
+        let now = Utc::now();
+        let (running, _) = derive_status(
+            Some(&last("PLANNER_RESPONSE", "DONE", true)),
+            now - chrono::Duration::seconds(5),
+            false,
+            false,
+            now,
+        );
+        assert_eq!(running, "running");
+        let (interrupted, _) = derive_status(
+            Some(&last("PLANNER_RESPONSE", "DONE", true)),
+            now - chrono::Duration::seconds(60),
+            false,
+            false,
+            now,
+        );
+        assert_eq!(interrupted, "interrupted");
+    }
+
+    #[test]
+    fn user_input_runs_only_for_a_few_seconds() {
+        let now = Utc::now();
+        let (recent, _) = derive_status(
+            Some(&last("USER_INPUT", "DONE", false)),
+            now - chrono::Duration::seconds(5),
+            false,
+            false,
+            now,
+        );
+        assert_eq!(recent, "running");
+        let (old, _) = derive_status(
+            Some(&last("USER_INPUT", "DONE", false)),
+            now - chrono::Duration::seconds(30),
+            false,
+            false,
+            now,
+        );
+        assert_eq!(old, "completed");
+    }
+
+    #[test]
+    fn phase_follows_flags_only_when_not_completed() {
+        let now = Utc::now();
+        let stale = now - chrono::Duration::seconds(60);
+        let (_, verify) = derive_status(
+            Some(&last("PLANNER_RESPONSE", "DONE", true)),
+            stale,
+            true,
+            false,
+            now,
+        );
+        assert_eq!(verify, "crossVerification");
+        let (_, parallel) = derive_status(
+            Some(&last("PLANNER_RESPONSE", "DONE", true)),
+            stale,
+            false,
+            true,
+            now,
+        );
+        assert_eq!(parallel, "parallelExecution");
+        let (_, base) = derive_status(
+            Some(&last("PLANNER_RESPONSE", "DONE", true)),
+            stale,
+            false,
+            false,
+            now,
+        );
+        assert_eq!(base, "contractDiscovery");
+    }
+
+    #[test]
+    fn empty_transcript_is_completed() {
+        let now = Utc::now();
+        assert_eq!(
+            derive_status(None, now, false, false, now),
+            ("completed".to_string(), "completed".to_string())
+        );
+    }
+
+    #[test]
+    fn meta_round_trips_through_json_without_steps() {
+        let meta = TranscriptMeta {
+            first_prompt_title: "Hỏi về lỗi".into(),
+            created_at: "2026-11-26T10:00:00+00:00".into(),
+            updated_at: "2026-11-26T10:05:00+00:00".into(),
+            last_step: Some(last("PLANNER_RESPONSE", "DONE", false)),
+            has_verify: true,
+            has_edit_or_parallel: false,
+            spawned_subagents: vec![SpawnedSubagentMeta {
+                id: "sub-1".into(),
+                name: "Worker".into(),
+                role: "Worker".into(),
+                prompt: "p".into(),
+                step_index: 3,
+                status: "completed".into(),
+                last_action: "ok".into(),
+                tool_name: "invoke_subagent".into(),
+            }],
+            turn_spawn_start: 0,
+            total_input_tokens: 10,
+            total_output_tokens: 20,
+            total_cache_tokens: 30,
+            total_steps: 42,
+            fallback_repo: "muop-agent".into(),
+            referenced_ids: vec!["sub-1".into()],
+        };
+        let json = serde_json::to_string(&meta).unwrap();
+        let back: TranscriptMeta = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.total_steps, 42);
+        assert_eq!(back.spawned_subagents[0].id, "sub-1");
+        assert_eq!(back.referenced_ids, vec!["sub-1".to_string()]);
+        assert_eq!(back.last_step.unwrap().step_type, "PLANNER_RESPONSE");
+    }
 }

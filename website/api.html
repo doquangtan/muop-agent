@@ -4,9 +4,9 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Tài liệu API — Mướp Agents server</title>
-  <meta name="description" content="Tài liệu đầy đủ REST API, Socket.IO và luồng RTSP của Mướp Agents server (cổng 8787).">
+  <meta name="description" content="Tài liệu đầy đủ REST API, Socket.IO và luồng màn hình (khung JPEG) của Mướp Agents server (cổng 8787).">
   <link rel="icon" type="image/png" href="assets/img/favicon.png">
-  <link rel="stylesheet" href="assets/css/style.css?v=4">
+  <link rel="stylesheet" href="assets/css/style.css?v=6">
 </head>
 <body>
 
@@ -81,7 +81,7 @@
     </section>
 
     <section class="api-group" id="rtsp">
-      <h2>Màn hình (RTSP)</h2>
+      <h2>Màn hình (khung JPEG)</h2>
       <p class="gdesc" id="screenDesc"></p>
       <div class="codeblock">
         <pre id="screenUrl"></pre>
@@ -89,7 +89,7 @@
       </div>
       <h4 style="margin:22px 0 8px;font-size:0.8rem;text-transform:uppercase;letter-spacing:.1em;color:var(--text-faint)">Trạng thái (sự kiện <code>screen:status</code>)</h4>
       <div class="codeblock"><pre id="screenStatus"></pre><button class="copy" type="button">Sao chép</button></div>
-      <p style="margin-top:14px">Mở bằng VLC, mpv hoặc ffplay: <code>mpv rtsp://&lt;ip-server&gt;:8554/screen</code>.</p>
+      <p style="margin-top:14px">Xem trực tiếp trên bản web <code>http://&lt;ip-server&gt;:8788/</code> hoặc trong app. Trình duyệt không cần player riêng.</p>
     </section>
 
     <section class="api-group" id="quy-uoc">
@@ -114,7 +114,7 @@
   </div>
 </footer>
 
-<script src="assets/js/api-data.js"></script>
+<script src="assets/js/api-data.js?v=2"></script>
 <script src="assets/js/api.js"></script>
 <script src="assets/js/main.js?v=3"></script>
 </body>

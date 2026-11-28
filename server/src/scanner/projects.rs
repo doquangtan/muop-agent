@@ -45,6 +45,8 @@ pub fn discover_projects(sessions: &[ConversationSession]) -> Vec<ProjectWorkspa
             let git_sync_status = check_git_sync_status(&path);
             let (custom_agents, available_agents) =
                 scan_project_agents_and_skills(Path::new(&path));
+            let is_mount = crate::fsmount::is_mount_path(&path);
+            let mount_live = is_mount && crate::fsmount::is_alive(Path::new(&path));
             ProjectWorkspace {
                 id: name.clone(),
                 name,
@@ -55,6 +57,8 @@ pub fn discover_projects(sessions: &[ConversationSession]) -> Vec<ProjectWorkspa
                 git_sync_status,
                 custom_agents,
                 available_agents,
+                is_mount,
+                mount_live,
             }
         })
         .collect();
@@ -169,6 +173,8 @@ pub fn create_new_project(
         git_sync_status: None,
         custom_agents,
         available_agents,
+        is_mount: false,
+        mount_live: false,
     })
 }
 

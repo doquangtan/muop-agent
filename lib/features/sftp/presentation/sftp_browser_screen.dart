@@ -6,6 +6,8 @@ import 'package:file_picker/file_picker.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:material_ui/material_ui.dart';
 
+import 'package:muop_agent/core/widgets/throttled_linear_progress.dart';
+
 import 'package:muop_agent/core/di/app_dependencies.dart';
 import 'package:muop_agent/core/state/server_address_provider.dart';
 import 'package:muop_agent/core/theme/app_theme.dart';
@@ -663,7 +665,7 @@ class _SftpBrowserScreenState extends State<SftpBrowserScreenView> {
       ],
       body: Column(
         children: [
-          if (_busy) const LinearProgressIndicator(minHeight: 2),
+          if (_busy) const ThrottledLinearProgress(minHeight: 2),
           _pathBar(scheme, textTheme),
           _searchBar(scheme, textTheme, compact),
           if (_selected.isNotEmpty) _selectionBar(scheme, textTheme),

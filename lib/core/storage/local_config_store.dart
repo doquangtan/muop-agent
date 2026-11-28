@@ -4,12 +4,15 @@ import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 
+import 'package:muop_agent/core/storage/web_local_storage.dart';
+
 /// Lưu trữ cấu hình cục bộ bền vững theo từng nền tảng (không dùng `systemTemp` / cache
 /// để tránh bị xóa khi cập nhật APK, dọn cache hoặc khởi động lại máy):
 /// - Android: `context.filesDir/muop_agent_config` (qua `MethodChannel`)
 /// - Linux: `$XDG_CONFIG_HOME/muop-agent` hoặc `~/.config/muop-agent`
 /// - macOS / iOS: `~/Library/Application Support/muop-agent`
 /// - Windows: `%APPDATA%/muop-agent`
+/// - Web: `localStorage` của trình duyệt (không có đĩa để ghi file)
 class LocalConfigStore {
   LocalConfigStore._();
 
@@ -76,8 +79,20 @@ class LocalConfigStore {
     return Directory('${Directory.systemTemp.path}/muop_agent_config');
   }
 
+  static String _webKey(String fileName) => 'muop_agent_config:$fileName';
+
   /// Đọc JSON từ thư mục bền vững; nếu chưa có sẽ tự di chuyển (migrate) từ file cũ ở `systemTemp`.
   static Future<Map<String, dynamic>> readJson(String fileName) async {
+    if (kIsWeb) {
+      try {
+        final raw = webStorageGet(_webKey(fileName));
+        if (raw != null) {
+          final decoded = jsonDecode(raw);
+          if (decoded is Map<String, dynamic>) return decoded;
+        }
+      } catch (_) {}
+      return <String, dynamic>{};
+    }
     try {
       final dir = await resolveConfigDir();
       final file = File('${dir.path}/$fileName');
@@ -104,6 +119,12 @@ class LocalConfigStore {
     String fileName,
     Map<String, dynamic> data,
   ) async {
+    if (kIsWeb) {
+      try {
+        webStorageSet(_webKey(fileName), jsonEncode(data));
+      } catch (_) {}
+      return;
+    }
     try {
       final dir = await resolveConfigDir();
       if (!await dir.exists()) {

@@ -27,7 +27,7 @@
 | `material_ui` | 52 | Bộ widget tự viết bằng CSS (button, sheet, list, chip, dialog, menu) | Cao (khối lượng lớn) |
 | `flutter_riverpod` | 18 | Signals / context của Dioxus | Trung bình |
 | `liquid_glass_easy` | 4 | CSS `backdrop-filter` + viền hairline | Trung bình (không 1:1) |
-| `media_kit` | 2 (màn RTSP) | libmpv qua FFI, hoặc GStreamer/ffmpeg | **Rất cao** |
+| `media_kit` | — (đã bỏ; màn hình dùng khung JPEG qua HTTP) | không cần | — |
 | `xterm` | 2 (SSH terminal) | xterm.js trong webview | Cao |
 | `file_picker` | 2 | `rfd` hoặc API dialog của Dioxus | Thấp |
 | `socket_io_client` | 1 | Socket.IO client Rust (xem mục 3) | Trung bình |
@@ -75,7 +75,7 @@
 - Agent map (vẽ tùy chỉnh bằng SVG), Cài đặt, Tài khoản (agy/claude), wizard Khởi tạo, SSH hosts, Docker, SFTP, LSP viewer, Cầu nối, cấu hình retry, chi tiết quota, trình duyệt file, duyệt plan.
 
 **P6 — Phần khó**
-- RTSP video: khảo sát libmpv FFI trước khi cam kết.
+- Màn hình: đã đổi sang khung JPEG qua HTTP long-poll, không còn RTSP/libmpv.
 - SSH terminal: xterm.js trong webview, nối với `ssh:*`.
 - Chọn/lưu file và mở link ngoài.
 
@@ -95,7 +95,7 @@
 - **Độ trưởng thành:** Dioxus còn trẻ hơn Flutter. API có thể đổi giữa các phiên bản nên phải ghim.
 - **Webview:** Linux dùng WebKitGTK. Android và iOS dùng WebView hệ thống. Hành vi `backdrop-filter`, cuộn và nhập liệu có thể khác nhau. Cần kiểm tra trên từng nền tảng.
 - **Danh sách dài:** chat có 2.500+ bước. Phải tự làm virtual list để không lag.
-- **Video RTSP:** không có tương đương trực tiếp của `media_kit`. Đây là điểm có thể phải bỏ hoặc làm lại.
+- **Màn hình:** đã đổi sang khung JPEG (`GET /api/screen/frame`), Dioxus chỉ cần hiển thị JPEG; không còn phụ thuộc libmpv.
 - **Kiểm thử:** hiện không có test UI tự động (AGENTS.md mục 8.6). Cần checklist parity thủ công theo từng màn, ghi lại trong `docs/`.
 - **Khối lượng:** ~42.7k dòng Dart, nhiều tuần công. Không nên ước lượng cứng. Giữ Flutter chạy song song đến khi xong P4 và P5.
 - **Môi trường:** chưa có Rust, `dx` và Flutter trên PATH. P1 phải cài trước.

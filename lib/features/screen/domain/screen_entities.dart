@@ -1,3 +1,5 @@
+import 'dart:typed_data';
+
 /// Trạng thái quay màn hình trên server (`screen:status`)
 class ScreenStatus {
   const ScreenStatus({
@@ -5,13 +7,13 @@ class ScreenStatus {
     this.starting = false,
     this.error = '',
     this.height = 720,
-    this.rtspUrl = '',
+    this.viewerUrl = '',
   });
 
-  /// Luồng RTSP đang chạy
+  /// Luồng đang chạy
   final bool streaming;
 
-  /// Đang chờ người dùng xác nhận chia sẻ trên máy chủ
+  /// Đang chờ người dùng xác nhận chia sẻ màn hình trên máy chủ
   final bool starting;
 
   /// Lỗi của lần bật gần nhất, rỗng nếu không có
@@ -20,8 +22,8 @@ class ScreenStatus {
   /// Chiều cao khung hình (px)
   final int height;
 
-  /// Địa chỉ RTSP để mở bằng trình phát (VLC, mpv...), rỗng khi chưa bật
-  final String rtspUrl;
+  /// Địa chỉ trang xem trên máy chủ (web app), rỗng khi chưa bật. Host được thay theo địa chỉ app đang kết nối.
+  final String viewerUrl;
 
   factory ScreenStatus.fromJson(Map<String, dynamic> json) {
     return ScreenStatus(
@@ -29,7 +31,15 @@ class ScreenStatus {
       starting: json['starting'] == true,
       error: '${json['error'] ?? ''}',
       height: (json['height'] as num?)?.toInt() ?? 720,
-      rtspUrl: '${json['rtspUrl'] ?? ''}',
+      viewerUrl: '${json['viewerUrl'] ?? ''}',
     );
   }
+}
+
+/// Một khung hình JPEG của luồng màn hình. `seq` tăng dần theo server; gửi lại làm `after` khi xin khung kế tiếp.
+class ScreenFrame {
+  const ScreenFrame({required this.seq, required this.jpeg});
+
+  final int seq;
+  final Uint8List jpeg;
 }

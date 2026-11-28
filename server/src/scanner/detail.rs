@@ -265,6 +265,67 @@ pub fn get_session_steps_page(
     )
 }
 
+/// Trang lịch sử để chia sẻ. Chia theo khoảng `step_index` cố định (không theo số lượng) vì
+/// `step_index` của agy có thể thưa; nhờ vậy trang ổn định giữa các lần gọi và chỉ đọc đúng khoảng cần.
+pub fn get_session_share_page(
+    session_id: &str,
+    from_step: usize,
+    page: usize,
+    limit: usize,
+) -> Option<crate::models::SessionSharePageResponse> {
+    let last = get_session_steps_page(session_id, None, 1)?;
+    let last_step_index = last
+        .steps
+        .last()
+        .map(|s| s.step_index)
+        .unwrap_or(last.earliest_step_index);
+    let span = (last_step_index + 1).saturating_sub(from_step);
+    let total_pages = span.div_ceil(limit);
+
+    let lower = from_step.saturating_add(page.saturating_mul(limit));
+    let upper = lower.saturating_add(limit);
+    let steps: Vec<AgentStep> = if page >= total_pages {
+        Vec::new()
+    } else {
+        // `get_session_steps_page` có thể trả trang ngắn (cửa sổ cache cuối), nên lặp lùi
+        // tới khi phủ hết khoảng [lower, upper). Lấy dư để chịu được step_index trùng.
+        let mut cursor = if upper > last_step_index {
+            None
+        } else {
+            Some(upper)
+        };
+        let mut collected: Vec<AgentStep> = Vec::new();
+        loop {
+            let chunk = get_session_steps_page(session_id, cursor, limit * 2)?;
+            let earliest = chunk.steps.first().map(|s| s.step_index);
+            let mut merged = chunk.steps;
+            merged.append(&mut collected);
+            collected = merged;
+            match earliest {
+                Some(e) if chunk.has_more && e > lower && cursor.map_or(true, |c| e < c) => {
+                    cursor = Some(e);
+                }
+                _ => break,
+            }
+        }
+        collected
+            .into_iter()
+            .filter(|s| s.step_index >= lower && s.step_index < upper)
+            .collect()
+    };
+    Some(crate::models::SessionSharePageResponse {
+        session_id: session_id.to_string(),
+        from_step,
+        page,
+        page_size: limit,
+        total_pages,
+        last_step_index,
+        total_steps: last.total_steps,
+        has_more: page + 1 < total_pages,
+        steps,
+    })
+}
+
 pub(super) fn read_steps_page_from_file(
     path: &Path,
     session_id: &str,

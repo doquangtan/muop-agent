@@ -4,6 +4,7 @@ import 'package:muop_agent/core/di/app_dependencies.dart';
 import 'package:muop_agent/core/theme/app_theme.dart';
 import 'package:muop_agent/core/widgets/glass_scaffold.dart';
 import 'package:muop_agent/core/widgets/liquid_glass.dart';
+import 'package:muop_agent/core/widgets/throttled_spinner.dart';
 import 'package:muop_agent/features/agy_auth/domain/agy_auth_repository.dart';
 import 'package:muop_agent/features/setup/domain/setup_entities.dart';
 import 'package:muop_agent/features/setup/domain/setup_repository.dart';
@@ -94,7 +95,6 @@ class _SetupSplashScreenState extends State<SetupSplashScreen> {
   Widget build(BuildContext context) {
     final scheme = context.scheme;
     final textTheme = Theme.of(context).textTheme;
-    final isDark = Theme.of(context).brightness == Brightness.dark;
     return GlassScreenScaffold(
       body: Center(
         child: Padding(
@@ -103,11 +103,6 @@ class _SetupSplashScreenState extends State<SetupSplashScreen> {
             constraints: const BoxConstraints(maxWidth: 460),
             child: LiquidGlassContainer(
               borderRadius: BorderRadius.circular(24),
-              blur: 16,
-              fillColor: (isDark
-                      ? const Color(0xFF141821)
-                      : const Color(0xFFF6F9FF))
-                  .withValues(alpha: isDark ? 0.42 : 0.56),
               padding: const EdgeInsets.symmetric(horizontal: 28, vertical: 30),
               child: Column(
                 mainAxisSize: MainAxisSize.min,
@@ -123,7 +118,8 @@ class _SetupSplashScreenState extends State<SetupSplashScreen> {
                 ),
                 const SizedBox(height: 24),
                 if (_checking) ...[
-                  const CircularProgressIndicator(),
+                  // Vòng xoay nhịp thấp (ThrottledSpinner) thay vì vsync 60 khung/giây
+                  const ThrottledSpinner(size: 36, strokeWidth: 3),
                   const SizedBox(height: 12),
                   Text(
                     'Đang kết nối ($_attempt/${SetupSplashScreen.maxAttempts})…',

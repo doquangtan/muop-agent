@@ -1,6 +1,8 @@
 import 'dart:async';
 import 'dart:convert';
 import 'package:material_ui/material_ui.dart';
+
+import 'package:muop_agent/core/widgets/throttled_linear_progress.dart';
 import 'package:xterm/xterm.dart';
 
 import 'package:muop_agent/core/di/app_dependencies.dart';
@@ -397,7 +399,7 @@ class _SshTerminalPanelState extends State<SshTerminalPanel> {
               style: textTheme.bodySmall?.copyWith(color: scheme.onSurfaceVariant),
             ),
           ),
-        if (_opening) const LinearProgressIndicator(minHeight: 2),
+        if (_opening) const ThrottledLinearProgress(minHeight: 2),
         if (_error != null)
           Container(
             width: double.infinity,

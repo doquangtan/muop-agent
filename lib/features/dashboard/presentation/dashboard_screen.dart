@@ -8,6 +8,7 @@ import 'package:muop_agent/core/theme/chat_theme_painter.dart';
 import 'package:muop_agent/features/dashboard/presentation/widgets/chat_theme_picker_sheet.dart';
 import 'package:muop_agent/core/widgets/desktop_panel.dart';
 import 'package:muop_agent/core/widgets/glass_scaffold.dart';
+import 'package:muop_agent/core/widgets/throttled_spinner.dart';
 import 'package:muop_agent/core/widgets/liquid_glass.dart';
 import 'package:muop_agent/core/widgets/resizable_split.dart';
 import 'package:muop_agent/features/bridge/domain/bridge_entities.dart';
@@ -37,6 +38,8 @@ import 'package:muop_agent/features/server_files/domain/server_files_repository.
 import 'package:muop_agent/features/server_files/presentation/server_file_browser_sheet.dart';
 import 'package:muop_agent/features/sessions/domain/session_entities.dart';
 import 'package:muop_agent/features/sessions/domain/session_repository.dart';
+import 'package:muop_agent/features/sessions/domain/session_share.dart';
+import 'package:muop_agent/features/sessions/presentation/share_history_sheet.dart';
 import 'package:muop_agent/features/sessions/presentation/desktop_conversation_rail.dart';
 import 'package:muop_agent/features/setup/presentation/setup_flow.dart';
 import 'package:muop_agent/features/ssh/presentation/ssh_hosts_screen.dart';
@@ -168,12 +171,17 @@ class _DashboardScreenState extends ConsumerState<DashboardScreenView> {
   String _searchQuery = '';
   final Set<String> _expandedProjects = {};
 
-  Timer? _fallbackTimer;
   StreamSubscription<List<ConversationSession>>? _sessionsListSub;
   StreamSubscription<ServerMeta>? _metaSub;
   StreamSubscription<Map<String, ChatTurnStreamState>>? _activeStreamsSub;
   StreamSubscription<String>? _sessionRemovedSub;
   StreamSubscription<ChatTurnStreamState>? _chatStreamSub;
+  /// Các cập nhật stream chờ gộp: mỗi conversation chỉ giữ bản mới nhất
+  final Map<String, ChatTurnStreamState> _pendingStreamStates = {};
+  Timer? _streamFlushTimer;
+  /// Gộp cập nhật streaming tối đa 10 lần/giây. Mỗi lần setState dựng lại cả dashboard,
+  /// nên gửi theo từng chunk làm GPU/CPU tăng theo số chunk thay vì theo số hiển thị.
+  static const Duration _streamFlushEvery = Duration(milliseconds: 100);
   StreamSubscription<bool>? _socketStatusSub;
   StreamSubscription<ConversationSession>? _sessionUpdateSub;
   StreamSubscription<List<ProjectWorkspace>>? _projectsSub;
@@ -189,7 +197,6 @@ class _DashboardScreenState extends ConsumerState<DashboardScreenView> {
 
   List<AIQuestion> _pendingAIQuestions = [];
   PendingClaudeInteraction? _pendingClaudeInteraction;
-  Timer? _aiQuestionRefreshTimer;
   String? _currentConversationRoom;
 
   @override
@@ -204,22 +211,16 @@ class _DashboardScreenState extends ConsumerState<DashboardScreenView> {
         unawaited(_refreshPeer());
       }
     });
-    _fallbackTimer = Timer.periodic(const Duration(seconds: 6), (_) {
-      if (!_isSocketLive) {
-        _refreshSessions(silent: true);
-      }
-    });
   }
 
   @override
   void dispose() {
-    _fallbackTimer?.cancel();
-    _aiQuestionRefreshTimer?.cancel();
     _sessionsListSub?.cancel();
     _metaSub?.cancel();
     _activeStreamsSub?.cancel();
     _sessionRemovedSub?.cancel();
     _chatStreamSub?.cancel();
+    _streamFlushTimer?.cancel();
     _socketStatusSub?.cancel();
     _sessionUpdateSub?.cancel();
     _projectsSub?.cancel();
@@ -233,17 +234,11 @@ class _DashboardScreenState extends ConsumerState<DashboardScreenView> {
     super.dispose();
   }
 
-  void _startAIQuestionPoller() {
-    _aiQuestionRefreshTimer?.cancel();
-    _aiQuestionRefreshTimer = Timer.periodic(const Duration(seconds: 3), (_) {
-      _refreshAIQuestions();
-      _refreshClaudeInteraction();
-    });
-  }
-
-  void _stopAIQuestionPoller() {
-    _aiQuestionRefreshTimer?.cancel();
-    _aiQuestionRefreshTimer = null;
+  /// Tương tác đang chờ của phiên đang chọn (câu hỏi AI, câu hỏi/kế hoạch Claude). Không hỏi định kỳ:
+  /// gọi khi phiên đổi, khi tải danh sách, và khi server báo `session:update` cho phiên này.
+  void _refreshActiveInteractions() {
+    _refreshAIQuestions();
+    _refreshClaudeInteraction();
   }
 
   Future<void> _refreshAIQuestions() async {
@@ -452,7 +447,25 @@ class _DashboardScreenState extends ConsumerState<DashboardScreenView> {
 
     _chatStreamSub = _chatRepo.chatStream.listen((streamState) {
       if (!mounted) return;
-      setState(() {
+      _pendingStreamStates[streamState.conversationId] = streamState;
+      // Kết thúc lượt thì áp dụng ngay (không chờ nhịp gộp), để trạng thái đúng tức thời
+      if (!streamState.isRunning) {
+        _flushChatStreams();
+        return;
+      }
+      _streamFlushTimer ??= Timer(_streamFlushEvery, _flushChatStreams);
+    });
+  }
+
+  /// Áp dụng các cập nhật stream đã gộp trong một lần setState
+  void _flushChatStreams() {
+    _streamFlushTimer?.cancel();
+    _streamFlushTimer = null;
+    if (!mounted || _pendingStreamStates.isEmpty) return;
+    final batch = List<ChatTurnStreamState>.of(_pendingStreamStates.values);
+    _pendingStreamStates.clear();
+    setState(() {
+      for (final streamState in batch) {
         _activeStreams = {
           ..._activeStreams,
           streamState.conversationId: streamState,
@@ -468,12 +481,13 @@ class _DashboardScreenState extends ConsumerState<DashboardScreenView> {
           _activeStreams = Map<String, ChatTurnStreamState>.from(_activeStreams)
             ..remove('pending_optimistic');
         }
-      });
+      }
     });
   }
 
   /// Cập nhật một conversation duy nhất mà không ghi đè làm mất các conversation cũ
   void _handleSessionUpdate(ConversationSession updated) {
+    if (updated.id == _activeSession?.id) _refreshActiveInteractions();
     setState(() {
       final existingIndex = _sessions.indexWhere((s) => s.id == updated.id);
       if (existingIndex >= 0) {
@@ -585,14 +599,7 @@ class _DashboardScreenState extends ConsumerState<DashboardScreenView> {
       _isLoading = false;
       _syncDefaultSelections();
     });
-    // Bắt đầu poll AI questions cho session đang chọn
-    if (_activeSession != null) {
-      _startAIQuestionPoller();
-      _refreshAIQuestions();
-      _refreshClaudeInteraction();
-    } else {
-      _stopAIQuestionPoller();
-    }
+    _refreshActiveInteractions();
     // Setup file changes listener và join conversation room
     _setupFileChangesListener();
   }
@@ -1078,10 +1085,12 @@ class _DashboardScreenState extends ConsumerState<DashboardScreenView> {
     return null;
   }
 
+  /// [model] ghi đè model gửi (dùng khi chia sẻ lịch sử, nơi người dùng chọn model riêng).
   Future<void> _handleSendPrompt(
     String promptText,
-    List<ChatImageAttachment> images,
-  ) async {
+    List<ChatImageAttachment> images, {
+    String? model,
+  }) async {
     // Lượt gửi vào conversation đang mở phải đi đúng project của conversation đó,
     // không theo dropdown project (có thể đang chọn project khác).
     final openConv = _openConversationExact;
@@ -1113,7 +1122,7 @@ class _DashboardScreenState extends ConsumerState<DashboardScreenView> {
       };
     });
 
-    final effectiveModel = _sendModel;
+    final effectiveModel = (model != null && model.isNotEmpty) ? model : _sendModel;
 
     final result = isPeerModel(effectiveModel)
         ? await _sendToPeer(
@@ -1180,6 +1189,85 @@ class _DashboardScreenState extends ConsumerState<DashboardScreenView> {
     }
   }
 
+  /// Model gửi vào một conversation có sẵn: model đã dùng gần nhất, không hợp lệ thì mặc định của provider
+  String _modelForConversation(ConversationSession s) {
+    final candidate = _modelBySession[s.id] ?? s.selectedModel;
+    if (candidate.isNotEmpty && _availableModels.contains(candidate)) {
+      return candidate;
+    }
+    return _defaultModelFor(s.source == 'claude-cli' ? 'claude-cli' : 'agy');
+  }
+
+  /// Chia sẻ lịch sử của conversation đang mở, từ bước [stepIndex] tới tin mới nhất:
+  /// tạo link `/api/session/share`, cho chọn conversation đích (có sẵn hoặc mới), rồi gửi prompt.
+  Future<void> _shareFromStep(int stepIndex) async {
+    final source = _openConversationExact;
+    if (source == null) return;
+    final address = _serverAddress;
+    final url = buildShareUrl(
+      baseUrl: normalizeBaseUrl(address),
+      sessionId: source.id,
+      fromStep: stepIndex,
+    );
+    bool sameProject(ConversationSession s) => source.projectPath.isNotEmpty
+        ? s.projectPath == source.projectPath
+        : s.projectName == source.projectName;
+    final targets = _sessions
+        .where(
+          (s) =>
+              s.id != source.id &&
+              !_peerSessionIds.contains(s.id) &&
+              sameProject(s),
+        )
+        .toList();
+
+    final req = await showShareHistorySheet(
+      context: context,
+      shareUrl: url,
+      fromStep: stepIndex,
+      loadFirstPage: () => _sessionsRepo.fetchSessionSharePage(
+        address: address,
+        sessionId: source.id,
+        fromStep: stepIndex,
+      ),
+      conversations: [
+        for (final s in targets)
+          ShareTargetConversation(
+            id: s.id,
+            title: s.title,
+            model: _modelForConversation(s),
+          ),
+      ],
+      availableModels: _availableModels,
+      modelLabels: _modelLabels,
+      effortLevels: _effortLevels,
+      defaultModel: _modelForConversation(source),
+    );
+    if (req == null || !mounted) return;
+
+    if (req.conversationId.isEmpty) {
+      // Không có trong danh sách project thì dựng từ conversation nguồn, để lượt mới vẫn đúng project
+      final project =
+          _projects.where((p) => p.path == source.projectPath).firstOrNull ??
+          ProjectWorkspace(
+            id: source.projectName,
+            name: source.projectName,
+            path: source.projectPath,
+            sessionCount: 1,
+            runningCount: 0,
+          );
+      _startNewConversationInProject(project);
+      setState(() => _selectedModel = req.model);
+    } else {
+      final target = _sessions
+          .where((s) => s.id == req.conversationId)
+          .firstOrNull;
+      if (target == null) return;
+      _selectConversation(target);
+    }
+    await _handleSendPrompt(req.prompt, const [], model: req.model);
+  }
+
   PendingRetry? _pendingRetryFor(String? conversationId) {
     if (conversationId == null) return null;
     for (final r in _pendingRetries) {
@@ -1237,13 +1325,10 @@ class _DashboardScreenState extends ConsumerState<DashboardScreenView> {
       SnackBar(
         content: Row(
           children: [
-            SizedBox(
-              width: 14,
-              height: 14,
-              child: CircularProgressIndicator(
-                strokeWidth: 2,
-                color: context.scheme.onPrimary,
-              ),
+            ThrottledSpinner(
+              size: 14,
+              strokeWidth: 2,
+              color: context.scheme.onPrimary,
             ),
             const SizedBox(width: 10),
             Expanded(
@@ -1868,13 +1953,10 @@ class _DashboardScreenState extends ConsumerState<DashboardScreenView> {
                           }
                         },
                   icon: isCreating
-                      ? SizedBox(
-                          width: 14,
-                          height: 14,
-                          child: CircularProgressIndicator(
-                            strokeWidth: 2,
-                            color: context.scheme.onPrimary,
-                          ),
+                      ? ThrottledSpinner(
+                          size: 14,
+                          strokeWidth: 2,
+                          color: context.scheme.onPrimary,
                         )
                       : const Icon(Icons.add_circle_outline_rounded, size: 18),
                   label: Text(
@@ -2152,12 +2234,17 @@ class _DashboardScreenState extends ConsumerState<DashboardScreenView> {
 
   /// Vùng content desktop: chat luôn được giữ trong cây (Offstage) để không mất nháp/vị trí cuộn;
   /// trang panel đang chọn được mount đè lên, không push route.
+  /// `Offstage` không tắt animation, nên chat bị che còn được bọc `TickerMode(enabled: false)`:
+  /// spinner, robot và gõ chữ trong đó tạm dừng (không dựng lại, không buộc frame).
   Widget _buildPanelStack({required Widget chat}) {
     final top = _panelPages.isEmpty ? null : _panelPages.last;
     return Stack(
       children: [
         Positioned.fill(
-          child: Offstage(offstage: top != null, child: chat),
+          child: TickerMode(
+            enabled: top == null,
+            child: Offstage(offstage: top != null, child: chat),
+          ),
         ),
         if (top != null)
           Positioned.fill(
@@ -2167,53 +2254,17 @@ class _DashboardScreenState extends ConsumerState<DashboardScreenView> {
     );
   }
 
-  /// Khung nổi Liquid Glass cho Sidebar & Explorer trên Desktop (mờ trong suốt để thấy hình nền blur phía sau).
+  /// Khung nổi Sidebar / Rail / Explorer trên Desktop: dùng đúng chất liệu kính chung
+  /// ([LiquidGlassContainer]) để đồng bộ với các khối nổi trong chat (không tint riêng).
   Widget _buildFloatingDesktopGlassPanel({
     Key? key,
     required BuildContext context,
     required Widget child,
-    double blur = 14,
-    bool elevatedOverlay = false,
   }) {
-    final isDark = Theme.of(context).brightness == Brightness.dark;
-    final baseAlpha = elevatedOverlay
-        ? (isDark ? 0.46 : 0.56)
-        : (isDark ? 0.28 : 0.36);
-    final highlightAlpha = elevatedOverlay
-        ? (isDark ? 0.52 : 0.64)
-        : (isDark ? 0.36 : 0.46);
-    final baseTint = isDark
-        ? const Color(0xFF131924)
-        : const Color(0xFFF6F9FF);
-    final topTint = isDark
-        ? const Color(0xFF222C3D)
-        : const Color(0xFFFFFFFF);
-
     return RepaintBoundary(
       child: LiquidGlassContainer(
         key: key,
         borderRadius: BorderRadius.circular(18),
-        blur: blur,
-        fillColor: baseTint.withValues(alpha: baseAlpha),
-        gradient: LinearGradient(
-          begin: Alignment.topLeft,
-          end: Alignment.bottomRight,
-          colors: [
-            topTint.withValues(alpha: highlightAlpha),
-            baseTint.withValues(alpha: baseAlpha),
-          ],
-        ),
-        borderColor: isDark
-            ? Colors.white.withValues(alpha: 0.20)
-            : Colors.white.withValues(alpha: 0.72),
-        borderWidth: 1.0,
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withValues(alpha: isDark ? 0.36 : 0.12),
-            blurRadius: 22,
-            offset: const Offset(0, 8),
-          ),
-        ],
         child: child,
       ),
     );
@@ -2398,8 +2449,6 @@ class _DashboardScreenState extends ConsumerState<DashboardScreenView> {
               onExit: (_) => setState(() => _railHovered = false),
               child: _buildFloatingDesktopGlassPanel(
                 context: context,
-                blur: 18,
-                elevatedOverlay: true,
                 child: _buildAntigravitySidebar(context, isMobileDrawer: false),
               ),
             ),
@@ -2442,6 +2491,7 @@ class _DashboardScreenState extends ConsumerState<DashboardScreenView> {
       _activeChatProject = matchedProj;
       _syncDefaultSelections();
     });
+    _refreshActiveInteractions();
     if (session.steps.isEmpty) {
       _loadFullSessionDetail(session.id);
     }
@@ -2503,7 +2553,6 @@ class _DashboardScreenState extends ConsumerState<DashboardScreenView> {
         message: tooltip,
         child: LiquidGlassPill(
           cornerRadius: 21,
-          refractionWidth: 10,
           shadowBlur: 10,
           child: InkWell(
             borderRadius: BorderRadius.circular(21),
@@ -2524,7 +2573,6 @@ class _DashboardScreenState extends ConsumerState<DashboardScreenView> {
 
     final centerPill = LiquidGlassPill(
       cornerRadius: 23,
-      refractionWidth: 12,
       shadowBlur: 10,
       child: InkWell(
         borderRadius: BorderRadius.circular(23),
@@ -2606,7 +2654,6 @@ class _DashboardScreenState extends ConsumerState<DashboardScreenView> {
     if (isMobile) {
       rightPill = LiquidGlassPill(
         cornerRadius: 21,
-        refractionWidth: 10,
         shadowBlur: 10,
         child: PopupMenuButton<String>(
           tooltip: 'Tùy chọn & Công cụ',
@@ -2724,7 +2771,6 @@ class _DashboardScreenState extends ConsumerState<DashboardScreenView> {
     } else {
       rightPill = LiquidGlassPill(
         cornerRadius: 21,
-        refractionWidth: 10,
         shadowBlur: 10,
         child: SizedBox(
           height: 42,
@@ -2842,7 +2888,7 @@ class _DashboardScreenState extends ConsumerState<DashboardScreenView> {
     if (_isLoading && activeSession == null && !_isNewConversationMode) {
       return Padding(
         padding: EdgeInsets.only(left: desktopLeftInset),
-        child: const Center(child: CircularProgressIndicator()),
+        child: const Center(child: ThrottledSpinner(size: 36, strokeWidth: 4)),
       );
     }
     if (!_isRemoteConnected && !_isSocketLive && activeSession == null) {
@@ -2934,6 +2980,7 @@ class _DashboardScreenState extends ConsumerState<DashboardScreenView> {
                     _showCreateProjectDialog(context),
                 onGitPush: _handleGitPush,
                 onOpenGitHistory: _openActiveGitHistory,
+                onShareFromStep: _shareFromStep,
     );
   }
 
@@ -3754,6 +3801,7 @@ class _DashboardScreenState extends ConsumerState<DashboardScreenView> {
             _activeChatProject = matchedProj;
             _syncDefaultSelections();
           });
+          _refreshActiveInteractions();
           if (session.steps.isEmpty) {
             _loadFullSessionDetail(session.id);
           }
@@ -3772,11 +3820,9 @@ class _DashboardScreenState extends ConsumerState<DashboardScreenView> {
           child: Row(
             children: [
               if (isRunning) ...[
-                const SizedBox(
-                  width: 10,
-                  height: 10,
-                  child: CircularProgressIndicator(strokeWidth: 1.8),
-                ),
+                // Chỉ báo "đang chạy" trong sidebar: quay 12 khung/giây (thay vì vsync 60) để không
+                // buộc Flutter dựng frame và blur lại kính phía trên liên tục.
+                const ThrottledSpinner(size: 10, strokeWidth: 1.8, fps: 12),
                 const SizedBox(width: 8),
               ] else if (session.isInterrupted) ...[
                 Icon(

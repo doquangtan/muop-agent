@@ -1,19 +1,5 @@
 use super::*;
 
-#[derive(Clone)]
-pub(super) struct CachedTranscript {
-    pub(super) modified: DateTime<Utc>,
-    pub(super) len: u64,
-    pub(super) parsed: std::sync::Arc<ParsedTranscript>,
-}
-
-pub(super) static TRANSCRIPT_CACHE: OnceLock<Mutex<HashMap<String, CachedTranscript>>> =
-    OnceLock::new();
-
-pub(super) fn get_transcript_cache() -> &'static Mutex<HashMap<String, CachedTranscript>> {
-    TRANSCRIPT_CACHE.get_or_init(|| Mutex::new(HashMap::new()))
-}
-
 /// Ghi model đã dùng cho một lượt agy. Transcript của agy không lưu model nên server tự ghi nhận
 /// vào SQLite (xem `store`).
 pub fn record_agy_turn_model(conversation_id: &str, started_at: &str, model: &str) {

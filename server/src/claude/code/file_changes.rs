@@ -25,11 +25,21 @@ pub(super) fn git_changed_files(repo: &str) -> Vec<(PathBuf, bool)> {
         return Vec::new();
     };
     let mut result: Vec<(PathBuf, bool)> = Vec::new();
+    // --no-optional-locks: không giành khóa index với git khác (tránh index.lock làm lệnh thất bại)
+    let mut ok = false;
     if let Ok(out) = Command::new("git")
-        .args(["-C", repo, "status", "--porcelain", "--untracked-files=all"])
+        .args([
+            "--no-optional-locks",
+            "-C",
+            repo,
+            "status",
+            "--porcelain",
+            "--untracked-files=all",
+        ])
         .output()
     {
         if out.status.success() {
+            ok = true;
             for line in String::from_utf8_lossy(&out.stdout).lines() {
                 if line.len() < 4 {
                     continue;
@@ -45,8 +55,11 @@ pub(super) fn git_changed_files(repo: &str) -> Vec<(PathBuf, bool)> {
             }
         }
     }
-    if let Ok(mut map) = cache.lock() {
-        map.insert(repo.to_string(), (Instant::now(), result.clone()));
+    // Chỉ cache kết quả thành công: lỗi tạm thời không được giữ 5 giây
+    if ok {
+        if let Ok(mut map) = cache.lock() {
+            map.insert(repo.to_string(), (Instant::now(), result.clone()));
+        }
     }
     result
 }
@@ -83,41 +96,17 @@ pub(super) fn is_build_or_binary_path(path: &Path) -> bool {
         })
 }
 
-/// Bổ sung thay đổi file do lệnh Bash tạo ra (sed -i, python, cat >, ...). Các lệnh này không có
-/// tool Edit/Write nên không được ghi nhận khi duyệt tool call. Lấy các file đã thay đổi trong repo
-/// (git status) có mtime nằm trong khoảng từ bước gọi Bash đến bước kế tiếp.
-pub(super) fn detect_bash_file_changes(
+/// Bổ sung thay đổi file do lệnh Bash tạo ra (sed -i, python, cat >, ...) cho MỘT bước Bash: các file đã
+/// thay đổi trong repo (git status) có mtime nằm trong khoảng từ bước đó đến bước kế tiếp (`end`).
+/// Các lệnh này không có tool Edit/Write nên không được ghi nhận khi duyệt tool call.
+pub(super) fn detect_bash_window(
     repo: &str,
-    steps: &[AgentStep],
+    step_index: usize,
+    start: chrono::DateTime<chrono::Utc>,
+    end: chrono::DateTime<chrono::Utc>,
     files: &mut Vec<FileTouchRecord>,
 ) {
     if repo.is_empty() {
-        return;
-    }
-    let parse_ts = |s: &str| {
-        chrono::DateTime::parse_from_rfc3339(s)
-            .ok()
-            .map(|d| d.with_timezone(&chrono::Utc))
-    };
-    let mut windows: Vec<(
-        usize,
-        chrono::DateTime<chrono::Utc>,
-        chrono::DateTime<chrono::Utc>,
-    )> = Vec::new();
-    for (i, step) in steps.iter().enumerate() {
-        if !step.tool_calls.iter().any(|t| t.name == "Bash") {
-            continue;
-        }
-        let Some(start) = parse_ts(&step.created_at) else {
-            continue;
-        };
-        let end = steps
-            .get(i + 1)
-            .and_then(|n| parse_ts(&n.created_at))
-            .unwrap_or_else(chrono::Utc::now);
-        windows.push((step.step_index, start, end));
-    }
-    if windows.is_empty() {
         return;
     }
     for (abs, is_new) in git_changed_files(repo) {
@@ -128,15 +117,13 @@ pub(super) fn detect_bash_file_changes(
             continue;
         }
         let mtime = chrono::DateTime::<chrono::Utc>::from(mtime);
-        let Some((step_index, start, _)) = windows.iter().find(|(_, start, end)| {
-            mtime >= *start && mtime <= *end + chrono::Duration::seconds(1)
-        }) else {
+        if !(mtime >= start && mtime <= end + chrono::Duration::seconds(1)) {
             continue;
-        };
+        }
         let path = abs.to_string_lossy().to_string();
         if files
             .iter()
-            .any(|f| f.step_index == *step_index && f.path == path)
+            .any(|f| f.step_index == step_index && f.path == path)
         {
             continue;
         }
@@ -145,7 +132,7 @@ pub(super) fn detect_bash_file_changes(
             action: if is_new { "created" } else { "modified" }.to_string(),
             repo: String::new(),
             agent_name: "Coordinator".to_string(),
-            step_index: *step_index,
+            step_index,
             timestamp: start.to_rfc3339(),
             added_lines: 0,
             removed_lines: 0,
@@ -201,56 +188,54 @@ fn git_tracked(repo: &str, rel: &str) -> bool {
         .unwrap_or(false)
 }
 
-/// Bổ sung file bị xóa bằng lệnh Bash (`rm`, `git rm`...). `git status` không đủ vì file đã xóa
+/// Bổ sung file bị xóa bằng lệnh Bash (`rm`, `git rm`...) cho MỘT bước. `git status` không đủ vì file đã xóa
 /// không có mtime để gắn vào bước, nên đọc trực tiếp đường dẫn trong lệnh.
-pub(super) fn detect_bash_deletions(
+pub(super) fn detect_bash_deletions_in_step(
     repo: &str,
-    steps: &[AgentStep],
+    step: &AgentStep,
     files: &mut Vec<FileTouchRecord>,
 ) {
     if repo.is_empty() {
         return;
     }
     let repo_path = Path::new(repo);
-    for step in steps {
-        for call in step.tool_calls.iter().filter(|t| t.name == "Bash") {
-            let Some(command) = call.args.get("command").and_then(|v| v.as_str()) else {
-                continue;
+    for call in step.tool_calls.iter().filter(|t| t.name == "Bash") {
+        let Some(command) = call.args.get("command").and_then(|v| v.as_str()) else {
+            continue;
+        };
+        for arg in rm_targets(command) {
+            let rel = arg.strip_prefix("./").unwrap_or(&arg);
+            let abs = if rel.starts_with('/') {
+                PathBuf::from(rel)
+            } else {
+                repo_path.join(rel)
             };
-            for arg in rm_targets(command) {
-                let rel = arg.strip_prefix("./").unwrap_or(&arg);
-                let abs = if rel.starts_with('/') {
-                    PathBuf::from(rel)
-                } else {
-                    repo_path.join(rel)
-                };
-                let path = abs.to_string_lossy().to_string();
-                let known = files
-                    .iter()
-                    .any(|f| f.path == path && f.action != "deleted");
-                let tracked = !rel.starts_with('/') && git_tracked(repo, rel);
-                if !is_deletion_candidate(abs.exists(), known, tracked) {
-                    continue;
-                }
-                if files
-                    .iter()
-                    .any(|f| f.step_index == step.step_index && f.path == path)
-                {
-                    continue;
-                }
-                files.push(FileTouchRecord {
-                    path,
-                    action: "deleted".to_string(),
-                    repo: String::new(),
-                    agent_name: step.agent_name.clone(),
-                    step_index: step.step_index,
-                    timestamp: step.created_at.clone(),
-                    added_lines: 0,
-                    removed_lines: 0,
-                    diff_preview: String::new(),
-                    source: "bash".to_string(),
-                });
+            let path = abs.to_string_lossy().to_string();
+            let known = files
+                .iter()
+                .any(|f| f.path == path && f.action != "deleted");
+            let tracked = !rel.starts_with('/') && git_tracked(repo, rel);
+            if !is_deletion_candidate(abs.exists(), known, tracked) {
+                continue;
             }
+            if files
+                .iter()
+                .any(|f| f.step_index == step.step_index && f.path == path)
+            {
+                continue;
+            }
+            files.push(FileTouchRecord {
+                path,
+                action: "deleted".to_string(),
+                repo: String::new(),
+                agent_name: step.agent_name.clone(),
+                step_index: step.step_index,
+                timestamp: step.created_at.clone(),
+                added_lines: 0,
+                removed_lines: 0,
+                diff_preview: String::new(),
+                source: "bash".to_string(),
+            });
         }
     }
 }

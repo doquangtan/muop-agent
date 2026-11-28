@@ -1,6 +1,8 @@
 import 'package:flutter/services.dart';
 import 'package:material_ui/material_ui.dart';
 
+import 'package:muop_agent/core/widgets/throttled_spinner.dart';
+
 import 'package:muop_agent/core/theme/app_theme.dart';
 import 'package:muop_agent/features/interactions/domain/interaction_entities.dart';
 
@@ -267,11 +269,7 @@ class _RetryConfigSheetState extends State<RetryConfigSheet> {
                 FilledButton(
                   onPressed: _saving ? null : _save,
                   child: _saving
-                      ? const SizedBox(
-                          width: 16,
-                          height: 16,
-                          child: CircularProgressIndicator(strokeWidth: 2),
-                        )
+                      ? const ThrottledSpinner(size: 16, strokeWidth: 2)
                       : const Text('Lưu'),
                 ),
               ],

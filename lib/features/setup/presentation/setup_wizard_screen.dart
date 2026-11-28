@@ -2,6 +2,9 @@ import 'dart:async';
 
 import 'package:material_ui/material_ui.dart';
 
+import 'package:muop_agent/core/widgets/throttled_spinner.dart';
+import 'package:muop_agent/core/widgets/throttled_linear_progress.dart';
+
 import 'package:muop_agent/core/di/app_dependencies.dart';
 import 'package:muop_agent/core/theme/app_theme.dart';
 import 'package:muop_agent/core/widgets/glass_scaffold.dart';
@@ -326,7 +329,7 @@ class _SetupWizardScreenState extends State<SetupWizardScreenView> {
         ],
         const SizedBox(height: 16),
         if (_busy && !hasTools)
-          const Center(child: CircularProgressIndicator())
+          const Center(child: ThrottledSpinner(size: 36, strokeWidth: 4))
         else
           // CLI (agy/claude) kiểm tra ở bước Chọn CLI, không ở đây
           for (final tool in _status.tools.where((t) => t.group != 'cli'))
@@ -495,7 +498,7 @@ class _SetupWizardScreenState extends State<SetupWizardScreenView> {
           ),
         if (busy) ...[
           const SizedBox(height: 12),
-          const LinearProgressIndicator(),
+          const ThrottledLinearProgress(),
           if (showJob) ...[
             const SizedBox(height: 8),
             Text(

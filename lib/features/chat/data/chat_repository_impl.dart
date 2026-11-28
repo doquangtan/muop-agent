@@ -1,8 +1,8 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:io';
 
 import 'package:muop_agent/core/config/server_config.dart';
+import 'package:muop_agent/core/network/rest_client.dart';
 import 'package:muop_agent/core/network/socket_gateway.dart';
 import 'package:muop_agent/features/chat/domain/chat_entities.dart';
 import 'package:muop_agent/features/chat/domain/chat_repository.dart';
@@ -51,28 +51,24 @@ class ChatRepositoryImpl implements ChatRepository {
     List<ChatImageAttachment> images = const [],
   }) async {
     final baseUrl = normalizeBaseUrl(address);
-    final client = HttpClient()
-      ..connectionTimeout = const Duration(seconds: 6);
     try {
-      final uri = Uri.parse('$baseUrl/api/chat/send');
-      final req = await client.postUrl(uri);
-      req.headers.contentType = ContentType.json;
-      req.write(
-        jsonEncode({
+      // Ảnh base64 làm body lớn hơn nhiều, nên cho thời gian gửi lâu hơn khi có ảnh
+      final sendTimeout = Duration(seconds: images.isEmpty ? 15 : 90);
+      final reply = await httpRequest(
+        'POST',
+        Uri.parse('$baseUrl/api/chat/send'),
+        json: {
           'prompt': prompt,
           'projectPath': projectPath,
           'conversationId': conversationId ?? '',
           'agentName': agentName ?? '',
           'model': model ?? '',
           'images': images.map((image) => image.toJson()).toList(),
-        }),
+        },
+        timeout: sendTimeout,
       );
-      // Ảnh base64 làm body lớn hơn nhiều, nên cho thời gian gửi lâu hơn khi có ảnh
-      final sendTimeout = Duration(seconds: images.isEmpty ? 15 : 90);
-      final resp = await req.close().timeout(sendTimeout);
-      final body = await resp.transform(utf8.decoder).join();
-      final map = jsonDecode(body) as Map<String, dynamic>;
-      if (resp.statusCode == 200 && map['ok'] == true) {
+      final map = jsonDecode(reply.text) as Map<String, dynamic>;
+      if (reply.status == 200 && map['ok'] == true) {
         return ChatSendResult(
           ok: true,
           conversationId: '${map['conversationId'] ?? ''}',
@@ -84,7 +80,7 @@ class ChatRepositoryImpl implements ChatRepository {
         ok: false,
         conversationId: '',
         projectPath: projectPath,
-        error: '${map['error'] ?? 'HTTP ${resp.statusCode}'}',
+        error: '${map['error'] ?? 'HTTP ${reply.status}'}',
       );
     } catch (e) {
       return ChatSendResult(
@@ -93,8 +89,6 @@ class ChatRepositoryImpl implements ChatRepository {
         projectPath: projectPath,
         error: '$e',
       );
-    } finally {
-      client.close(force: true);
     }
   }
 
@@ -105,19 +99,16 @@ class ChatRepositoryImpl implements ChatRepository {
     required String conversationId,
   }) async {
     final baseUrl = normalizeBaseUrl(address);
-    final client = HttpClient()
-      ..connectionTimeout = const Duration(seconds: 4);
     try {
-      final uri = Uri.parse('$baseUrl/api/chat/stop');
-      final req = await client.postUrl(uri);
-      req.headers.contentType = ContentType.json;
-      req.write(jsonEncode({'conversationId': conversationId}));
-      final resp = await req.close().timeout(const Duration(seconds: 4));
-      return resp.statusCode == 200;
+      final reply = await httpRequest(
+        'POST',
+        Uri.parse('$baseUrl/api/chat/stop'),
+        json: {'conversationId': conversationId},
+        timeout: const Duration(seconds: 4),
+      );
+      return reply.status == 200;
     } catch (_) {
       return false;
-    } finally {
-      client.close(force: true);
     }
   }
 }

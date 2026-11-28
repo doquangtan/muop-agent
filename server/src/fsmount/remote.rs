@@ -124,6 +124,35 @@ impl Remote {
         check(resp).map(drop)
     }
 
+    /// Ghi từng đoạn vào file đang có, không gửi lại cả file. `truncate` đặt kích thước trước khi ghi.
+    /// Mỗi đoạn là `(offset, dữ liệu)`; khung nhị phân khớp `parse_patch_frames` của máy gửi.
+    pub fn patch(
+        &self,
+        rel: &str,
+        truncate: Option<u64>,
+        writes: &[(u64, &[u8])],
+    ) -> Result<(), Errno> {
+        let total: usize = writes.iter().map(|(_, d)| 12 + d.len()).sum();
+        let mut body = Vec::with_capacity(total);
+        for (off, data) in writes {
+            body.extend_from_slice(&off.to_le_bytes());
+            body.extend_from_slice(&(data.len() as u32).to_le_bytes());
+            body.extend_from_slice(data);
+        }
+        let mut query = vec![("path", self.abs(rel))];
+        if let Some(size) = truncate {
+            query.push(("truncate", size.to_string()));
+        }
+        let resp = self
+            .http
+            .put(self.url("/api/fs/patch"))
+            .query(&query)
+            .body(body)
+            .send()
+            .map_err(transport_err)?;
+        check(resp).map(drop)
+    }
+
     pub fn mkdir(&self, rel: &str) -> Result<(), Errno> {
         self.post("/api/fs/mkdir", json!({ "path": self.abs(rel) }))
     }

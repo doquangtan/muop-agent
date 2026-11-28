@@ -92,19 +92,21 @@ pub async fn handle_chat_retry_cancel(
 pub async fn handle_chat_retry_config_get(
     Query(q): Query<HashMap<String, String>>,
 ) -> impl IntoResponse {
-    let cid = q.get("id").map(|s| s.trim().to_string()).unwrap_or_default();
+    let cid = q
+        .get("id")
+        .map(|s| s.trim().to_string())
+        .unwrap_or_default();
     if cid.is_empty() {
         return (
             StatusCode::BAD_REQUEST,
             Json(json!({"ok": false, "error": "Thiếu conversationId"})),
         );
     }
-    let config = crate::infra::store::conversation_retry_config(&cid).unwrap_or_else(|| {
-        RetryConfigDto {
+    let config =
+        crate::infra::store::conversation_retry_config(&cid).unwrap_or_else(|| RetryConfigDto {
             conversation_id: cid.clone(),
             ..RetryConfigDto::default()
-        }
-    });
+        });
     (StatusCode::OK, Json(json!({"ok": true, "config": config})))
 }
 

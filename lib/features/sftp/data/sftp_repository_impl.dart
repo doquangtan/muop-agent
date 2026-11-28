@@ -1,6 +1,6 @@
 import 'dart:convert';
 import 'dart:io';
-import 'dart:typed_data';
+import 'package:flutter/foundation.dart';
 
 import 'package:muop_agent/core/config/server_config.dart';
 import 'package:muop_agent/core/network/rest_client.dart';
@@ -129,42 +129,39 @@ class SftpRepositoryImpl implements SftpRepository {
     String destPath, {
     void Function(int received, int total)? onProgress,
   }) async {
-    final client = HttpClient()..connectionTimeout = const Duration(seconds: 8);
-    try {
-      final baseUrl = normalizeBaseUrl(address);
-      final req = await client.getUrl(
-        Uri.parse('$baseUrl/api/sftp/download/$downloadId'),
-      );
-      final resp = await req.close().timeout(const Duration(seconds: 30));
-      if (resp.statusCode != 200) {
-        final text = await resp.transform(utf8.decoder).join();
-        var message = 'Lỗi ${resp.statusCode}';
-        try {
-          final json = jsonDecode(text);
-          if (json is Map && json['error'] is String) {
-            message = json['error'] as String;
-          }
-        } catch (_) {}
-        throw Exception(message);
-      }
-      final total = resp.contentLength;
-      final raf = await File(destPath).open(mode: FileMode.write);
-      var received = 0;
+    if (kIsWeb) {
+      throw UnsupportedError('Tải tệp về máy chưa hỗ trợ trên web');
+    }
+    final baseUrl = normalizeBaseUrl(address);
+    final resp = await httpOpenStream(
+      Uri.parse('$baseUrl/api/sftp/download/$downloadId'),
+    ).timeout(const Duration(seconds: 30));
+    if (resp.statusCode != 200) {
+      final text = utf8.decode(await resp.stream.toBytes(), allowMalformed: true);
+      var message = 'Lỗi ${resp.statusCode}';
       try {
-        // Timeout theo từng khối: một kết nối đứng im quá lâu thì dừng, không chờ mãi
-        await for (final chunk in resp.timeout(const Duration(seconds: 60))) {
-          await raf.writeFrom(chunk);
-          received += chunk.length;
-          onProgress?.call(received, total);
+        final json = jsonDecode(text);
+        if (json is Map && json['error'] is String) {
+          message = json['error'] as String;
         }
-      } finally {
-        await raf.close();
-      }
-      if (total >= 0 && received != total) {
-        throw Exception('Tải thiếu dữ liệu ($received/$total byte)');
+      } catch (_) {}
+      throw Exception(message);
+    }
+    final total = resp.contentLength ?? -1;
+    final raf = await File(destPath).open(mode: FileMode.write);
+    var received = 0;
+    try {
+      // Timeout theo từng khối: một kết nối đứng im quá lâu thì dừng, không chờ mãi
+      await for (final chunk in resp.stream.timeout(const Duration(seconds: 60))) {
+        await raf.writeFrom(chunk);
+        received += chunk.length;
+        onProgress?.call(received, total);
       }
     } finally {
-      client.close(force: true);
+      await raf.close();
+    }
+    if (total >= 0 && received != total) {
+      throw Exception('Tải thiếu dữ liệu ($received/$total byte)');
     }
   }
 }

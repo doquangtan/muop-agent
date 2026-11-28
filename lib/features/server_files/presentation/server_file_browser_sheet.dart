@@ -3,6 +3,8 @@ import 'package:flutter/gestures.dart';
 import 'package:flutter/services.dart';
 import 'package:material_ui/material_ui.dart';
 
+import 'package:muop_agent/core/widgets/throttled_spinner.dart';
+
 import 'package:muop_agent/core/di/app_dependencies.dart';
 import 'package:muop_agent/core/theme/app_theme.dart';
 import 'package:muop_agent/core/theme/chat_theme_painter.dart';
@@ -681,11 +683,7 @@ class _ServerFileBrowserSheetState extends State<ServerFileBrowserSheetView> {
               children: [
                 Row(
                   children: [
-                    const SizedBox(
-                      width: 13,
-                      height: 13,
-                      child: CircularProgressIndicator(strokeWidth: 2),
-                    ),
+                    const ThrottledSpinner(size: 13, strokeWidth: 2),
                     const SizedBox(width: 8),
                     Expanded(
                       child: Text(
@@ -1077,7 +1075,7 @@ class _ServerFileBrowserSheetState extends State<ServerFileBrowserSheetView> {
         // 4. Danh sách tệp SFTP
         Expanded(
           child: _isLoading
-              ? const Center(child: CircularProgressIndicator())
+              ? const Center(child: ThrottledSpinner(size: 36, strokeWidth: 4))
               : _errorMessage.isNotEmpty
                   ? Center(
                       child: Padding(
@@ -1284,9 +1282,7 @@ class _ServerFileBrowserSheetState extends State<ServerFileBrowserSheetView> {
                                                 width: 12,
                                                 height: 12,
                                                 child:
-                                                    CircularProgressIndicator(
-                                                  strokeWidth: 2,
-                                                ),
+                                                    ThrottledSpinner(size: 36, strokeWidth: 2),
                                               )
                                             : const Icon(
                                                 Icons.download_rounded,
@@ -1379,11 +1375,7 @@ class _ServerFileBrowserSheetState extends State<ServerFileBrowserSheetView> {
                 onPressed:
                     isDownloadingThis ? null : () => _downloadFile(entry.path),
                 icon: isDownloadingThis
-                    ? const SizedBox(
-                        width: 14,
-                        height: 14,
-                        child: CircularProgressIndicator(strokeWidth: 2),
-                      )
+                    ? const ThrottledSpinner(size: 14, strokeWidth: 2)
                     : const Icon(Icons.download_rounded, size: 18),
               ),
           ],
@@ -2667,7 +2659,7 @@ class _FileDiffAndContentPaneState extends State<FileDiffAndContentPane> {
         Divider(height: 1, color: colorScheme.outlineVariant),
         Expanded(
           child: _isLoading
-              ? const Center(child: CircularProgressIndicator())
+              ? const Center(child: ThrottledSpinner(size: 36, strokeWidth: 4))
               : _selectedTab == 0
                   ? _buildColoredDiffView(
                       context,
@@ -3561,17 +3553,12 @@ class _FileDiffAndContentPaneState extends State<FileDiffAndContentPane> {
                             ),
                           ),
                           const SizedBox(width: 4),
-                          SizedBox(
-                            width: 10,
-                            height: 10,
-                            child: CircularProgressIndicator(
-                              strokeWidth: 1.6,
-                              valueColor: AlwaysStoppedAnimation<Color>(
-                                _downloadProgress > 0.45
-                                    ? colorScheme.onPrimary
-                                    : colorScheme.primary,
-                              ),
-                            ),
+                          ThrottledSpinner(
+                            size: 10,
+                            strokeWidth: 1.6,
+                            color: _downloadProgress > 0.45
+                                ? colorScheme.onPrimary
+                                : colorScheme.primary,
                           ),
                         ] else ...[
                           Icon(

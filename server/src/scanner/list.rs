@@ -22,36 +22,6 @@ pub fn scan_all_sessions(
         }
     }
 
-    // 2. Quét nhanh transcript để bổ sung các subagent ID được spawn trong phiên làm việc
-    let conv_id_re = Regex::new(r#""conversationId"\s*:\s*"([^"]+)""#).ok();
-    if let Ok(read_dir) = fs::read_dir(&brain_dir) {
-        for entry in read_dir.flatten() {
-            let path = entry.path();
-            if path.is_dir() {
-                let transcript_path = path.join(".system_generated/logs/transcript.jsonl");
-                if let Ok(file) = fs::File::open(&transcript_path) {
-                    use std::io::{BufRead, BufReader};
-                    let reader = BufReader::new(file);
-                    for line_res in reader.lines() {
-                        if let Ok(line) = line_res {
-                            if line.contains("Created the following subagent:")
-                                || line.contains("invoke_subagent")
-                            {
-                                if let Some(ref re) = conv_id_re {
-                                    if let Some(caps) = re.captures(&line) {
-                                        if let Some(m) = caps.get(1) {
-                                            child_subagent_ids.insert(m.as_str().to_string());
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-
     let mut entries: Vec<(String, DateTime<Utc>)> = Vec::new();
 
     if let Ok(read_dir) = fs::read_dir(&brain_dir) {
@@ -74,6 +44,18 @@ pub fn scan_all_sessions(
             }
         }
     }
+
+    // Metadata của mọi transcript (SQLite khi file không đổi). Không nạp bước hội thoại ở bước này.
+    let mut shells: HashMap<String, ParsedTranscript> = HashMap::new();
+    for (id, modified) in &entries {
+        if let Some(parsed) = parse_transcript_shell(id, *modified, db_meta_map.get(id)) {
+            child_subagent_ids.extend(parsed.referenced_ids.iter().cloned());
+            shells.insert(id.clone(), parsed);
+        }
+    }
+    // Xóa metadata của conversation đã bị xóa khỏi đĩa
+    let on_disk: HashSet<String> = entries.iter().map(|(id, _)| id.clone()).collect();
+    crate::infra::store::transcript_meta_prune("agy", &on_disk);
 
     entries.sort_by(|a, b| b.1.cmp(&a.1));
 
@@ -98,10 +80,8 @@ pub fn scan_all_sessions(
         .or_else(|| selected.first().map(|(id, _)| id.clone()));
 
     let mut raw_sessions: HashMap<String, ParsedTranscript> = HashMap::new();
-
-    for (id, modified) in &selected {
-        let meta = db_meta_map.get(id);
-        if let Some(parsed) = parse_transcript_file(id, *modified, meta) {
+    for (id, _) in &selected {
+        if let Some(parsed) = shells.remove(id) {
             for s in &parsed.spawned_subagents {
                 if !s.id.is_empty() {
                     child_subagent_ids.insert(s.id.clone());
@@ -111,19 +91,49 @@ pub fn scan_all_sessions(
         }
     }
 
-    // Transcript của sub-agent (kể cả agent cháu) để dựng cây lane
-    let extra_roots: Vec<String> = child_subagent_ids
-        .iter()
-        .filter(|id| !raw_sessions.contains_key(*id))
-        .cloned()
-        .collect();
-    raw_sessions.extend(load_subagent_transcripts(
-        &brain_root(),
-        extra_roots,
-        &db_meta_map,
-    ));
-
     let live_agy_cids = scan_running_agy_conversations();
+
+    // Chỉ conversation đang active / đang chạy cần đầy đủ bước, tệp, lệnh và lanes.
+    // Các conversation khác giữ metadata (không có bước) trong RAM.
+    let is_listed = |id: &str| {
+        !db_meta_map.get(id).is_some_and(|m| !m.parent_id.is_empty())
+            && !child_subagent_ids.contains(id)
+    };
+    let mut full_ids: HashSet<String> = HashSet::new();
+    for (idx, (id, _)) in selected.iter().enumerate() {
+        if !is_listed(id) {
+            continue;
+        }
+        let is_active_session =
+            target_active.as_deref() == Some(id.as_str()) || (target_active.is_none() && idx == 0);
+        let is_stream_running = active_streams.get(id).is_some_and(|st| st.is_running);
+        if is_active_session || is_stream_running || live_agy_cids.contains(id) {
+            full_ids.insert(id.clone());
+        }
+    }
+    for (id, modified) in &selected {
+        if full_ids.contains(id) {
+            if let Some(parsed) = parse_transcript_file(id, *modified, db_meta_map.get(id)) {
+                raw_sessions.insert(id.clone(), parsed);
+            }
+        }
+    }
+
+    // Sub-agent (kể cả agent cháu) của các conversation đầy đủ, để dựng cây lane và tệp/lệnh của lane
+    let child_roots: Vec<String> = full_ids
+        .iter()
+        .filter_map(|id| raw_sessions.get(id))
+        .flat_map(|p| p.spawned_subagents.iter().map(|s| s.id.clone()))
+        .filter(|id| !id.is_empty())
+        .collect();
+    if !child_roots.is_empty() {
+        raw_sessions.extend(load_subagent_transcripts(
+            &brain_dir,
+            child_roots,
+            &db_meta_map,
+        ));
+    }
+
     let cut_turns = crate::infra::store::cut_short_turns();
     let mut git_sync_cache: HashMap<String, Option<GitSyncStatus>> = HashMap::new();
     let mut project_agents_cache: HashMap<String, (Vec<CustomAgentSpec>, Vec<String>)> =
@@ -333,5 +343,7 @@ pub fn scan_all_sessions(
 
     // Session của Claude Code CLI (~/.claude/projects) được gộp chung vào danh sách
     sessions.extend(crate::claude::code::scan_sessions(active_streams));
+    // Trả bộ nhớ của các bản parse tạm về hệ điều hành (glibc giữ lại trong arena)
+    crate::infra::platform::release_unused_memory();
     sessions
 }

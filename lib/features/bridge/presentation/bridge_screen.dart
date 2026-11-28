@@ -3,6 +3,8 @@ import 'dart:async';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:material_ui/material_ui.dart';
 
+import 'package:muop_agent/core/widgets/throttled_spinner.dart';
+
 import 'package:muop_agent/core/di/app_dependencies.dart';
 import 'package:muop_agent/core/state/server_address_provider.dart';
 import 'package:muop_agent/core/theme/app_theme.dart';
@@ -10,7 +12,6 @@ import 'package:muop_agent/core/widgets/glass_scaffold.dart';
 import 'package:muop_agent/features/bridge/domain/bridge_entities.dart';
 import 'package:muop_agent/features/bridge/domain/bridge_repository.dart';
 
-const _pollInterval = Duration(seconds: 5);
 
 /// Cấu hình máy phụ (máy A): địa chỉ máy A và trạng thái kết nối.
 /// Cấu hình được lưu trên server đang kết nối; đổi server thì màn được dựng lại.
@@ -48,7 +49,8 @@ class BridgeScreenView extends StatefulWidget {
 
 class _BridgeScreenState extends State<BridgeScreenView> {
   BridgeStatus? _status;
-  Timer? _poll;
+  /// Trạng thái cầu nối do server đẩy (`bridge:status`) khi đổi và khi client vừa kết nối
+  StreamSubscription<BridgeEvent>? _statusSub;
 
   final _urlCtrl = TextEditingController();
 
@@ -59,19 +61,27 @@ class _BridgeScreenState extends State<BridgeScreenView> {
   void initState() {
     super.initState();
     _refreshStatus();
-    _poll = Timer.periodic(_pollInterval, (_) => _refreshStatus());
+    _statusSub = widget.repository.watchEvents().listen((event) {
+      if (!mounted || event.name != 'bridge:status' || event.data is! Map) return;
+      _applyStatus(BridgeStatus.fromJson(Map<String, dynamic>.from(event.data as Map)));
+    });
   }
 
   @override
   void dispose() {
-    _poll?.cancel();
+    _statusSub?.cancel();
     _urlCtrl.dispose();
     super.dispose();
   }
 
+  /// Tải trạng thái một lần (khi mở màn); sau đó cập nhật theo sự kiện
   Future<void> _refreshStatus() async {
     final res = await widget.repository.fetchStatus(widget.serverAddress);
     if (!mounted) return;
+    _applyStatus(res);
+  }
+
+  void _applyStatus(BridgeStatus res) {
     setState(() {
       _status = res;
       // Lần đầu mở màn: điền sẵn địa chỉ đã lưu trên server
@@ -165,11 +175,7 @@ class _BridgeScreenState extends State<BridgeScreenView> {
                       ? null
                       : () => _savePeer(disconnect: false),
                   icon: _savingPeer
-                      ? const SizedBox(
-                          width: 16,
-                          height: 16,
-                          child: CircularProgressIndicator(strokeWidth: 2),
-                        )
+                      ? const ThrottledSpinner(size: 16, strokeWidth: 2)
                       : const Icon(Icons.link_rounded, size: 18),
                   label: const Text('Lưu & kết nối'),
                 ),
@@ -235,11 +241,7 @@ class _BridgeScreenState extends State<BridgeScreenView> {
     if (status == null) {
       return Row(
         children: [
-          const SizedBox(
-            width: 14,
-            height: 14,
-            child: CircularProgressIndicator(strokeWidth: 2),
-          ),
+          const ThrottledSpinner(size: 14, strokeWidth: 2),
           const SizedBox(width: 8),
           Text('Đang kiểm tra...', style: textTheme.bodyMedium),
         ],

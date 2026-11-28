@@ -36,6 +36,13 @@ if [ ! -x "$BUNDLE/muop_agent" ]; then
     exit 1
 fi
 
+echo "==> Build bản web (Flutter web release) để máy chủ phục vụ ở cổng 8788"
+(cd "$ROOT" && "$FLUTTER" build web --release)
+if [ ! -f "$ROOT/build/web/index.html" ]; then
+    echo "Thiếu bản web: $ROOT/build/web/index.html" >&2
+    exit 1
+fi
+
 echo "==> Chuẩn bị thư mục đóng gói"
 rm -rf "$STAGE"
 mkdir -p \
@@ -45,10 +52,13 @@ mkdir -p \
     "$STAGE/usr/lib/systemd/user" \
     "$STAGE/usr/share/applications" \
     "$STAGE/usr/share/icons/hicolor/512x512/apps" \
-    "$STAGE/usr/share/icons/hicolor/256x256/apps"
+    "$STAGE/usr/share/icons/hicolor/256x256/apps" \
+    "$STAGE/usr/share/muop-agent/web"
 
 install -m 0755 "$SERVER_BIN" "$STAGE/usr/bin/muop-agent-server"
 cp -a "$BUNDLE/." "$STAGE/usr/lib/$PKG/"
+# Bản web: máy chủ đọc từ đây qua MUOP_WEB_DIR (xem packaging/muop-agent-server.service)
+cp -a "$ROOT/build/web/." "$STAGE/usr/share/muop-agent/web/"
 install -m 0755 "$ROOT/packaging/muop-agent-launcher" "$STAGE/usr/bin/$PKG"
 install -m 0644 "$ROOT/packaging/muop-agent-server.service" \
     "$STAGE/usr/lib/systemd/user/muop-agent-server.service"
@@ -94,8 +104,8 @@ Installed-Size: $INSTALLED_SIZE
 Maintainer: muop-agent packager <packaging@localhost>
 Depends: $APP_DEPENDS
 Description: Mướp Agent Monitor (server + ứng dụng Linux)
- Gói gồm muop-agent-server (Rust, chạy nền qua systemd --user, cổng 8787)
- và ứng dụng Linux Desktop (Flutter). Dữ liệu người dùng nằm trong
+ Gói gồm muop-agent-server (Rust, chạy nền qua systemd --user, cổng 8787 cho API,
+ 8788 cho bản web), ứng dụng Linux Desktop (Flutter) và bản web (/usr/share/muop-agent/web). Dữ liệu người dùng nằm trong
  ~/.local/share/muop-agent và không bị xóa khi gỡ hoặc nâng cấp gói.
 EOF
 install -m 0755 "$ROOT/packaging/debian/postinst" "$STAGE/DEBIAN/postinst"

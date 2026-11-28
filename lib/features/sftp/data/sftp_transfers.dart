@@ -1,5 +1,7 @@
 import 'dart:io';
 
+import 'package:flutter/foundation.dart';
+
 import 'package:muop_agent/features/sftp/domain/sftp_repository.dart';
 
 /// File tạm đã tải xong từ server, chờ lưu ra thiết bị
@@ -41,6 +43,10 @@ class SftpTransfers {
     int expectedSize = -1,
     void Function(int received, int total)? onProgress,
   }) async {
+    // Web không có thư mục tạm trên đĩa để ghi file tải về
+    if (kIsWeb) {
+      throw UnsupportedError('Tải tệp về máy chưa hỗ trợ trên web');
+    }
     final dir = await Directory.systemTemp.createTemp('muop-dl-');
     final tempPath = '${dir.path}/$name';
     try {
